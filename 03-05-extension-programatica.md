@@ -1,6 +1,6 @@
-# Parte 3.5 — Refresco de Configuración: Extensión Programática
+# 3.5.9 Extensión Programática: Refresco
 
-← [Refresco (YAML)](./03-05-config-refresh.md) | [Volver al índice](./README.md)
+← [3.5 Refresco](./03-05-config-refresh.md) | [Índice](./README.md) | [3.6 Cifrado y HA →](./03-06-config-avanzado.md)
 
 ---
 
@@ -18,7 +18,7 @@ La capa YAML del refresco configura cuándo se refresca (polling, Bus) y qué se
 
 ---
 
-## Qué ocurre internamente en `ContextRefresher.refresh()`
+## 3.5.9.1 Qué ocurre internamente en `ContextRefresher.refresh()`
 
 ```
 contextRefresher.refresh()
@@ -49,7 +49,7 @@ Nota importante:
 
 ---
 
-## `ContextRefresher` — disparar el refresco sin llamada HTTP
+## 3.5.9.2 `ContextRefresher` — disparar el refresco sin llamada HTTP
 
 `ContextRefresher` es el bean que ejecuta el refresco de forma programática. Es exactamente lo que el endpoint `POST /actuator/refresh` llama internamente. Inyectarlo permite disparar el refresco desde cualquier lugar: un job programado, un listener de eventos de infraestructura, o un endpoint administrativo propio.
 
@@ -101,7 +101,7 @@ Set<String> cambios = contextRefresher.refreshEnvironment();
 
 ---
 
-## `RefreshScope` — refrescar beans individuales
+## 3.5.9.3 `RefreshScope` — refrescar beans individuales
 
 Para casos donde solo un bean específico necesita refrescarse (no toda la configuración), `RefreshScope` permite hacerlo por nombre sin tocar el resto:
 
@@ -147,7 +147,7 @@ public class PedidosProperties { ... }
 
 ---
 
-## `ApplicationEventPublisher` — publicar eventos de Bus sin HTTP
+## 3.5.9.4 `ApplicationEventPublisher` — publicar eventos de Bus sin HTTP
 
 Publicar un `RefreshRemoteApplicationEvent` directamente, sin necesidad de hacer una petición HTTP a `/actuator/busrefresh`. Útil cuando el refresco debe dispararse desde lógica de negocio (p.ej. cuando se guarda una nueva configuración en una base de datos):
 
@@ -196,7 +196,7 @@ public class ConfigChangeBroadcaster {
 
 ---
 
-## Listeners de eventos de refresco
+## 3.5.9.5 Listeners de eventos de refresco
 
 ### `ApplicationListener<RefreshRemoteApplicationEvent>` — cuando llega un evento del Bus
 
@@ -266,7 +266,7 @@ public class BeanRefreshObserver {
 
 ---
 
-## Antipatrones frecuentes
+## 3.5.9.6 Antipatrones
 
 > **[ADVERTENCIA]** Publicar `RefreshRemoteApplicationEvent` con un `destinationService` que no coincide con `spring.cloud.bus.id` de los servicios destino. El evento se publica en el broker sin errores, pero ningún servicio lo recibe — el Bus lo descarta silenciosamente porque el patrón de destino no coincide. Siempre verificar que el `spring.cloud.bus.id` está configurado con el patrón `{appName}:{port}:{uuid}` y que el `destinationService` del evento usa el mismo formato.
 
@@ -276,7 +276,7 @@ public class BeanRefreshObserver {
 
 ---
 
-## Resumen: cuándo YAML es suficiente vs cuándo se necesita Java para el refresco
+### Tabla resumen: cuándo YAML es suficiente vs cuándo se necesita Java para el refresco
 
 | Caso | YAML suficiente | Requiere Java |
 |---|---|---|
@@ -290,4 +290,4 @@ public class BeanRefreshObserver {
 
 ---
 
-← [Refresco (YAML)](./03-05-config-refresh.md) | [Volver al índice](./README.md)
+← [3.5 Refresco](./03-05-config-refresh.md) | [Índice](./README.md) | [3.6 Cifrado y HA →](./03-06-config-avanzado.md)

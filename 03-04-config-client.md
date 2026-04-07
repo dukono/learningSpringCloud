@@ -1,12 +1,14 @@
-# Parte 3.4 — Spring Cloud Config: Config Client y Perfiles
+# 3.4 Config Client
 
-← [Config Server](./03-03-config-server.md) | [Volver al índice](./README.md) | Siguiente: [Refresco →](./03-05-config-refresh.md)
+← [3.3 Config Server](./03-03-config-server.md) | [Índice](./README.md) | [3.5 Refresco →](./03-05-config-refresh.md)
 
 ---
 
-## 3.5 Configuración del Config Client
+## 3.4 Configuración del Config Client
 
 Todo microservicio que quiera obtener su configuración del Config Server es un **Config Client**.
+
+## 3.4.1 Setup: dependencia y `spring.config.import`
 
 ### Paso 1: Dependencia Maven
 
@@ -36,7 +38,7 @@ spring:
 
 ---
 
-### Opciones del `spring.config.import`
+## 3.4.2 Opciones: optional, disabled
 
 ```yaml
 spring:
@@ -73,7 +75,7 @@ spring:
 
 ---
 
-### Múltiples fuentes en `spring.config.import`
+## 3.4.3 Múltiples fuentes y prioridad
 
 `spring.config.import` acepta una lista de fuentes que se cargan en orden. Las fuentes al principio de la lista tienen **mayor prioridad** (sobreescriben a las que vienen después). Esto permite combinar el Config Server con fuentes locales de forma precisa:
 
@@ -124,7 +126,7 @@ spring:
 
 ---
 
-### Timeouts de conexión al Config Server
+## 3.4.4 Timeouts de conexión al Config Server
 
 Sin configurar estos valores, el cliente espera indefinidamente si el Config Server no responde:
 
@@ -140,7 +142,7 @@ spring:
 
 ---
 
-### Precedencia: propiedades remotas vs locales
+## 3.4.5 Precedencia: propiedades remotas vs locales
 
 > **[CONCEPTO]** Por defecto, las propiedades del **Config Server tienen mayor prioridad** que el `application.yml` local. El fichero local solo sirve para arrancar el contexto (URL del servidor, perfil activo). Cualquier propiedad de negocio en el `application.yml` local quedará silenciosamente ignorada si el servidor define la misma clave.
 
@@ -200,7 +202,7 @@ spring:
 
 > **[ADVERTENCIA]** El comportamiento por defecto (remoto tiene prioridad) puede sorprender: si el repo Git tiene `server.port=9090` y el `application.yml` local tiene `server.port=8080`, el servicio arranca en el puerto 9090.
 
-### `server.overrides` — propiedades que ningún cliente puede sobreescribir
+## 3.4.6 `server.overrides` en el cliente
 
 Existe una categoría de propiedades que el Config Server puede declarar en su propia configuración bajo `spring.cloud.config.server.overrides`. Estas propiedades llegan a todos los clientes con la prioridad máxima posible: **no pueden sobreescribirse con `override-none=true`, ni con variables de entorno, ni con argumentos de sistema**. El cliente las recibe pero las trata como si tuvieran una prioridad mayor que cualquier fuente local.
 
@@ -218,7 +220,7 @@ spring:
 
 ---
 
-### Autenticación al Config Server (si tiene seguridad)
+## 3.4.7 Autenticación al Config Server
 
 ```yaml
 spring:
@@ -252,7 +254,7 @@ public class PedidosController {
 
 ---
 
-### Refresco automático por polling (`spring.cloud.config.watch`)
+## 3.4.8 Refresco automático por polling (`spring.cloud.config.watch`)
 
 Alternativa a `@RefreshScope` + llamada manual o Spring Cloud Bus: el cliente consulta periódicamente al Config Server si hay cambios y, si los hay, refresca automáticamente los beans `@RefreshScope`:
 
@@ -271,7 +273,7 @@ spring:
 
 ---
 
-### Debug logging — diagnosticar problemas de configuración
+## 3.4.9 Debug logging — diagnosticar problemas de configuración
 
 Cuando una propiedad tiene un valor inesperado o el cliente no conecta al Config Server, activar el logging de debug es el primer paso:
 
@@ -306,7 +308,7 @@ Located property source: CompositePropertySource [
 
 ---
 
-### Paso 4: Configuración de reintentos (recomendado en producción)
+## 3.4.10 Configuración de reintentos (recomendado en producción)
 
 Si el Config Server no está disponible al arrancar, el servicio falla. Se puede configurar reintentos para que espere a que el Config Server esté listo:
 
@@ -335,7 +337,7 @@ spring:
 
 ---
 
-### Bootstrap context — compatibilidad con Spring Boot 2.x (`bootstrap.yml`)
+## 3.4.11 Bootstrap context — compatibilidad con Spring Boot 2.x [LEGACY]
 
 > **[LEGACY]** El **Bootstrap Context** y `bootstrap.yml` son el mecanismo de Spring Boot 2.x para cargar configuración remota antes del contexto principal. En Spring Boot 3.x están reemplazados por `spring.config.import`. Solo añadir `spring-cloud-starter-bootstrap` si se mantiene código legado de Spring Boot 2.x.
 
@@ -373,7 +375,7 @@ spring:
 
 ---
 
-## 3.6 Perfiles y entornos
+## 3.4.12 Perfiles y entornos
 
 Spring Cloud Config y los perfiles de Spring trabajan juntos para manejar múltiples entornos.
 
@@ -458,7 +460,7 @@ application.yml
 
 ---
 
-### `@ConfigurationProperties` y refresco
+## 3.4.13 `@ConfigurationProperties` y refresco
 
 `@ConfigurationProperties` **no se refresca automáticamente** tras llamar a `/actuator/refresh` a menos que se anote explícitamente con `@RefreshScope`:
 
@@ -503,7 +505,7 @@ public class PedidosConfig {
 
 ---
 
-## 3.6.1 Testing del Config Client
+## 3.4.14 Testing del Config Client
 
 En tests, el Config Client intenta conectar al Config Server al arrancar el contexto. Sin estrategia explícita, los tests fallan con `Connection refused` si no hay servidor disponible.
 
@@ -613,6 +615,6 @@ spring:
 
 ---
 
-→ **Extensión programática:** [03-04-extension-programatica.md](./03-04-extension-programatica.md) — `PropertySourceLocator`, `ConfigServicePropertySourceLocator`, `BootstrapConfiguration`
+→ **Extensión programática:** [3.4.15 — PropertySourceLocator, ConfigServicePropertySourceLocator, BootstrapConfiguration](./03-04-extension-programatica.md)
 
-← [Config Server](./03-03-config-server.md) | [Volver al índice](./README.md) | Siguiente: [Refresco →](./03-05-config-refresh.md)
+← [3.3 Config Server](./03-03-config-server.md) | [Índice](./README.md) | [3.5 Refresco →](./03-05-config-refresh.md)

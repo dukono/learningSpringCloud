@@ -33,104 +33,104 @@
 
 ---
 
-### BLOQUE 2 — CONFIGURACIÓN CENTRALIZADA
-→ [03-01-config-concepto.md](./03-01-config-concepto.md) | [03-02-config-backends.md](./03-02-config-backends.md) | [03-03-config-server.md](./03-03-config-server.md) | [03-04-config-client.md](./03-04-config-client.md) | [03-05-config-refresh.md](./03-05-config-refresh.md) | [03-06-config-avanzado.md](./03-06-config-avanzado.md)
+### 3. Spring Cloud Config
 
-> **Extensión programática:** [03-02-extension-programatica.md](./03-02-extension-programatica.md) | [03-03-extension-programatica.md](./03-03-extension-programatica.md) | [03-04-extension-programatica.md](./03-04-extension-programatica.md) | [03-05-extension-programatica.md](./03-05-extension-programatica.md) | [03-06-extension-programatica.md](./03-06-extension-programatica.md)
+- [3.1 Concepto y Arquitectura](./03-01-config-concepto.md)
+  - 3.1.1 Qué es y para qué sirve
+  - 3.1.2 Arquitectura: Config Server y Config Client
+    - 3.1.2.1 El concepto de Config Client
+    - 3.1.2.2 Orden de arranque (Docker Compose / Kubernetes)
+  - 3.1.3 Regla de fusión de configuración
 
-**03-02-extension-programatica.md**
-- `EnvironmentRepository` — interfaz central para crear backends custom
-- `JGitEnvironmentRepository` como `@Bean` con repos dinámicos desde BD
-- `MultiTenantGitRepositoryLocator` — un repo por tenant con cache
-- `CompositeEnvironmentRepository` con lógica condicional por perfil
-- Backend completamente custom desde REST API interna
+- [3.2 Backends de Configuración](./03-02-config-backends.md)
+  - 3.2.1 Git (HTTPS y SSH)
+  - 3.2.2 Filesystem (desarrollo local)
+  - 3.2.3 HashiCorp Vault
+  - 3.2.4 JDBC
+  - 3.2.5 AWS S3 / GCS
+  - 3.2.6 AWS SSM Parameter Store
+  - 3.2.7 Azure App Configuration
+  - 3.2.8 Composite (combinar backends)
+  - 3.2.9 Múltiples repositorios Git por patrón
+  - 3.2.10 Semántica del parámetro label
+  - [3.2.11 Extensión Programática: EnvironmentRepository](./03-02-extension-programatica.md)
+    - 3.2.11.1 EnvironmentRepository — interfaz central
+    - 3.2.11.2 JGitEnvironmentRepository como bean
+    - 3.2.11.3 Multi-tenant repository locator
+    - 3.2.11.4 CompositeEnvironmentRepository programático
+    - 3.2.11.5 Backend completamente custom
+    - 3.2.11.6 Antipatrones
 
-**03-03-extension-programatica.md**
-- `EnvironmentEncryptor` — cifrado con Vault Transit o HSM (reemplaza AES/RSA)
-- `EnvironmentController` con `@Primary` — auditoría de accesos a la API
-- `@ControllerAdvice` para filtrar propiedades sensibles por rol
-- `EnvironmentPostProcessor` — resolver credenciales del propio Config Server antes del arranque
+- [3.3 Config Server](./03-03-config-server.md)
+  - 3.3.1 Directorio de caché local (basedir)
+  - 3.3.2 Seguridad: autenticación básica
+  - 3.3.3 Actuator del Config Server
+  - 3.3.4 server.overrides
+  - 3.3.5 Endpoint de recursos (/{app}/{profile}/{label}/{path})
+  - 3.3.6 Health check y health.repositories
+  - 3.3.7 Endpoint /monitor — push notifications
+  - [3.3.8 Extensión Programática: EnvironmentEncryptor, EnvironmentController](./03-03-extension-programatica.md)
+    - 3.3.8.1 EnvironmentEncryptor custom (Vault Transit, HSM)
+    - 3.3.8.2 EnvironmentController con @Primary
+    - 3.3.8.3 @ControllerAdvice para filtrar propiedades
+    - 3.3.8.4 EnvironmentPostProcessor
+    - 3.3.8.5 Antipatrones
 
-**03-04-extension-programatica.md**
-- Diagrama del ciclo de vida Bootstrap: cuándo y cómo se invoca `PropertySourceLocator`
-- `PropertySourceLocator` — fuente de propiedades custom (API interna, BD, sistema legado)
-- Extender `ConfigServicePropertySourceLocator` — headers de autenticación propietarios
-- `ConfigClientProperties` — diagnóstico y branch switching programático
-- `BootstrapConfiguration` — resolver secretos antes que cualquier `@Value`
+- [3.4 Config Client](./03-04-config-client.md)
+  - 3.4.1 Setup: dependencia y spring.config.import
+  - 3.4.2 Opciones: optional, disabled
+  - 3.4.3 Múltiples fuentes y prioridad
+  - 3.4.4 Timeouts de conexión
+  - 3.4.5 Precedencia: remoto vs local
+  - 3.4.6 server.overrides en el cliente
+  - 3.4.7 Autenticación al Config Server
+  - 3.4.8 spring.cloud.config.watch
+  - 3.4.9 Debug logging
+  - 3.4.10 Configuración de reintentos
+  - 3.4.11 Bootstrap context [LEGACY]
+  - 3.4.12 Perfiles y entornos
+  - 3.4.13 @ConfigurationProperties y refresco
+  - 3.4.14 Testing del Config Client
+  - [3.4.15 Extensión Programática: PropertySourceLocator](./03-04-extension-programatica.md)
+    - 3.4.15.1 Ciclo de vida Bootstrap con PropertySourceLocator
+    - 3.4.15.2 PropertySourceLocator completamente custom
+    - 3.4.15.3 ConfigServicePropertySourceLocator extendido
+    - 3.4.15.4 ConfigClientProperties programático
+    - 3.4.15.5 BootstrapConfiguration
+    - 3.4.15.6 Antipatrones
 
-**03-05-extension-programatica.md**
-- Diagrama de secuencia: qué ocurre internamente en `ContextRefresher.refresh()`
-- `ContextRefresher` — disparar el refresco sin llamada HTTP (job, evento de negocio)
-- Diferencia entre `refresh()` y `refreshEnvironment()`
-- `RefreshScope.refresh("beanName")` — refrescar un bean específico
-- `ApplicationEventPublisher` — publicar `RefreshRemoteApplicationEvent` sin HTTP
-- Escuchar `RefreshRemoteApplicationEvent`, `EnvironmentChangeEvent`, `ScopeRefreshedEvent`
+- [3.5 Refresco de Configuración](./03-05-config-refresh.md)
+  - 3.5.1 Refresco manual con @RefreshScope
+  - 3.5.2 Spring Cloud Bus (refresco masivo)
+  - 3.5.3 spring.cloud.bus.destination
+  - 3.5.4 Tipos de eventos del Bus
+  - 3.5.5 Refresco automático por Webhook
+  - 3.5.6 Refresco selectivo con /monitor
+  - 3.5.7 Comparativa de opciones de refresco
+  - 3.5.8 Testing del mecanismo de refresco
+  - [3.5.9 Extensión Programática: ContextRefresher, RefreshScope](./03-05-extension-programatica.md)
+    - 3.5.9.1 Qué ocurre en ContextRefresher.refresh()
+    - 3.5.9.2 ContextRefresher — disparar el refresco sin HTTP
+    - 3.5.9.3 RefreshScope — refrescar beans individuales
+    - 3.5.9.4 Publicar RefreshRemoteApplicationEvent sin HTTP
+    - 3.5.9.5 Listeners de eventos de refresco
+    - 3.5.9.6 Antipatrones
 
-**03-06-extension-programatica.md**
-- `TextEncryptor` custom con Google Tink (AES256-GCM)
-- `VaultTransitTextEncryptor` — cifrado delegado a Vault Transit sin clave local
-- `TextEncryptor` multiversión — rotación sin ventana de mantenimiento
-- `FailoverConfigServiceLocator` — failover con balanceo aleatorio entre instancias
-
-**03-01-config-concepto.md**
-- Qué es Spring Cloud Config y para qué sirve
-- Arquitectura: Config Server y Config Client
-- Concepto de Config Client para desarrolladores Spring Boot
-- Regla de fusión de configuración con ejemplo concreto
-- Boot order: `depends_on` + healthcheck en Docker Compose, initContainer en Kubernetes
-
-**03-02-config-backends.md**
-- Backends: Git (HTTPS + SSH), Filesystem, Vault, JDBC, S3/GCS, Composite
-- Parámetros Git: `default-label`, `search-paths`, `clone-on-start`, `refresh-rate`, `force-pull`
-- Autenticación SSH al repositorio
-- Esquema SQL para backend JDBC
-
-**03-03-config-server.md**
-- Setup del Config Server (`@EnableConfigServer`)
-- Diagrama del flujo de petición: cliente → Config Server → Git → respuesta fusionada
-- API REST y patrón de URLs `/{application}/{profile}/{label}`
-- Autenticación básica con Spring Security
-- `POST /actuator/refresh` en el servidor (re-sincroniza caché con Git) vs en el cliente
-- Actuator: `/actuator/health`, `/actuator/env`
-- `server.overrides` — propiedades que ningún cliente puede sobreescribir (§3.4.4)
-- Endpoint de recursos `/{app}/{profile}/{label}/{path}` — servir ficheros completos (§3.4.5)
-- Health check y `health.repositories` (§3.4.6)
-- Endpoint `/monitor` — refresco selectivo desde webhooks Git (§3.4.7)
-
-**03-04-config-client.md**
-- Setup del cliente: `spring.config.import`
-- Opciones: `configserver:`, `optional:configserver:`, `enabled: false`
-- `spring.cloud.config.name` y `label` en el cliente
-- Perfiles y entornos por fichero separado
-- Configuración de reintentos (`fail-fast` + `retry`)
-- `spring.cloud.config.watch`: polling automático de cambios sin Bus ni llamada manual
-- Debug logging para diagnosticar qué propiedades se cargaron y desde qué fichero
-- Múltiples fuentes en `spring.config.import` con orden de prioridad
-- `server.overrides` — por qué `override-none` no las sobreescribe
-- Bootstrap context y `bootstrap.yml` [LEGACY] — compatibilidad con Spring Boot 2.x
-- Diagrama de prioridad de fuentes de configuración
-- Testing del Config Client: 4 estrategias (§3.6.1)
-
-**03-05-config-refresh.md**
-- Refresco manual: `@RefreshScope` + `/actuator/refresh`
-- Comportamiento cuando Git no está disponible durante el refresco
-- Refresco masivo: Spring Cloud Bus (Kafka o RabbitMQ)
-- Sintaxis `:**` en `busrefresh` para filtrar por instancia
-- Refresco automático: Webhook Git → `/actuator/busrefresh`
-- `EnvironmentChangeEvent` para lógica personalizada post-refresco
-- `spring.cloud.bus.destination` — cambiar topic/exchange del Bus
-- Tipos de eventos: `RefreshRemoteApplicationEvent` vs `EnvironmentChangeEvent`
-- Refresco selectivo con `/monitor` — solo los servicios con ficheros modificados
-- Comparativa de las cinco opciones de refresco
-- Testing: `@RefreshScope` con `ContextRefresher`, Bus sin broker con `enabled: false` (§3.7.1)
-
-**03-06-config-avanzado.md**
-- Cifrado simétrico (AES) y asimétrico (RSA)
-- Vault Transit como backend de cifrado (sin clave local, rotación automática)
-- Rotación de clave: manual, Vault Transit, `TextEncryptor` multiversión — comparativa
-- Descifrado en servidor vs en cliente
-- Alta disponibilidad: load balancer, Eureka, múltiples URIs
-- Testing: 5 estrategias (disabled, optional, embedded server, @RefreshScope, cifrado)
+- [3.6 Cifrado y Alta Disponibilidad](./03-06-config-avanzado.md)
+  - 3.6.1 Clave simétrica (AES)
+  - 3.6.2 Clave asimétrica RSA
+  - 3.6.3 Vault Transit como backend de cifrado
+  - 3.6.4 Verificar cifrado: endpoint /decrypt
+  - 3.6.5 Rotación de la clave de cifrado
+  - 3.6.6 Descifrado en el cliente
+  - 3.6.7 Alta disponibilidad del Config Server
+  - 3.6.8 Testing con Spring Cloud Config
+  - [3.6.9 Extensión Programática: TextEncryptor, failover](./03-06-extension-programatica.md)
+    - 3.6.9.1 TextEncryptor custom
+    - 3.6.9.2 TextEncryptor con Vault Transit
+    - 3.6.9.3 TextEncryptor multiversión (rotación sin ventana)
+    - 3.6.9.4 Alta disponibilidad programática — failover
+    - 3.6.9.5 Antipatrones
 
 ---
 

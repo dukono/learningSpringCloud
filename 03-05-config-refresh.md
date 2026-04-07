@@ -1,16 +1,16 @@
-# Parte 3.5 — Spring Cloud Config: Refresco de Configuración
+# 3.5 Refresco de Configuración
 
-← [Config Client y Perfiles](./03-04-config-client.md) | [Volver al índice](./README.md) | Siguiente: [Cifrado y HA →](./03-06-config-avanzado.md)
+← [3.4 Config Client](./03-04-config-client.md) | [Índice](./README.md) | [3.6 Cifrado y HA →](./03-06-config-avanzado.md)
 
 ---
 
-## 3.7 Refresco de configuración: @RefreshScope y Spring Cloud Bus
+## 3.5 Refresco de configuración
 
 Por defecto, los microservicios leen la configuración **una sola vez al arrancar**. Si se cambia una propiedad en el repo Git, el servicio no lo verá hasta que se reinicie.
 
 ---
 
-### Solución 1: Refresco manual con @RefreshScope
+## 3.5.1 Refresco manual con `@RefreshScope`
 
 > **[CONCEPTO]** **`@RefreshScope`** es un scope de Spring que destruye y recrea un bean cuando se invoca `/actuator/refresh`. El bean recibe los nuevos valores de propiedades en la recreación. Solo los beans anotados con `@RefreshScope` se recargan — el resto del contexto permanece intacto.
 
@@ -56,7 +56,7 @@ curl -X POST http://localhost:8083/actuator/refresh
 
 **Problema de escala:** Si hay 20 instancias del servicio, hay que llamar a los 20 endpoints individualmente.
 
-#### Respuesta de `/actuator/refresh`
+### Respuesta de `/actuator/refresh`
 
 El endpoint devuelve la lista de propiedades que cambiaron. Una lista vacía indica que no hubo cambios:
 
@@ -68,7 +68,7 @@ curl -X POST http://localhost:8083/actuator/refresh
 
 Útil para confirmar que el refresco aplicó los cambios esperados y detectar si una propiedad no está siendo recogida por `@RefreshScope`.
 
-#### Comportamiento cuando Git no está disponible en el momento del refresco
+### Comportamiento cuando Git no está disponible en el momento del refresco
 
 ```
 Cliente llama a POST /actuator/refresh
@@ -89,7 +89,7 @@ Los valores anteriores se mantienen intactos
 >
 > Para detectar este escenario en producción: monitorizar el código de respuesta de las llamadas a `/actuator/refresh` (debería ser 200 con lista de propiedades cambiadas, no 500).
 
-#### Lógica personalizada tras un refresco: `EnvironmentChangeEvent`
+### Lógica personalizada tras un refresco: `EnvironmentChangeEvent`
 
 Cuando el contexto se refresca, Spring publica un `EnvironmentChangeEvent` con las claves que cambiaron. Se puede escuchar para ejecutar lógica propia:
 
@@ -117,7 +117,7 @@ public class ConfigChangeListener implements ApplicationListener<EnvironmentChan
 
 > `EnvironmentChangeEvent` se dispara tanto con refresco manual (`/actuator/refresh`) como con refresco vía Spring Cloud Bus. El bean listener **no necesita** `@RefreshScope`.
 
-#### Beans que NO deben usar @RefreshScope
+### Beans que NO deben usar @RefreshScope
 
 `@RefreshScope` destruye y recrea el bean completo. Algunos tipos de beans no soportan eso:
 
@@ -132,7 +132,7 @@ public class ConfigChangeListener implements ApplicationListener<EnvironmentChan
 
 ---
 
-### Solución 2: Spring Cloud Bus (refresco masivo)
+## 3.5.2 Spring Cloud Bus (refresco masivo)
 
 > **[CONCEPTO]** **Spring Cloud Bus** conecta todos los microservicios a través de un broker de mensajes (Kafka o RabbitMQ). Un único evento publicado en el bus se propaga simultáneamente a todas las instancias suscritas, eliminando la necesidad de llamar a `/actuator/refresh` en cada instancia individualmente.
 
@@ -199,7 +199,7 @@ Config Server recibe POST /actuator/busrefresh
   reciben el evento y refrescan sus @RefreshScope beans
 ```
 
-### `spring.cloud.bus.destination` — cambiar el nombre del topic
+## 3.5.3 `spring.cloud.bus.destination` — cambiar el nombre del topic
 
 Por defecto Spring Cloud Bus usa el topic `springCloudBus` en Kafka o la exchange `springCloudBus` en RabbitMQ. Si este nombre colisiona con otro sistema existente, o si se quieren entornos completamente aislados (dev/staging/prod con el mismo broker), se puede cambiar:
 
@@ -214,7 +214,7 @@ spring:
 
 > **[ADVERTENCIA]** Si se cambia `destination` en el Config Server pero no en los clientes (o viceversa), el `busrefresh` no llegará a los clientes. Es el primer parámetro que revisar si los eventos de Bus no se propagan.
 
-### Tipos de eventos del Bus: `RefreshRemoteApplicationEvent` y `EnvironmentChangeEvent`
+## 3.5.4 Tipos de eventos del Bus: `RefreshRemoteApplicationEvent` y `EnvironmentChangeEvent`
 
 Spring Cloud Bus maneja dos eventos distintos que es importante no confundir:
 
@@ -241,7 +241,7 @@ public void onRemoteRefresh(RefreshRemoteApplicationEvent event) {
 
 ---
 
-### Solución 3: Refresco automático por Webhook (CI/CD)
+## 3.5.5 Refresco automático por Webhook (CI/CD)
 
 Permite que el propio repositorio Git dispare el refresco automáticamente cada vez que se hace un commit, sin intervención manual.
 
@@ -255,7 +255,7 @@ POST automático a /actuator/busrefresh del Config Server
 Spring Cloud Bus propaga el evento a todos los servicios
 ```
 
-#### Configuración del webhook en GitHub
+### Configuración del webhook en GitHub
 
 En el repositorio Git de configuración: **Settings → Webhooks → Add webhook**
 
@@ -266,7 +266,7 @@ Secret:       [token secreto para verificar la procedencia]
 Events:       Just the push event
 ```
 
-#### Proteger el endpoint del webhook con secreto
+### Proteger el endpoint del webhook con secreto
 
 ```yaml
 # application.yml del Config Server
@@ -285,7 +285,7 @@ management:
 
 ---
 
-### Solución 4: Refresco selectivo con `/monitor` (Spring Cloud Config Monitor)
+## 3.5.6 Refresco selectivo con `/monitor` (Spring Cloud Config Monitor)
 
 El webhook al endpoint `busrefresh` refresca **todos** los servicios (o los especificados manualmente). El problema: si solo cambió la configuración de `pedidos-service`, todos los demás servicios también reciben el evento de refresco innecesariamente. Con `spring-cloud-config-monitor`, el Config Server recibe el webhook nativo de GitHub/GitLab/Bitbucket, analiza qué ficheros cambiaron en el commit, y publica el evento de refresco **solo para los servicios cuya configuración fue modificada**.
 
@@ -337,7 +337,7 @@ Publica RefreshRemoteApplicationEvent
 
 ---
 
-### Comparativa de opciones de refresco
+## 3.5.7 Comparativa de opciones de refresco
 
 | Opción | Cuándo usarla | Requiere infraestructura extra |
 |---|---|---|
@@ -351,7 +351,7 @@ Publica RefreshRemoteApplicationEvent
 
 ---
 
-## 3.7.1 Testing del mecanismo de refresco
+## 3.5.8 Testing del mecanismo de refresco
 
 ### Testear que `@RefreshScope` recarga los valores
 
@@ -457,6 +457,6 @@ class BusRefreshIntegrationTest {
 
 ---
 
-→ **Extensión programática:** [03-05-extension-programatica.md](./03-05-extension-programatica.md) — `ContextRefresher`, `RefreshScope.refresh()`, publicar `RefreshRemoteApplicationEvent` sin HTTP
+→ **Extensión programática:** [3.5.9 — ContextRefresher, RefreshScope, publicar eventos sin HTTP](./03-05-extension-programatica.md)
 
-← [Config Client y Perfiles](./03-04-config-client.md) | [Volver al índice](./README.md) | Siguiente: [Cifrado y HA →](./03-06-config-avanzado.md)
+← [3.4 Config Client](./03-04-config-client.md) | [Índice](./README.md) | [3.6 Cifrado y HA →](./03-06-config-avanzado.md)

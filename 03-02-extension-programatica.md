@@ -1,6 +1,6 @@
-# Parte 3.2 — Config Backends: Extensión Programática
+# 3.2.11 Extensión Programática: Backends
 
-← [Backends (YAML)](./03-02-config-backends.md) | [Volver al índice](./README.md)
+← [3.2 Backends](./03-02-config-backends.md) | [Índice](./README.md) | [3.3 Config Server →](./03-03-config-server.md)
 
 ---
 
@@ -17,7 +17,7 @@ La capa programática resuelve todos estos casos: los backends de Spring Cloud C
 
 ---
 
-## La interfaz central: `EnvironmentRepository`
+## 3.2.11.1 EnvironmentRepository — interfaz central
 
 Todo backend de Spring Cloud Config implementa esta interfaz. Es el único punto de extensión necesario para crear un backend completamente nuevo:
 
@@ -50,7 +50,7 @@ env.add(new PropertySource("mi-backend:pedidos-service-prod", propiedades));
 
 ---
 
-## Configurar un `JGitEnvironmentRepository` como bean (sin YAML)
+## 3.2.11.2 JGitEnvironmentRepository como bean
 
 La configuración YAML de Git instancia internamente un `JGitEnvironmentRepository`. Se puede crear directamente como bean para añadir lógica que YAML no expresa — por ejemplo, leer la URL del repo desde una base de datos o aplicar lógica condicional según el entorno activo:
 
@@ -101,7 +101,7 @@ public class GitBackendConfig {
 
 ---
 
-## Múltiples repos Git dinámicos desde base de datos
+## 3.2.11.3 Multi-tenant repository locator
 
 Este es el caso que YAML no puede resolver: la lista de repositorios no se conoce en tiempo de despliegue. Un ejemplo real: una plataforma SaaS donde cada tenant tiene su propio repositorio de configuración y los nuevos tenants se registran en runtime.
 
@@ -174,7 +174,7 @@ public class Tenant {
 
 ---
 
-## `CompositeEnvironmentRepository` programático
+## 3.2.11.4 CompositeEnvironmentRepository programático
 
 El backend Composite en YAML es fijo en tiempo de despliegue. Programáticamente se puede construir la lista de backends con lógica condicional — por ejemplo, añadir Vault solo si el perfil `cloud` está activo:
 
@@ -216,7 +216,7 @@ public class CompositeBackendConfig {
 
 ---
 
-## Backend completamente custom (fuente propia)
+## 3.2.11.5 Backend completamente custom
 
 Implementar `EnvironmentRepository` directamente para leer la configuración desde una fuente arbitraria — una API REST interna, un sistema de configuración legacy, un motor de reglas:
 
@@ -264,7 +264,7 @@ public class ApiInternBackend implements EnvironmentRepository {
 
 ---
 
-## Antipatrones frecuentes
+## 3.2.11.6 Antipatrones
 
 > **[ADVERTENCIA]** Registrar un bean `EnvironmentRepository` custom sin `@Primary` cuando el Config Server ya tiene un backend configurado en YAML. Spring Boot autoconfiguró ya un `JGitEnvironmentRepository` (o el backend declarado en YAML). Sin `@Primary`, Spring lanza `NoUniqueBeanDefinitionException` al arrancar, o el backend custom nunca se usa si hay ambigüedad de prioridad. Si el bean custom debe **reemplazar** el backend YAML, usar `@Primary`. Si debe **añadirse** al pipeline junto con el YAML, usar `CompositeEnvironmentRepository`.
 
@@ -288,4 +288,4 @@ public class ApiInternBackend implements EnvironmentRepository {
 
 ---
 
-← [Backends (YAML)](./03-02-config-backends.md) | [Volver al índice](./README.md)
+← [3.2 Backends](./03-02-config-backends.md) | [Índice](./README.md) | [3.3 Config Server →](./03-03-config-server.md)

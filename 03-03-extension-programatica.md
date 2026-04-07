@@ -1,6 +1,6 @@
-# Parte 3.3 — Config Server: Extensión Programática
+# 3.3.8 Extensión Programática: Config Server
 
-← [Config Server (YAML)](./03-03-config-server.md) | [Volver al índice](./README.md)
+← [3.3 Config Server](./03-03-config-server.md) | [Índice](./README.md) | [3.4 Config Client →](./03-04-config-client.md)
 
 ---
 
@@ -19,7 +19,7 @@ Los puntos de extensión más relevantes son:
 
 ---
 
-## `EnvironmentEncryptor` — cifrado custom (Vault Transit, HSM, Tink)
+## 3.3.8.1 `EnvironmentEncryptor` — cifrado custom (Vault Transit, HSM, Tink)
 
 `EnvironmentEncryptor` es la interfaz que el Config Server usa internamente para descifrar los valores `{cipher}` antes de entregarlos al cliente, y también la que expone el endpoint `/encrypt`. Reemplazarla permite delegar el cifrado a cualquier sistema externo: Vault Transit, un HSM corporativo, Google Tink, o cualquier otro proveedor.
 
@@ -79,7 +79,7 @@ public class VaultTransitEncryptor implements EnvironmentEncryptor {
 
 ---
 
-## `EnvironmentController` — extender el endpoint REST
+## 3.3.8.2 `EnvironmentController` con `@Primary`
 
 El endpoint `/{application}/{profile}/{label}` está implementado en `EnvironmentController`. Para añadir lógica transversal (audit log de quién accedió a qué configuración, cabeceras de respuesta personalizadas, transformaciones del entorno antes de enviarlo) la forma más limpia es un `@ControllerAdvice` o reemplazar el bean con `@Primary`.
 
@@ -113,7 +113,11 @@ public class AuditableEnvironmentController {
 }
 ```
 
-Alternativa más sencilla con `@ControllerAdvice` si solo se necesitan transformar las respuestas:
+---
+
+## 3.3.8.3 `@ControllerAdvice` para filtrar propiedades por rol
+
+`@ControllerAdvice` es la alternativa más sencilla cuando solo se necesitan transformar las respuestas sin reemplazar el controlador completo:
 
 ```java
 @ControllerAdvice(assignableTypes = EnvironmentController.class)
@@ -147,7 +151,7 @@ public class EnvironmentResponseAdvice implements ResponseBodyAdvice<Environment
 
 ---
 
-## `EnvironmentPostProcessor` en el servidor — transformar antes de entregar
+## 3.3.8.4 `EnvironmentPostProcessor` en el servidor
 
 `EnvironmentPostProcessor` permite modificar el `Environment` del propio Config Server (no de los clientes) durante el arranque. Útil cuando las propiedades del Config Server deben derivarse de una fuente externa antes de que los beans se inicialicen:
 
@@ -187,7 +191,7 @@ com.miempresa.config.SecretsManagerEnvironmentPostProcessor
 
 ---
 
-## Antipatrones frecuentes
+## 3.3.8.5 Antipatrones
 
 > **[ADVERTENCIA]** No marcar el `EnvironmentEncryptor` custom con `@Primary`. Spring Boot autoconfiguró ya un `EnvironmentEncryptor` basado en la clave `encrypt.key`. Sin `@Primary`, el bean custom y el default coexisten — Spring elige uno arbitrariamente, o puede que intente descifrar con ambos, causando errores de descifrado intermitentes y difíciles de reproducir.
 
@@ -200,7 +204,7 @@ com.miempresa.config.SecretsManagerEnvironmentPostProcessor
 
 ---
 
-## Resumen: cuándo YAML es suficiente vs cuándo se necesita Java en el servidor
+### Tabla resumen: cuándo YAML es suficiente vs cuándo se necesita Java en el servidor
 
 | Caso | YAML suficiente | Requiere Java |
 |---|---|---|
@@ -215,4 +219,4 @@ com.miempresa.config.SecretsManagerEnvironmentPostProcessor
 
 ---
 
-← [Config Server (YAML)](./03-03-config-server.md) | [Volver al índice](./README.md)
+← [3.3 Config Server](./03-03-config-server.md) | [Índice](./README.md) | [3.4 Config Client →](./03-04-config-client.md)

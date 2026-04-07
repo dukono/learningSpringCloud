@@ -1,6 +1,6 @@
-# Parte 3.4 — Config Client: Extensión Programática
+# 3.4.15 Extensión Programática: Config Client
 
-← [Config Client (YAML)](./03-04-config-client.md) | [Volver al índice](./README.md)
+← [3.4 Config Client](./03-04-config-client.md) | [Índice](./README.md) | [3.5 Refresco →](./03-05-config-refresh.md)
 
 ---
 
@@ -17,7 +17,7 @@ La capa YAML del Config Client configura qué servidor usar, el perfil activo y 
 
 ---
 
-## Ciclo de vida del arranque con `PropertySourceLocator`
+## 3.4.15.1 Ciclo de vida Bootstrap con `PropertySourceLocator`
 
 ```
 Spring Boot arranque — fase Bootstrap (antes del contexto principal)
@@ -46,7 +46,7 @@ Spring Boot arranque — contexto principal
 
 ---
 
-## `PropertySourceLocator` — fuente de propiedades completamente custom
+## 3.4.15.2 `PropertySourceLocator` completamente custom
 
 `PropertySourceLocator` es la interfaz que Spring Cloud Config usa internamente para conectar con el Config Server. Implementarla directamente permite añadir una fuente de propiedades de cualquier origen (API interna, base de datos, servicio de configuración corporativo) que se comporta exactamente igual que el Config Server: se carga en el arranque, participa en la fusión de propiedades, y se refresca con `@RefreshScope`.
 
@@ -100,7 +100,7 @@ com.miempresa.config.InternalApiPropertySourceLocator
 
 ---
 
-## `ConfigServicePropertySourceLocator` — extender el localizador por defecto
+## 3.4.15.3 `ConfigServicePropertySourceLocator` extendido
 
 Para casos donde se necesita modificar cómo el cliente se comunica con el Config Server (añadir cabeceras de autenticación custom, manipular la petición o respuesta, añadir reintentos con lógica propia), se puede extender el localizador por defecto:
 
@@ -143,7 +143,7 @@ public class AuthenticatedConfigLocator extends ConfigServicePropertySourceLocat
 
 ---
 
-## `ConfigClientProperties` — leer y modificar la config del cliente como bean
+## 3.4.15.4 `ConfigClientProperties` programático
 
 `ConfigClientProperties` es el bean que contiene toda la configuración del cliente (`spring.cloud.config.*`). Inyectarlo permite leer o modificar la configuración del cliente en runtime desde código Java:
 
@@ -180,7 +180,7 @@ public class ConfigClientDiagnosticService {
 
 ---
 
-## `BootstrapConfiguration` — beans que arrancan antes del contexto principal
+## 3.4.15.5 `BootstrapConfiguration`
 
 Cuando se necesita que un bean exista **antes** de que Spring procese cualquier `@Value` o `@ConfigurationProperties`, hay que registrarlo como `BootstrapConfiguration`. El contexto Bootstrap es el que carga `PropertySourceLocator` y tiene acceso al `Environment` sin propiedades de la aplicación aún cargadas.
 
@@ -219,7 +219,7 @@ com.miempresa.config.EarlySecretResolverBootstrap
 
 ---
 
-## Antipatrones frecuentes
+## 3.4.15.6 Antipatrones
 
 > **[ADVERTENCIA]** Implementar `PropertySourceLocator` como un `@Component` sin registrarlo en `META-INF/spring/org.springframework.cloud.bootstrap.BootstrapConfiguration.imports`. Spring Cloud no invoca el locator durante el bootstrap — el bean existe en el contexto pero nunca se llama a `locate()`. El servicio arranca sin errores, pero las propiedades del locator están ausentes. El síntoma: `@Value` devuelve el valor por defecto en lugar del valor esperado, y no hay ningún mensaje de error.
 
@@ -229,7 +229,7 @@ com.miempresa.config.EarlySecretResolverBootstrap
 
 ---
 
-## Resumen: cuándo YAML es suficiente vs cuándo se necesita Java en el cliente
+### Tabla resumen: cuándo YAML es suficiente vs cuándo se necesita Java en el cliente
 
 | Caso | YAML suficiente | Requiere Java |
 |---|---|---|
@@ -242,4 +242,4 @@ com.miempresa.config.EarlySecretResolverBootstrap
 
 ---
 
-← [Config Client (YAML)](./03-04-config-client.md) | [Volver al índice](./README.md)
+← [3.4 Config Client](./03-04-config-client.md) | [Índice](./README.md) | [3.5 Refresco →](./03-05-config-refresh.md)

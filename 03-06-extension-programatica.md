@@ -1,6 +1,6 @@
-# Parte 3.6 — Cifrado y Alta Disponibilidad: Extensión Programática
+# 3.6.9 Extensión Programática: Cifrado y Alta Disponibilidad
 
-← [Cifrado y HA (YAML)](./03-06-config-avanzado.md) | [Volver al índice](./README.md)
+← [3.6 Cifrado y HA](./03-06-config-avanzado.md) | [Índice](./README.md) | [4 — Service Discovery →](./04-service-discovery.md)
 
 ---
 
@@ -19,7 +19,7 @@ La relación entre ellas: `EnvironmentEncryptor` usa `TextEncryptor` internament
 
 ---
 
-## `TextEncryptor` custom — algoritmo de cifrado propio
+## 3.6.9.1 `TextEncryptor` custom — algoritmo de cifrado propio
 
 Implementar `TextEncryptor` permite reemplazar completamente el algoritmo de cifrado. Spring Cloud Config dejará de usar AES/RSA y usará la implementación que se proporcione:
 
@@ -73,7 +73,7 @@ public class EncryptionConfig {
 
 ---
 
-## `TextEncryptor` con Vault Transit — sin claves locales
+## 3.6.9.2 `TextEncryptor` con Vault Transit — sin claves locales
 
 La implementación más segura para producción: el Config Server nunca tiene la clave en local. Solo envía el texto a Vault y recibe el resultado:
 
@@ -131,7 +131,7 @@ spring:
 
 ---
 
-## `TextEncryptor` multiversión — rotación sin ventana de mantenimiento (AES/RSA local)
+## 3.6.9.3 `TextEncryptor` multiversión — rotación sin ventana de mantenimiento
 
 Para el caso de AES/RSA local (sin Vault), se puede implementar un `TextEncryptor` que prueba múltiples claves en orden, permitiendo que valores cifrados con la clave antigua sigan funcionando mientras se migra:
 
@@ -192,7 +192,7 @@ encrypt:
 
 ---
 
-## Alta disponibilidad programática — failover entre Config Servers
+## 3.6.9.4 Alta disponibilidad programática — failover entre Config Servers
 
 En lugar de confiar en un load balancer externo, se puede implementar failover directo en el cliente:
 
@@ -241,7 +241,7 @@ public class FailoverConfigServiceLocator extends ConfigServicePropertySourceLoc
 
 ---
 
-## Antipatrones frecuentes
+## 3.6.9.5 Antipatrones
 
 > **[ADVERTENCIA]** Registrar un `TextEncryptor` custom sin `@Primary`. Spring Boot autoconfiguró un `TextEncryptor` basado en `encrypt.key` o `encrypt.key-store`. Sin `@Primary`, el bean custom existe en el contexto pero el autoconfigurdo toma precedencia. El síntoma: el cifrado YAML sigue funcionando (con la clave AES/RSA), pero el cifrado custom nunca se invoca, sin ningún error ni advertencia.
 
@@ -251,7 +251,7 @@ public class FailoverConfigServiceLocator extends ConfigServicePropertySourceLoc
 
 ---
 
-## Resumen: cuándo YAML es suficiente vs cuándo se necesita Java para cifrado y HA
+### Tabla resumen: cuándo YAML es suficiente vs cuándo se necesita Java para cifrado y HA
 
 | Caso | YAML suficiente | Requiere Java |
 |---|---|---|
@@ -267,4 +267,4 @@ public class FailoverConfigServiceLocator extends ConfigServicePropertySourceLoc
 
 ---
 
-← [Cifrado y HA (YAML)](./03-06-config-avanzado.md) | [Volver al índice](./README.md)
+← [3.6 Cifrado y HA](./03-06-config-avanzado.md) | [Índice](./README.md) | [4 — Service Discovery →](./04-service-discovery.md)

@@ -1,10 +1,10 @@
-# Parte 3.2 — Spring Cloud Config: Backends
+# 3.2 Backends de Configuración
 
-← [Concepto y Arquitectura](./03-01-config-concepto.md) | [Volver al índice](./README.md) | Siguiente: [Config Server →](./03-03-config-server.md)
+← [3.1 Concepto y Arquitectura](./03-01-config-concepto.md) | [Índice](./README.md) | [3.3 Config Server →](./03-03-config-server.md)
 
 ---
 
-## 3.3 Backends soportados
+## 3.2 Backends soportados
 
 Spring Cloud Config Server soporta múltiples fuentes de configuración. La elección del backend depende del entorno y las necesidades del equipo.
 
@@ -36,7 +36,7 @@ Spring Cloud Config Server soporta múltiples fuentes de configuración. La elec
 
 ---
 
-### Backend Git (más común en producción)
+### 3.2.1 Git (más común en producción)
 
 Git es el backend estándar en producción por tres razones concretas: cada cambio de configuración queda registrado con fecha, autor y mensaje de commit; se pueden usar Pull Requests como mecanismo de revisión y aprobación antes de que un cambio llegue a producción; y es posible hacer rollback instantáneo a cualquier versión anterior. Tratar la configuración como código en Git — el patrón _Config as Code_ — es la práctica recomendada en entornos con múltiples servicios y múltiples equipos.
 
@@ -108,7 +108,7 @@ spring:
 
 ---
 
-### Backend Filesystem (desarrollo local)
+### 3.2.2 Filesystem (desarrollo local)
 
 El backend `native` (sistema de ficheros) existe para dos casos concretos: **desarrollo local**, donde levantar un servidor Git completo sería un sobrecoste innecesario, y **tests de integración** donde el Config Server se levanta embebido (ver `03-06`). Los ficheros de configuración están en el disco local del Config Server y se leen directamente, sin clon ni red. El precio es la pérdida de todas las ventajas de Git: sin historial, sin rollback, sin acceso concurrente desde múltiples instancias. No usar en producción.
 
@@ -130,7 +130,7 @@ No requiere Git. Los ficheros se leen directamente del disco. Útil para desarro
 
 ---
 
-### Backend HashiCorp Vault (secretos en producción)
+### 3.2.3 HashiCorp Vault (secretos en producción)
 
 La pregunta que lleva a elegir Vault es: ¿es suficiente con que el repositorio Git sea privado para proteger los secretos? En entornos con cumplimiento regulatorio (PCI-DSS, HIPAA, GDPR) la respuesta es no: los ficheros en un repo privado siguen siendo texto plano en el disco del servidor, accesibles a cualquier administrador del sistema. Vault cifra los secretos en reposo, registra en un log de auditoría quién accedió a qué secreto y cuándo, permite revocar el acceso de forma instantánea sin cambiar el secreto, y puede generar credenciales dinámicas de base de datos que expiran automáticamente. Para secretos en producción, Vault no es un lujo: es la herramienta diseñada específicamente para ese problema.
 
@@ -209,7 +209,7 @@ spring:
 
 ---
 
-### Backend JDBC
+### 3.2.4 JDBC
 
 El backend JDBC tiene sentido en organizaciones donde las operaciones giran alrededor de bases de datos: el equipo no tiene experiencia con Git, la infraestructura de BD ya existe y está monitorizada, y los cambios de configuración se gestionan mediante scripts SQL con herramientas ya conocidas como Flyway o Liquibase. Es la opción con menor curva de aprendizaje para equipos con perfil DBA. El coste es la pérdida del historial de cambios que Git proporciona de forma gratuita — aunque puede compensarse añadiendo un campo de `last_modified` y `modified_by` a la tabla.
 
@@ -259,7 +259,7 @@ CREATE TABLE properties (
 
 ---
 
-### Backend AWS S3 / GCS (entornos cloud)
+### 3.2.5 AWS S3 / GCS (entornos cloud)
 
 Los backends de almacenamiento cloud son la opción natural para equipos que ya están completamente en AWS o GCP y quieren evitar gestionar un servidor Git propio. La ventaja operacional es que S3 y GCS son servicios gestionados: replicación, durabilidad y disponibilidad son responsabilidad del proveedor. La autenticación se integra con los sistemas IAM existentes (roles de EC2/EKS, Workload Identity en GKE), sin necesidad de gestionar credenciales adicionales. La convención de nombres de ficheros es idéntica a Git, por lo que migrar de Git a S3 es trivial.
 
@@ -293,7 +293,7 @@ Las credenciales AWS se resuelven automáticamente mediante la cadena estándar 
 
 ---
 
-### Backend AWS SSM Parameter Store
+### 3.2.6 AWS SSM Parameter Store
 
 AWS Systems Manager Parameter Store es la opción natural cuando el equipo ya usa SSM para gestionar secretos en AWS y quiere evitar añadir un servidor Git o un servidor de configuración adicional. A diferencia de S3 (que almacena ficheros YAML enteros), SSM almacena parámetros individuales organizados en jerarquías de ruta — cada clave de configuración es un parámetro SSM con su propia ACL y política de acceso. Esto permite un control de acceso más granular: el equipo de base de datos solo puede ver los parámetros de conexión, el equipo de pagos solo los suyos.
 
@@ -331,7 +331,7 @@ Convención de nombres en SSM Parameter Store:
 
 ---
 
-### Backend Azure App Configuration
+### 3.2.7 Azure App Configuration
 
 Para equipos en Azure, Azure App Configuration es el equivalente gestionado del Config Server: almacena configuración centralizada con soporte de perfiles (via etiquetas), integración con Azure Key Vault para secretos, y autenticación mediante Managed Identity (sin credenciales estáticas). A diferencia de los backends anteriores, no se configura como backend del Config Server sino directamente en cada servicio cliente como fuente de propiedades.
 
@@ -364,7 +364,7 @@ spring:
 
 ---
 
-### Backend Composite (combinar backends)
+### 3.2.8 Composite (combinar backends)
 
 El backend Composite surge de una tensión real entre visibilidad y seguridad. La configuración general — nombres de dominio, timeouts, feature flags — se beneficia de estar en Git: cualquier miembro del equipo puede ver la historia, revisar cambios en PRs y entender la evolución del sistema. Pero los secretos no deberían estar en Git nunca, ni siquiera cifrados, porque cualquier administrador del repositorio puede acceder a los commits históricos. La solución es usar ambos backends a la vez, cada uno para lo que hace mejor: Git para visibilidad, Vault para seguridad.
 
@@ -393,7 +393,7 @@ Con este backend, el Config Server busca primero en Vault y luego en Git. Una pr
 
 ---
 
-### Múltiples repositorios Git por patrón de servicio
+### 3.2.9 Múltiples repositorios Git por patrón
 
 En organizaciones con múltiples equipos, un repositorio único de configuración para todos los servicios crea fricción: el equipo de infraestructura modifica la configuración del gateway mientras el equipo de pedidos modifica la suya, con riesgos de conflictos de merge y necesidades de acceso distintas (el equipo de pedidos no debería tener permisos para modificar la configuración del gateway y viceversa). La solución es asignar un repositorio de configuración por dominio o equipo, y configurar el Config Server para enrutar cada servicio al repositorio correcto según su nombre:
 
@@ -444,7 +444,7 @@ config-repo/
 
 ---
 
-### Semántica del parámetro `label`
+### 3.2.10 Semántica del parámetro `label`
 
 El parámetro `label` en Spring Cloud Config tiene significado distinto según el backend. Entenderlo evita confusiones al desplegar en distintos entornos o al querer fijar la configuración a una versión concreta:
 
@@ -486,6 +486,6 @@ spring:
 
 ---
 
-→ **Extensión programática:** [03-02-extension-programatica.md](./03-02-extension-programatica.md) — `EnvironmentRepository`, repos dinámicos desde BD, backend custom
+→ **Extensión programática:** [3.2.11 — EnvironmentRepository, repos dinámicos, backend custom](./03-02-extension-programatica.md)
 
-← [Concepto y Arquitectura](./03-01-config-concepto.md) | [Volver al índice](./README.md) | Siguiente: [Config Server →](./03-03-config-server.md)
+← [3.1 Concepto y Arquitectura](./03-01-config-concepto.md) | [Índice](./README.md) | [3.3 Config Server →](./03-03-config-server.md)

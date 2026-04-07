@@ -1,10 +1,10 @@
-# Parte 3.3 — Spring Cloud Config: Configuración del Config Server
+# 3.3 Config Server
 
-← [Backends](./03-02-config-backends.md) | [Volver al índice](./README.md) | Siguiente: [Config Client →](./03-04-config-client.md)
+← [3.2 Backends](./03-02-config-backends.md) | [Índice](./README.md) | [3.4 Config Client →](./03-04-config-client.md)
 
 ---
 
-## 3.4 Configuración del Config Server
+## 3.3 Configuración del Config Server
 
 ### Paso 1: Dependencia Maven
 
@@ -102,7 +102,7 @@ Respuesta JSON con todas las propiedades fusionadas del servicio.
 
 ---
 
-## 3.4.1 Directorio de caché local del repositorio Git
+## 3.3.1 Directorio de caché local del repositorio Git
 
 El Config Server clona el repositorio Git en un directorio temporal del sistema operativo. En contenedores (Docker/Kubernetes) ese directorio desaparece cuando el pod se reinicia, forzando un clon completo en cada arranque.
 
@@ -136,7 +136,7 @@ spec:
 
 ---
 
-## 3.4.2 Proteger el Config Server con autenticación básica
+## 3.3.2 Proteger el Config Server con autenticación básica
 
 El Config Server contiene configuración sensible y debe estar protegido. La forma más sencilla es autenticación básica:
 
@@ -159,31 +159,7 @@ Los clientes deben incluir las credenciales (ver sección [Config Client](./03-0
 
 ---
 
-## 3.4.4 Propiedades forzadas en todos los clientes: `server.overrides`
-
-`server.overrides` es el mecanismo del Config Server para imponer propiedades que ningún cliente puede sobreescribir. A diferencia de las propiedades normales del repositorio Git (que el cliente puede sobreescribir con `override-none=true`, variables de entorno o argumentos de sistema), las declaradas en `server.overrides` llegan a todos los clientes con la prioridad más alta posible: superan a cualquier fuente local, variable de entorno y argumento de línea de comandos.
-
-Casos de uso típicos: deshabilitar features de emergencia en todos los servicios, forzar un nivel de logging mínimo obligatorio por política, o fijar configuración de seguridad que no debe variar entre instancias.
-
-```yaml
-# application.yml del Config Server
-spring:
-  cloud:
-    config:
-      server:
-        overrides:
-          # Estas propiedades se distribuyen a TODOS los clientes
-          # y no pueden sobreescribirse por ningún mecanismo en el cliente
-          feature.mantenimiento: false          # feature flag de emergencia
-          logging.level.com.miempresa: INFO     # política de logging obligatoria
-          management.endpoints.web.exposure.include: health,info  # seguridad
-```
-
-> **[ADVERTENCIA]** `server.overrides` no es lo mismo que poner propiedades en el `application.yml` del repo Git. Las propiedades Git pueden sobreescribirse localmente. Las de `server.overrides` no pueden. Usarlas solo para políticas que realmente deben ser uniformes en todos los servicios y en todos los entornos.
-
----
-
-## 3.4.3 Actuator del Config Server
+## 3.3.3 Actuator del Config Server
 
 ```xml
 <dependency>
@@ -257,7 +233,31 @@ management:
 
 ---
 
-## 3.4.5 Endpoint de recursos: servir ficheros completos
+## 3.3.4 `server.overrides` — propiedades forzadas en todos los clientes
+
+`server.overrides` es el mecanismo del Config Server para imponer propiedades que ningún cliente puede sobreescribir. A diferencia de las propiedades normales del repositorio Git (que el cliente puede sobreescribir con `override-none=true`, variables de entorno o argumentos de sistema), las declaradas en `server.overrides` llegan a todos los clientes con la prioridad más alta posible: superan a cualquier fuente local, variable de entorno y argumento de línea de comandos.
+
+Casos de uso típicos: deshabilitar features de emergencia en todos los servicios, forzar un nivel de logging mínimo obligatorio por política, o fijar configuración de seguridad que no debe variar entre instancias.
+
+```yaml
+# application.yml del Config Server
+spring:
+  cloud:
+    config:
+      server:
+        overrides:
+          # Estas propiedades se distribuyen a TODOS los clientes
+          # y no pueden sobreescribirse por ningún mecanismo en el cliente
+          feature.mantenimiento: false          # feature flag de emergencia
+          logging.level.com.miempresa: INFO     # política de logging obligatoria
+          management.endpoints.web.exposure.include: health,info  # seguridad
+```
+
+> **[ADVERTENCIA]** `server.overrides` no es lo mismo que poner propiedades en el `application.yml` del repo Git. Las propiedades Git pueden sobreescribirse localmente. Las de `server.overrides` no pueden. Usarlas solo para políticas que realmente deben ser uniformes en todos los servicios y en todos los entornos.
+
+---
+
+## 3.3.5 Endpoint de recursos: servir ficheros completos
 
 Además de la API de propiedades (`/{app}/{profile}/{label}`), el Config Server expone un endpoint para servir ficheros enteros sin parsear: XMLs de Logback, certificados, scripts SQL, o cualquier otro recurso que los microservicios necesiten centralizar junto con la configuración.
 
@@ -279,7 +279,7 @@ curl http://localhost:8888/pedidos-service/prod/main/pedidos-service-prod.yml
 
 ---
 
-## 3.4.6 Health check del Config Server
+## 3.3.6 Health check del Config Server
 
 Por defecto el Config Server verifica la conectividad con el backend (Git, Vault, etc.) en cada llamada a `/actuator/health`. Se puede configurar qué repositorios se verifican:
 
@@ -307,7 +307,7 @@ management:
 
 ---
 
-## 3.4.7 Endpoint `/monitor` — push notifications de Git
+## 3.3.7 Endpoint `/monitor` — push notifications de Git
 
 `/monitor` es la alternativa al webhook directo a `/actuator/busrefresh`. Diferencia clave: mientras `busrefresh` refresca todos los servicios, `/monitor` recibe el payload nativo de GitHub/GitLab/Bitbucket, detecta qué ficheros de configuración cambiaron, y publica el evento solo para los servicios afectados. Si solo cambió `pedidos-service-prod.yml`, solo `pedidos-service` recibe el refresco.
 
@@ -333,6 +333,6 @@ Webhook en GitHub apuntando a `POST /monitor` del Config Server. El endpoint int
 
 ---
 
-→ **Extensión programática:** [03-03-extension-programatica.md](./03-03-extension-programatica.md) — `EnvironmentEncryptor`, Vault Transit, `EnvironmentController` override, `EnvironmentPostProcessor`
+→ **Extensión programática:** [3.3.8 — EnvironmentEncryptor, EnvironmentController, EnvironmentPostProcessor](./03-03-extension-programatica.md)
 
-← [Backends](./03-02-config-backends.md) | [Volver al índice](./README.md) | Siguiente: [Config Client →](./03-04-config-client.md)
+← [3.2 Backends](./03-02-config-backends.md) | [Índice](./README.md) | [3.4 Config Client →](./03-04-config-client.md)

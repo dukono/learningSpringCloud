@@ -1,10 +1,10 @@
-# Parte 3.6 — Spring Cloud Config: Cifrado y Alta Disponibilidad
+# 3.6 Cifrado y Alta Disponibilidad
 
-← [Refresco de Configuración](./03-05-config-refresh.md) | [Volver al índice](./README.md) | Siguiente: [Parte 4 — Service Discovery →](./04-service-discovery.md)
+← [3.5 Refresco](./03-05-config-refresh.md) | [Índice](./README.md) | [4 — Service Discovery →](./04-service-discovery.md)
 
 ---
 
-## 3.8 Cifrado y descifrado de propiedades sensibles
+## 3.6 Cifrado y descifrado de propiedades sensibles
 
 El Config Server puede almacenar propiedades cifradas en el repo Git y descifrarlas antes de entregarlas a los clientes. Esto resuelve el dilema entre dos necesidades opuestas: el repo Git debe ser visible para el equipo (auditoría, historial, PRs), pero las contraseñas y API keys no deben ser legibles para cualquiera con acceso de lectura al repo.
 
@@ -14,7 +14,7 @@ El Config Server puede almacenar propiedades cifradas en el repo Git y descifrar
 
 **Clave asimétrica (RSA):** hay dos claves distintas — la pública cifra, la privada descifra. La clave pública puede distribuirse libremente (cualquier desarrollador puede cifrar un nuevo secreto para añadirlo al repo), pero solo el Config Server tiene la clave privada y puede descifrar. Más segura para equipos grandes o entornos con múltiples personas que necesitan añadir secretos.
 
-### Clave simétrica (AES) — sencilla, válida para equipos pequeños
+## 3.6.1 Clave simétrica (AES)
 
 ```yaml
 # application.yml del Config Server (NO bootstrap.yml en Spring Boot 3.x)
@@ -39,7 +39,7 @@ spring:
 
 ---
 
-### Clave asimétrica RSA — recomendada en producción
+## 3.6.2 Clave asimétrica RSA
 
 La clave asimétrica es más segura porque la clave de cifrado (pública) puede distribuirse, pero solo el Config Server tiene la clave privada para descifrar.
 
@@ -64,7 +64,7 @@ encrypt:
 
 ---
 
-### Vault Transit como backend de cifrado
+## 3.6.3 Vault Transit como backend de cifrado
 
 Las opciones AES y RSA almacenan la clave de cifrado en el propio Config Server (en variables de entorno o en un keystore). Si el servidor o su fichero de configuración se ven comprometidos, los secretos quedan expuestos. La alternativa es delegar el cifrado al motor **Transit** de HashiCorp Vault: el Config Server nunca posee la clave en local — solo envía el texto plano a Vault y recibe el texto cifrado, y viceversa. La clave vive exclusivamente en Vault, con soporte nativo de rotación sin ventana de interrupción.
 
@@ -86,7 +86,7 @@ Vault Transit permite versionar claves (`v1:`, `v2:`): cuando se rota la clave, 
 
 ---
 
-### Verificar cifrado: endpoint `/decrypt`
+## 3.6.4 Verificar cifrado: endpoint `/decrypt`
 
 El endpoint complementario a `/encrypt` permite verificar que un valor cifrado almacenado en Git se puede descifrar correctamente:
 
@@ -101,7 +101,7 @@ curl -X POST http://localhost:8888/decrypt \
 
 ---
 
-### Rotación de la clave de cifrado
+## 3.6.5 Rotación de la clave de cifrado
 
 Cuando se cambia la clave de cifrado (`encrypt.key`), todos los valores `{cipher}` almacenados en el repo Git quedan inválidos porque fueron cifrados con la clave anterior.
 
@@ -137,7 +137,7 @@ curl -X POST http://localhost:8888/encrypt \
 
 ---
 
-### Descifrado en el cliente (en lugar del servidor)
+## 3.6.6 Descifrado en el cliente (en lugar del servidor)
 
 Por defecto el servidor descifra antes de entregar. Para que sea el cliente quien descifre:
 
@@ -159,7 +159,7 @@ encrypt:
 
 ---
 
-## 3.9 Alta disponibilidad del Config Server
+## 3.6.7 Alta disponibilidad del Config Server
 
 > **[CONCEPTO]** Un **punto único de fallo** (SPOF) es un componente cuya caída detiene el sistema completo. El Config Server es un SPOF si solo hay una instancia: ningún microservicio nuevo puede arrancar hasta que se recupere. Los microservicios ya en ejecución sobreviven, pero cualquier nuevo arranque o refresco fallará.
 
@@ -233,7 +233,7 @@ spring:
 
 ---
 
-## 3.10 Testing con Spring Cloud Config
+## 3.6.8 Testing con Spring Cloud Config
 
 ### Estrategia 1: deshabilitar el Config Client en tests
 
@@ -391,6 +391,6 @@ encrypt:
 
 ---
 
-→ **Extensión programática:** [03-06-extension-programatica.md](./03-06-extension-programatica.md) — `TextEncryptor` con Vault Transit, rotación sin ventana, failover HA programático
+→ **Extensión programática:** [3.6.9 — TextEncryptor custom, Vault Transit, failover programático](./03-06-extension-programatica.md)
 
-← [Refresco de Configuración](./03-05-config-refresh.md) | [Volver al índice](./README.md) | Siguiente: [Parte 4 — Service Discovery →](./04-service-discovery.md)
+← [3.5 Refresco](./03-05-config-refresh.md) | [Índice](./README.md) | [4 — Service Discovery →](./04-service-discovery.md)

@@ -1,10 +1,10 @@
-# Parte 3.1 — Spring Cloud Config: Concepto y Arquitectura
+# 3.1 Concepto y Arquitectura
 
-← [Parte 2 — Arquitectura](./02-arquitectura.md) | [Volver al índice](./README.md) | Siguiente: [Backends →](./03-02-config-backends.md)
+← [2 — Arquitectura](./02-arquitectura.md) | [Índice](./README.md) | [3.2 Backends →](./03-02-config-backends.md)
 
 ---
 
-## 3.1 Qué es y para qué sirve
+## 3.1.1 Qué es y para qué sirve
 
 En una arquitectura de microservicios con 20, 50 o 100 servicios, cada uno tiene su propio `application.yml`. Gestionar esa configuración de forma individual es inmanejable:
 
@@ -24,7 +24,7 @@ En una arquitectura de microservicios con 20, 50 o 100 servicios, cada uno tiene
 
 ---
 
-## 3.2 Arquitectura: Config Server y Config Client
+## 3.1.2 Arquitectura: Config Server y Config Client
 
 ```
 ┌─────────────────────────────────────┐
@@ -51,7 +51,7 @@ En una arquitectura de microservicios con 20, 50 o 100 servicios, cada uno tiene
    Client)    Client)      Client)
 ```
 
-### El concepto de "Config Client"
+### 3.1.2.1 El concepto de Config Client
 
 Para un programador Spring Boot acostumbrado a un `application.yml` local, este es el cambio conceptual más importante:
 
@@ -72,7 +72,9 @@ CON Config Server:
 
 **Implicación directa:** el Config Server **debe estar levantado antes** que cualquier microservicio que lo use. En Docker Compose o Kubernetes, el orden de arranque importa.
 
-#### Forzar el orden de arranque en Docker Compose
+### 3.1.2.2 Orden de arranque (Docker Compose / Kubernetes)
+
+**Docker Compose:**
 
 ```yaml
 # docker-compose.yml
@@ -100,7 +102,7 @@ services:
 
 > `depends_on` sin `condition: service_healthy` solo espera a que el contenedor arranque, no a que la aplicación esté lista. Usar siempre `condition: service_healthy` con un healthcheck real.
 
-#### Forzar el orden de arranque en Kubernetes
+**Kubernetes:**
 
 En K8s no existe `depends_on`. La solución es un `initContainer` que espera a que el Config Server responda:
 
@@ -128,7 +130,7 @@ spec:
 
 > Alternativa más robusta para K8s: configurar `spring.cloud.config.fail-fast=true` + `retry` en el cliente (ver `03-04-config-client.md`). El microservicio arranca, reintenta con backoff exponencial y solo falla si el Config Server sigue sin responder tras todos los intentos.
 
-### Regla de fusión de configuración
+## 3.1.3 Regla de fusión de configuración
 
 > **[CONCEPTO]** La **regla de fusión** determina qué fichero "gana" cuando la misma propiedad está definida en múltiples ficheros. El fichero más específico (el que combina servicio + perfil) siempre tiene prioridad sobre el más genérico (el `application.yml` global).
 
@@ -166,4 +168,4 @@ logging.level.root: WARN
 
 ---
 
-← [Parte 2 — Arquitectura](./02-arquitectura.md) | [Volver al índice](./README.md) | Siguiente: [Backends →](./03-02-config-backends.md)
+← [2 — Arquitectura](./02-arquitectura.md) | [Índice](./README.md) | [3.2 Backends →](./03-02-config-backends.md)
