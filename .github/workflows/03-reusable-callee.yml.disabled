@@ -1,0 +1,119 @@
+name: "03 - Reusable Workflow (Callee/Llamado)"
+
+# Este workflow es LLAMADO por otros workflows.
+# No se dispara directamente.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Entorno destino (dev/staging/production)'
+        required: true
+        type: string
+      version:
+        description: 'Versión a procesar'
+        required: false
+        default: 'latest'
+        type: string
+      run-tests:
+        description: 'Si ejecutar tests'
+        required: false
+        default: true
+        type: boolean
+      timeout:
+        description: 'Timeout en minutos'
+        required: false
+        default: 10
+        type: number
+    
+    secrets:
+      deploy-token:
+        description: 'Token para el deploy'
+        required: false
+    
+    outputs:
+      deployment-url:
+        description: 'URL donde fue desplegado'
+        value: ${{ jobs.process.outputs.url }}
+      final-version:
+        description: 'Versión final procesada'
+        value: ${{ jobs.process.outputs.version }}
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout }}
+    
+    outputs:
+      url: ${{ steps.deploy.outputs.url }}
+      version: ${{ steps.version-check.outputs.final-version }}
+    
+    steps:
+      - name: "Validar environment"
+        run: |
+          VALID_ENVS="dev staging production"
+          if echo "$VALID_ENVS" | grep -qw "${{ inputs.environment }}"; then
+            echo "✅ Environment válido: ${{ inputs.environment }}"
+          else
+            echo "❌ Environment inválido: ${{ inputs.environment }}"
+            echo "Valores válidos: $VALID_ENVS"
+            exit 1
+          fi
+      
+      - name: "Calcular versión final"
+        id: version-check
+        run: |
+          if [ "${{ inputs.version }}" == "latest" ]; then
+            FINAL_VERSION="1.0.${{ github.run_number }}"
+          else
+            FINAL_VERSION="${{ inputs.version }}"
+          fi
+          echo "final-version=$FINAL_VERSION" >> $GITHUB_OUTPUT
+          echo "Versión final: $FINAL_VERSION"
+      
+      - name: "Ejecutar tests"
+        if: ${{ inputs.run-tests }}
+        run: |
+          echo "🧪 Ejecutando tests para ${{ inputs.environment }}..."
+          sleep 1   # Simular tests
+          echo "✅ Tests pasaron"
+      
+      - name: "Saltar tests"
+        if: ${{ !inputs.run-tests }}
+        run: echo "⏭️ Tests omitidos (run-tests=false)"
+      
+      - name: "Simular deploy"
+        id: deploy
+        env:
+          TOKEN: ${{ secrets.deploy-token }}
+        run: |
+          ENV="${{ inputs.environment }}"
+          VERSION="${{ steps.version-check.outputs.final-version }}"
+          
+          # Simular lógica según environment
+          case $ENV in
+            dev)        URL="https://dev.example.com" ;;
+            staging)    URL="https://staging.example.com" ;;
+            production) URL="https://example.com" ;;
+          esac
+          
+          echo "🚀 Deploy v$VERSION → $URL"
+          if [ -n "$TOKEN" ]; then
+            echo "🔑 Token proporcionado (deploy autenticado)"
+          else
+            echo "⚠️ Sin token (deploy sin autenticación)"
+          fi
+          
+          echo "url=$URL" >> $GITHUB_OUTPUT
+      
+      - name: "Resumen"
+        run: |
+          echo "## 🚀 Deploy Completado" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Versión | ${{ steps.version-check.outputs.final-version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| URL | ${{ steps.deploy.outputs.url }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tests | ${{ inputs.run-tests }} |" >> $GITHUB_STEP_SUMMARY
+

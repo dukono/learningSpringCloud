@@ -1,0 +1,96 @@
+name: "02 - Matrix Strategy"
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/02-matrix.yml'
+
+jobs:
+  # ─────────────────────────────────────────────────────────
+  # DEMO 1: Matrix básica multidimensional
+  # ─────────────────────────────────────────────────────────
+  basic-matrix:
+    name: "Test ${{ matrix.os }} / Node ${{ matrix.node }}"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false          # ← Continúa aunque falle alguna combinación
+      max-parallel: 4           # ← Máximo 4 a la vez
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: ['18', '20']
+        include:
+          # Añadir propiedad extra a ubuntu+20
+          - os: ubuntu-latest
+            node: '20'
+            experimental: true
+          # Añadir combinación extra que no está en la matrix
+          - os: ubuntu-latest
+            node: '22'
+            experimental: true
+        exclude:
+          # No probar Node 18 en Windows (hipotético)
+          - os: windows-latest
+            node: '18'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      
+      - name: Mostrar entorno
+        run: |
+          node --version
+          echo "OS: ${{ matrix.os }}"
+          echo "Node: ${{ matrix.node }}"
+          echo "Experimental: ${{ matrix.experimental }}"
+          echo "Job index: ${{ strategy.job-index }} / ${{ strategy.job-total }}"
+      
+      - name: Resumen
+        shell: bash
+        run: |
+          echo "## ✅ ${{ matrix.os }} / Node ${{ matrix.node }}" >> $GITHUB_STEP_SUMMARY
+          echo "Job ${{ strategy.job-index }} de ${{ strategy.job-total }}" >> $GITHUB_STEP_SUMMARY
+
+  # ─────────────────────────────────────────────────────────
+  # DEMO 2: Matrix dinámica generada en tiempo de ejecución
+  # ─────────────────────────────────────────────────────────
+  generate-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - id: set-matrix
+        name: Generar matrix dinámicamente
+        run: |
+          # En producción real, esto podría venir de:
+          # - Una API
+          # - Un archivo de configuración
+          # - Detectar qué servicios cambiaron
+          
+          if [ "${{ github.ref }}" == "refs/heads/main" ]; then
+            ENVS='["dev","staging","production"]'
+          else
+            ENVS='["dev"]'
+          fi
+          
+          MATRIX=$(echo "{\"environment\":$ENVS}")
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+          echo "Matrix generada: $MATRIX"
+  
+  dynamic-deploy:
+    needs: generate-matrix
+    name: "Deploy ${{ matrix.environment }}"
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJSON(needs.generate-matrix.outputs.matrix) }}
+    steps:
+      - name: Simular deploy
+        run: |
+          echo "🚀 Desplegando en: ${{ matrix.environment }}"
+          echo "Rama: ${{ github.ref_name }}"
+          sleep 1   # Simular trabajo
+          echo "✅ Deploy en ${{ matrix.environment }} completado"
+

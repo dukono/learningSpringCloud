@@ -1,0 +1,360 @@
+name: "DEMO - Explicación de GITHUB_PATH"
+
+# Este workflow demuestra cómo funciona GITHUB_PATH de forma práctica
+
+on:
+  workflow_dispatch:
+
+jobs:
+  # ============================================================================
+  # Ejemplo 1: Sin usar GITHUB_PATH (FALLA)
+  # ============================================================================
+  sin-github-path:
+    name: "❌ SIN GITHUB_PATH (fallará)"
+    runs-on: ubuntu-latest
+    continue-on-error: true  # Continuar aunque falle
+    
+    steps:
+      - name: "Crear un script personalizado"
+        run: |
+          echo "📝 Creando script personalizado..."
+          
+          # Crear directorio para nuestros scripts
+          mkdir -p $HOME/mis-scripts
+          
+          # Crear un script que dice hola
+          cat > $HOME/mis-scripts/saludar << 'EOF'
+          #!/bin/bash
+          echo "👋 ¡Hola! Soy un comando personalizado"
+          echo "📍 Ubicación: $HOME/mis-scripts/saludar"
+          EOF
+          
+          # Darle permisos de ejecución
+          chmod +x $HOME/mis-scripts/saludar
+          
+          echo "✅ Script creado en: $HOME/mis-scripts/saludar"
+      
+      - name: "Intentar ejecutar el comando (FALLARÁ)"
+        run: |
+          echo "🔍 Intentando ejecutar: saludar"
+          saludar  # ❌ Esto fallará porque el sistema no sabe dónde está
+        continue-on-error: true
+      
+      - name: "Explicación del error"
+        if: always()
+        run: |
+          cat << 'EOF'
+          
+          ❌ ERROR ESPERADO
+          ══════════════════════════════════════
+          El comando "saludar" no se encuentra porque:
+          
+          1. El sistema busca comandos en directorios del PATH
+          2. $HOME/mis-scripts NO está en el PATH
+          3. Por eso el sistema no puede encontrar "saludar"
+          
+          Solución: Agregar $HOME/mis-scripts al PATH
+          ══════════════════════════════════════
+          
+          EOF
+      
+      - name: "Alternativa: Usar ruta completa (funciona)"
+        run: |
+          echo "✅ Usando ruta completa:"
+          $HOME/mis-scripts/saludar  # ✅ Esto SÍ funciona
+
+  # ============================================================================
+  # Ejemplo 2: CON GITHUB_PATH (FUNCIONA)
+  # ============================================================================
+  con-github-path:
+    name: "✅ CON GITHUB_PATH (funciona)"
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: "Paso 1: Crear script personalizado"
+        run: |
+          echo "📝 Creando script personalizado..."
+          
+          mkdir -p $HOME/mis-scripts
+          
+          cat > $HOME/mis-scripts/saludar << 'EOF'
+          #!/bin/bash
+          echo "👋 ¡Hola! Soy un comando personalizado"
+          echo "📍 Me encuentran porque estoy en el PATH"
+          EOF
+          
+          chmod +x $HOME/mis-scripts/saludar
+          
+          echo "✅ Script creado"
+      
+      - name: "Paso 2: Agregar directorio al PATH"
+        run: |
+          echo "➕ Agregando directorio al PATH..."
+          echo "$HOME/mis-scripts" >> $GITHUB_PATH
+          echo "✅ Directorio agregado al PATH"
+      
+      - name: "Paso 3: Usar el comando directamente"
+        run: |
+          echo "🚀 Ejecutando: saludar"
+          saludar  # ✅ Ahora SÍ funciona!
+      
+      - name: "Explicación"
+        run: |
+          cat << 'EOF'
+          
+          ✅ FUNCIONÓ
+          ══════════════════════════════════════
+          El comando "saludar" funciona porque:
+          
+          1. Agregamos $HOME/mis-scripts al PATH
+          2. Ahora el sistema busca comandos ahí
+          3. Encuentra "saludar" automáticamente
+          
+          Ya no necesitamos la ruta completa!
+          ══════════════════════════════════════
+          
+          EOF
+
+  # ============================================================================
+  # Ejemplo 3: Caso Real - Instalar una herramienta
+  # ============================================================================
+  ejemplo-real:
+    name: "🔧 Ejemplo Real"
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: "Descargar e instalar herramienta"
+        run: |
+          echo "📦 Descargando herramienta..."
+          
+          # Crear directorio para herramientas
+          mkdir -p /tmp/tools
+          
+          # Simular descarga de una herramienta
+          # En la vida real sería: wget https://...
+          cat > /tmp/tools/miherramienta << 'EOF'
+          #!/bin/bash
+          echo "🛠️ MiHerramienta v1.0.0"
+          echo "Argumentos recibidos: $@"
+          EOF
+          
+          chmod +x /tmp/tools/miherramienta
+          
+          echo "✅ Herramienta instalada en /tmp/tools"
+      
+      - name: "Agregar al PATH"
+        run: echo "/tmp/tools" >> $GITHUB_PATH
+      
+      - name: "Usar la herramienta en múltiples steps"
+        run: |
+          echo "Step 1: Usando miherramienta"
+          miherramienta --help
+      
+      - name: "Otro step - la herramienta sigue disponible"
+        run: |
+          echo "Step 2: Aún funciona!"
+          miherramienta --version
+      
+      - name: "Y en otro step más"
+        run: |
+          echo "Step 3: Todavía disponible!"
+          miherramienta build --prod
+
+  # ============================================================================
+  # Ejemplo 4: Múltiples directorios en PATH
+  # ============================================================================
+  multiples-directorios:
+    name: "📂 Múltiples Directorios"
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: "Crear múltiples scripts en diferentes directorios"
+        run: |
+          # Directorio 1
+          mkdir -p /tmp/scripts1
+          echo '#!/bin/bash' > /tmp/scripts1/comando1
+          echo 'echo "Comando 1 desde /tmp/scripts1"' >> /tmp/scripts1/comando1
+          chmod +x /tmp/scripts1/comando1
+          
+          # Directorio 2
+          mkdir -p /tmp/scripts2
+          echo '#!/bin/bash' > /tmp/scripts2/comando2
+          echo 'echo "Comando 2 desde /tmp/scripts2"' >> /tmp/scripts2/comando2
+          chmod +x /tmp/scripts2/comando2
+          
+          # Directorio 3
+          mkdir -p /tmp/scripts3
+          echo '#!/bin/bash' > /tmp/scripts3/comando3
+          echo 'echo "Comando 3 desde /tmp/scripts3"' >> /tmp/scripts3/comando3
+          chmod +x /tmp/scripts3/comando3
+      
+      - name: "Agregar todos los directorios al PATH"
+        run: |
+          echo "/tmp/scripts1" >> $GITHUB_PATH
+          echo "/tmp/scripts2" >> $GITHUB_PATH
+          echo "/tmp/scripts3" >> $GITHUB_PATH
+      
+      - name: "Usar todos los comandos"
+        run: |
+          echo "Ejecutando comandos de diferentes directorios:"
+          comando1
+          comando2
+          comando3
+          echo "✅ Todos funcionan!"
+
+  # ============================================================================
+  # Resumen Final
+  # ============================================================================
+  resumen:
+    name: "📊 Resumen"
+    runs-on: ubuntu-latest
+    needs: [sin-github-path, con-github-path, ejemplo-real, multiples-directorios]
+    if: always()
+    
+    steps:
+      - name: "Generar resumen"
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          # 📚 Explicación de GITHUB_PATH
+          
+          ## ¿Qué es PATH?
+          
+          **PATH** es una variable de entorno que contiene una lista de directorios donde el sistema operativo busca comandos ejecutables.
+          
+          ### Ejemplo Visual:
+          ```
+          PATH=/usr/bin:/usr/local/bin:/home/user/bin
+                  ↓           ↓                ↓
+             Busca aquí   Y aquí         Y aquí también
+          ```
+          
+          ## ¿Qué hace `$GITHUB_PATH`?
+          
+          Cuando escribes:
+          ```bash
+          echo "/mi/directorio" >> $GITHUB_PATH
+          ```
+          
+          Estás diciendo: "Agrega `/mi/directorio` a la lista de lugares donde buscar comandos"
+          
+          ## Flujo Completo
+          
+          ### ❌ Sin GITHUB_PATH
+          ```yaml
+          - run: |
+              mkdir -p $HOME/bin
+              echo 'echo "Hola"' > $HOME/bin/saludo
+              chmod +x $HOME/bin/saludo
+          
+          - run: saludo  # ❌ Error: comando no encontrado
+          ```
+          
+          **¿Por qué falla?**
+          - El sistema busca "saludo" en PATH
+          - PATH no incluye `$HOME/bin`
+          - No encuentra el comando
+          
+          ### ✅ Con GITHUB_PATH
+          ```yaml
+          - run: |
+              mkdir -p $HOME/bin
+              echo 'echo "Hola"' > $HOME/bin/saludo
+              chmod +x $HOME/bin/saludo
+              echo "$HOME/bin" >> $GITHUB_PATH  # ⭐ Agregar al PATH
+          
+          - run: saludo  # ✅ Funciona!
+          ```
+          
+          **¿Por qué funciona?**
+          - Agregamos `$HOME/bin` al PATH
+          - Ahora el sistema busca ahí también
+          - Encuentra "saludo" automáticamente
+          
+          ## Casos de Uso Comunes
+          
+          ### 1. Instalar herramienta personalizada
+          ```yaml
+          - run: |
+              wget https://releases.example.com/tool
+              mv tool /usr/local/bin/
+              chmod +x /usr/local/bin/tool
+              echo "/usr/local/bin" >> $GITHUB_PATH
+          
+          - run: tool --version  # ✅ Funciona en todos los steps siguientes
+          ```
+          
+          ### 2. Scripts del proyecto
+          ```yaml
+          - uses: actions/checkout@v4
+          - run: echo "${{ github.workspace }}/scripts" >> $GITHUB_PATH
+          - run: mi-script.sh  # Scripts del repo disponibles
+          ```
+          
+          ### 3. Herramientas en subdirectorios
+          ```yaml
+          - run: |
+              npm install -g mypackage
+              echo "$(npm prefix -g)/bin" >> $GITHUB_PATH
+          
+          - run: mypackage build  # Disponible globalmente
+          ```
+          
+          ## Ventajas
+          
+          ✅ **Conveniencia:** No necesitas rutas completas
+          ```bash
+          # Sin PATH
+          /home/runner/tools/mycommand arg1 arg2
+          
+          # Con PATH
+          mycommand arg1 arg2
+          ```
+          
+          ✅ **Persistencia:** Disponible en TODOS los steps siguientes
+          
+          ✅ **Limpieza:** Código más legible
+          
+          ## Alternativas
+          
+          ### 1. Usar ruta completa (sin PATH)
+          ```yaml
+          - run: $HOME/bin/comando  # Funciona pero verbose
+          ```
+          
+          ### 2. Alias (solo en el mismo step)
+          ```yaml
+          - run: |
+              alias cmd='$HOME/bin/comando'
+              cmd  # Solo funciona en este step
+          ```
+          
+          ### 3. Función (solo en el mismo step)
+          ```yaml
+          - run: |
+              cmd() { $HOME/bin/comando "$@"; }
+              cmd  # Solo funciona en este step
+          ```
+          
+          ## Comparación de Resultados
+          
+          | Job | Resultado | Explicación |
+          |-----|-----------|-------------|
+          | Sin GITHUB_PATH | ${{ needs.sin-github-path.result }} | Falla al buscar comando |
+          | Con GITHUB_PATH | ${{ needs.con-github-path.result }} | Funciona correctamente |
+          | Ejemplo Real | ${{ needs.ejemplo-real.result }} | Uso práctico |
+          | Múltiples Dirs | ${{ needs.multiples-directorios.result }} | Varios comandos |
+          
+          ## 💡 Resumen
+          
+          **GITHUB_PATH** = Agregar directorios donde el sistema busca comandos
+          
+          - Creas un script/herramienta
+          - Lo pones en un directorio
+          - Agregas ese directorio a PATH
+          - Ahora puedes usar el comando desde cualquier lugar
+          
+          **Es como agregar un app a "Aplicaciones" en tu PC para accederla fácilmente** 🎯
+          EOF
+          
+          echo "✅ Workflow completado - Revisa el Step Summary arriba ⬆️"
+

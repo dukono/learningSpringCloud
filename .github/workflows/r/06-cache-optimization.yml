@@ -1,0 +1,461 @@
+name: "06 - Cache y Optimización de Performance"
+
+# Demuestra todas las estrategias de cache y optimización
+# Cache es crítico para reducir tiempo de ejecución y costos
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      clear-cache:
+        description: 'Limpiar cache antes de ejecutar'
+        type: boolean
+        default: false
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "20"
+  GO_VERSION: "1.21"
+
+jobs:
+  # ============================================================================
+  # JOB 1: CACHE DE DEPENDENCIAS (múltiples lenguajes)
+  # ============================================================================
+  cache-dependencies:
+    name: "Cache: ${{ matrix.language }}"
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        language: [python, node, go, rust]
+        include:
+          - language: python
+            version: "3.11"
+          - language: node
+            version: "20"
+          - language: go
+            version: "1.21"
+          - language: rust
+            version: "stable"
+    
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+      
+      # ----------------------------------------------------------------------
+      # Python: pip cache
+      # ----------------------------------------------------------------------
+      - name: "Setup Python con cache"
+        if: matrix.language == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.version }}
+          cache: 'pip'  # Cache automático
+      
+      - name: "Cache manual de pip"
+        if: matrix.language == 'python'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      
+      - name: "Instalar dependencias Python"
+        if: matrix.language == 'python'
+        run: |
+          echo "requests==2.31.0" > requirements.txt
+          echo "pytest==7.4.3" >> requirements.txt
+          
+          START=$(date +%s)
+          pip install -r requirements.txt
+          END=$(date +%s)
+          
+          DURATION=$((END - START))
+          echo "⏱️ Instalación tomó ${DURATION}s"
+      
+      # ----------------------------------------------------------------------
+      # Node.js: npm cache
+      # ----------------------------------------------------------------------
+      - name: "Setup Node.js con cache"
+        if: matrix.language == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.version }}
+          cache: 'npm'  # Cache automático
+      
+      - name: "Crear package.json"
+        if: matrix.language == 'node'
+        run: |
+          cat > package.json << 'EOF'
+          {
+            "name": "test-app",
+            "version": "1.0.0",
+            "dependencies": {
+              "express": "^4.18.2",
+              "axios": "^1.6.0"
+            }
+          }
+          EOF
+      
+      - name: "Instalar dependencias Node"
+        if: matrix.language == 'node'
+        run: |
+          START=$(date +%s)
+          npm ci
+          END=$(date +%s)
+          
+          DURATION=$((END - START))
+          echo "⏱️ Instalación tomó ${DURATION}s"
+      
+      # ----------------------------------------------------------------------
+      # Go: módulos cache
+      # ----------------------------------------------------------------------
+      - name: "Setup Go"
+        if: matrix.language == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.version }}
+          cache: true  # Cache automático
+      
+      - name: "Cache manual de Go modules"
+        if: matrix.language == 'go'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+      
+      - name: "Instalar dependencias Go"
+        if: matrix.language == 'go'
+        run: |
+          cat > go.mod << 'EOF'
+          module example.com/app
+          go 1.21
+          require github.com/gin-gonic/gin v1.9.1
+          EOF
+          
+          START=$(date +%s)
+          go mod download
+          END=$(date +%s)
+          
+          DURATION=$((END - START))
+          echo "⏱️ Download tomó ${DURATION}s"
+      
+      # ----------------------------------------------------------------------
+      # Rust: cargo cache
+      # ----------------------------------------------------------------------
+      - name: "Setup Rust"
+        if: matrix.language == 'rust'
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ matrix.version }}
+          cache: true  # Cache automático
+      
+      - name: "Cache manual de Cargo"
+        if: matrix.language == 'rust'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      
+      - name: "Compilar proyecto Rust"
+        if: matrix.language == 'rust'
+        run: |
+          cat > Cargo.toml << 'EOF'
+          [package]
+          name = "test-app"
+          version = "0.1.0"
+          edition = "2021"
+          
+          [dependencies]
+          serde = { version = "1.0", features = ["derive"] }
+          EOF
+          
+          mkdir -p src
+          echo 'fn main() { println!("Hello!"); }' > src/main.rs
+          
+          START=$(date +%s)
+          cargo build --release
+          END=$(date +%s)
+          
+          DURATION=$((END - START))
+          echo "⏱️ Build tomó ${DURATION}s"
+
+  # ============================================================================
+  # JOB 2: CACHE DE ARTIFACTS DE BUILD
+  # ============================================================================
+  cache-build-artifacts:
+    name: "Cache de Build Artifacts"
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+      
+      - name: "Cache de build outputs"
+        id: cache-build
+        uses: actions/cache@v4
+        with:
+          path: |
+            dist/
+            build/
+            .build-cache/
+          key: build-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            build-${{ runner.os }}-
+      
+      - name: "Build (o usar cache)"
+        if: steps.cache-build.outputs.cache-hit != 'true'
+        run: |
+          echo "🏗️ Realizando build completo..."
+          
+          mkdir -p dist build .build-cache
+          
+          # Simular build largo
+          for i in {1..5}; do
+            echo "  Compilando módulo $i..."
+            echo "module-$i compiled" > dist/module-$i.js
+            sleep 1
+          done
+          
+          echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > .build-cache/timestamp
+          echo "✅ Build completado"
+      
+      - name: "Usar build cacheado"
+        if: steps.cache-build.outputs.cache-hit == 'true'
+        run: |
+          echo "⚡ Usando build desde cache"
+          echo "  Timestamp del cache: $(cat .build-cache/timestamp)"
+          ls -la dist/
+      
+      - name: "Generar reporte"
+        run: |
+          if [ "${{ steps.cache-build.outputs.cache-hit }}" == "true" ]; then
+            CACHE_STATUS="✅ HIT (build reutilizado)"
+          else
+            CACHE_STATUS="❌ MISS (build desde cero)"
+          fi
+          
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          # 📦 Cache de Build
+          
+          - **Estado:** $CACHE_STATUS
+          - **Key:** \`build-${{ runner.os }}-${{ github.sha }}\`
+          - **Archivos en cache:**
+            - dist/
+            - build/
+            - .build-cache/
+          EOF
+
+  # ============================================================================
+  # JOB 3: CACHE INCREMENTAL (para monorepos)
+  # ============================================================================
+  incremental-cache:
+    name: "Cache Incremental"
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Historial completo para diff
+      
+      - name: "Detectar cambios"
+        id: changes
+        run: |
+          # Detectar qué directorios cambiaron
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            HEAD="${{ github.event.pull_request.head.sha }}"
+          else
+            BASE="HEAD^"
+            HEAD="HEAD"
+          fi
+          
+          # Crear estructura simulada
+          mkdir -p packages/{frontend,backend,shared}
+          
+          # Simular cambios
+          FRONTEND_CHANGED=$(git diff --name-only $BASE $HEAD 2>/dev/null | grep -c "^packages/frontend" || echo "1")
+          BACKEND_CHANGED=$(git diff --name-only $BASE $HEAD 2>/dev/null | grep -c "^packages/backend" || echo "1")
+          SHARED_CHANGED=$(git diff --name-only $BASE $HEAD 2>/dev/null | grep -c "^packages/shared" || echo "1")
+          
+          echo "frontend-changed=$FRONTEND_CHANGED" >> $GITHUB_OUTPUT
+          echo "backend-changed=$BACKEND_CHANGED" >> $GITHUB_OUTPUT
+          echo "shared-changed=$SHARED_CHANGED" >> $GITHUB_OUTPUT
+          
+          echo "📊 Cambios detectados:"
+          echo "  Frontend: $FRONTEND_CHANGED archivos"
+          echo "  Backend: $BACKEND_CHANGED archivos"
+          echo "  Shared: $SHARED_CHANGED archivos"
+      
+      - name: "Cache de Frontend (condicional)"
+        if: steps.changes.outputs.frontend-changed > 0
+        uses: actions/cache@v4
+        with:
+          path: packages/frontend/node_modules
+          key: frontend-${{ runner.os }}-${{ hashFiles('packages/frontend/package-lock.json') }}
+      
+      - name: "Cache de Backend (condicional)"
+        if: steps.changes.outputs.backend-changed > 0
+        uses: actions/cache@v4
+        with:
+          path: packages/backend/node_modules
+          key: backend-${{ runner.os }}-${{ hashFiles('packages/backend/package-lock.json') }}
+      
+      - name: "Cache de Shared (siempre si cambió)"
+        if: steps.changes.outputs.shared-changed > 0
+        uses: actions/cache@v4
+        with:
+          path: packages/shared/dist
+          key: shared-${{ runner.os }}-${{ hashFiles('packages/shared/**') }}
+
+  # ============================================================================
+  # JOB 4: CACHE CON MÚLTIPLES KEYS (fallback strategy)
+  # ============================================================================
+  cache-fallback-strategy:
+    name: "Cache con Estrategia de Fallback"
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+      
+      - name: "Cache con múltiples restore-keys"
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/
+            node_modules/
+          # Intenta en orden:
+          # 1. Cache exacto de este commit en este branch
+          # 2. Cualquier cache de este branch
+          # 3. Cualquier cache del branch main
+          # 4. Cualquier cache del mismo OS
+          key: deps-${{ runner.os }}-${{ github.ref_name }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            deps-${{ runner.os }}-${{ github.ref_name }}-
+            deps-${{ runner.os }}-main-
+            deps-${{ runner.os }}-
+      
+      - name: "Instalar dependencias"
+        run: |
+          echo "📦 Instalando dependencias..."
+          mkdir -p node_modules .cache
+          echo "timestamp: $(date)" > .cache/info.txt
+          echo "✅ Dependencias listas"
+
+  # ============================================================================
+  # JOB 5: GESTIÓN AVANZADA DE CACHE
+  # ============================================================================
+  cache-management:
+    name: "Gestión de Cache"
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+      
+      # Limpiar cache si se solicitó
+      - name: "Limpiar cache (si se solicitó)"
+        if: inputs.clear-cache
+        run: |
+          echo "🗑️ Limpiando cache..."
+          # En GitHub Actions, el cache se limpia automáticamente después de 7 días
+          # o puedes usar la API de GitHub para eliminarlo
+          echo "Cache será ignorado en este run"
+      
+      # Cache con tamaño limitado
+      - name: "Cache con límite de tamaño"
+        uses: actions/cache@v4
+        with:
+          path: large-files/
+          key: large-${{ hashFiles('large-files/**') }}
+          # GitHub Actions tiene límite de 10GB por repositorio
+      
+      - name: "Monitorear uso de cache"
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          # 📊 Información de Cache
+          
+          ## Límites
+          - **Tamaño máximo por cache:** 10 GB
+          - **Tamaño total por repo:** 10 GB
+          - **Retención:** 7 días sin uso
+          
+          ## Mejores Prácticas
+          1. Usar `restore-keys` para fallback
+          2. Cachear solo dependencias, no código fuente
+          3. Usar hash de archivos de lock en key
+          4. Separar caches por OS y versión
+          5. Limpiar caches antiguos regularmente
+          
+          ## Este Workflow
+          - **Clear cache solicitado:** ${{ inputs.clear-cache }}
+          - **Evento:** ${{ github.event_name }}
+          - **Branch:** ${{ github.ref_name }}
+          EOF
+
+  # ============================================================================
+  # JOB 6: COMPARACIÓN DE PERFORMANCE
+  # ============================================================================
+  performance-comparison:
+    name: "Comparación de Performance"
+    runs-on: ubuntu-latest
+    needs: [cache-dependencies, cache-build-artifacts]
+    
+    steps:
+      - name: "Generar reporte de performance"
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          # ⚡ Reporte de Performance
+          
+          ## Tiempos Estimados (sin cache vs con cache)
+          
+          | Operación | Sin Cache | Con Cache | Ahorro |
+          |-----------|-----------|-----------|--------|
+          | pip install | ~45s | ~5s | 88% |
+          | npm install | ~60s | ~8s | 86% |
+          | go mod download | ~30s | ~3s | 90% |
+          | cargo build | ~180s | ~10s | 94% |
+          | Build completo | ~120s | ~2s | 98% |
+          
+          ## Beneficios del Cache
+          - ✅ Reduce tiempo de ejecución
+          - ✅ Reduce costos de runner time
+          - ✅ Feedback más rápido en PRs
+          - ✅ Reduce carga en registros de paquetes
+          - ✅ Workflows más eficientes
+          
+          ## Estrategias Implementadas
+          1. **Cache automático** con setup actions (python, node, go, rust)
+          2. **Cache manual** con actions/cache para casos personalizados
+          3. **Cache incremental** para monorepos
+          4. **Fallback strategy** con multiple restore-keys
+          5. **Cache condicional** basado en cambios detectados
+          EOF
+      
+      - name: "Recomendaciones"
+        run: |
+          echo "💡 Recomendaciones de Optimización:"
+          echo ""
+          echo "1. Siempre usar cache para dependencias"
+          echo "2. Cachear artifacts de build cuando sea posible"
+          echo "3. Usar keys específicas con hash de lock files"
+          echo "4. Implementar fallback con restore-keys"
+          echo "5. Separar caches por OS y arquitectura"
+          echo "6. Monitorear tamaño de cache regularmente"
+          echo "7. Evitar cachear código fuente o secretos"
+          echo "8. Usar cache incremental en monorepos"

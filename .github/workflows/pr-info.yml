@@ -1,0 +1,314 @@
+name: Info - RP Read branch info
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+
+# Un grupo por PR → cancelar CI anterior del mismo PR
+concurrency:
+  group: ci-${{ github.workflow_ref }}
+  cancel-in-progress: true
+
+jobs:
+  show-branch-info:
+    runs-on: ubuntu-latest
+    steps:
+      - name: get-all-info
+        id: getter
+        env:
+          GH_TOKEN: ${{ secrets.MY_TOKEN }}
+        run: |
+          echo "github.ref": "${{github.ref}}"
+          echo "github.sha": "${{github.sha}}"
+          echo "github.event.after": "${{github.event.after}}"
+          echo "github.event.before": "${{github.event.before}}"
+          echo "github.event.compare": "${{github.event.compare}}"
+          echo "github.event.created": "${{github.event.created}}"
+          echo "github.event.deleted": "${{github.event.deleted}}"
+          echo "github.event.forced": "${{github.event.forced}}"
+          echo "github.event.ref": "${{github.event.ref}}"
+          echo "github.actor": "${{github.actor}}"
+          echo "github.triggering_actor": "${{github.triggering_actor}}"
+          echo "github.repository_owner": "${{github.repository_owner}}"
+          echo "github.workspace": "${{github.workspace}}"
+          echo "ref=${{github.ref}}" >> $GITHUB_ENV
+          echo "current=${{github.sha}}" >> $GITHUB_ENV
+          echo "after=${{github.event.after}}" >> $GITHUB_ENV
+          echo "before=${{github.event.before}}" >> $GITHUB_ENV
+          echo "ref=${{github.ref}}" >> $GITHUB_OUTPUT
+          echo "current=${{github.sha}}" >> $GITHUB_OUTPUT
+          echo "after=${{github.event.after}}" >> $GITHUB_OUTPUT
+          echo "before=${{github.event.before}}" >> $GITHUB_OUTPUT
+      - name: get-event-info
+        run: |
+          echo "=== github.event (atributos raíz) ==="
+          echo "action":                        "${{github.event.action}}"
+          echo "number":                        "${{github.event.number}}"
+          echo "before":                        "${{github.event.before}}"
+          echo "after":                         "${{github.event.after}}"
+          echo "ref":                           "${{github.event.ref}}"
+          echo "compare":                       "${{github.event.compare}}"
+          echo "created":                       "${{github.event.created}}"
+          echo "deleted":                       "${{github.event.deleted}}"
+          echo "forced":                        "${{github.event.forced}}"
+          echo "=== github.event.sender (quien dispara el evento) ==="
+          echo "sender.login":                  "${{github.event.sender.login}}"
+          echo "sender.id":                     "${{github.event.sender.id}}"
+          echo "sender.type":                   "${{github.event.sender.type}}"
+          echo "sender.site_admin":             "${{github.event.sender.site_admin}}"
+          echo "sender.html_url":               "${{github.event.sender.html_url}}"
+          echo "sender.avatar_url":             "${{github.event.sender.avatar_url}}"
+          echo "=== github.event.repository ==="
+          echo "repository.id":                 "${{github.event.repository.id}}"
+          echo "repository.name":               "${{github.event.repository.name}}"
+          echo "repository.full_name":          "${{github.event.repository.full_name}}"
+          echo "repository.private":            "${{github.event.repository.private}}"
+          echo "repository.fork":               "${{github.event.repository.fork}}"
+          echo "repository.default_branch":     "${{github.event.repository.default_branch}}"
+          echo "repository.html_url":           "${{github.event.repository.html_url}}"
+          echo "repository.clone_url":          "${{github.event.repository.clone_url}}"
+          echo "repository.ssh_url":            "${{github.event.repository.ssh_url}}"
+          echo "repository.language":           "${{github.event.repository.language}}"
+          echo "repository.open_issues_count":  "${{github.event.repository.open_issues_count}}"
+          echo "repository.stargazers_count":   "${{github.event.repository.stargazers_count}}"
+          echo "repository.forks_count":        "${{github.event.repository.forks_count}}"
+          echo "repository.watchers_count":     "${{github.event.repository.watchers_count}}"
+          echo "repository.size":               "${{github.event.repository.size}}"
+          echo "repository.created_at":         "${{github.event.repository.created_at}}"
+          echo "repository.updated_at":         "${{github.event.repository.updated_at}}"
+          echo "repository.pushed_at":          "${{github.event.repository.pushed_at}}"
+          echo "repository.description":        "${{github.event.repository.description}}"
+          echo "repository.homepage":           "${{github.event.repository.homepage}}"
+          echo "repository.topics":             "${{join(github.event.repository.topics, ', ')}}"
+          echo "=== github.event.repository.owner ==="
+          echo "repository.owner.login":        "${{github.event.repository.owner.login}}"
+          echo "repository.owner.id":           "${{github.event.repository.owner.id}}"
+          echo "repository.owner.type":         "${{github.event.repository.owner.type}}"
+          echo "=== github.event.organization (si existe) ==="
+          echo "organization.login":            "${{github.event.organization.login}}"
+          echo "organization.id":               "${{github.event.organization.id}}"
+          echo "=== github.event.installation (si existe) ==="
+          echo "installation.id":               "${{github.event.installation.id}}"
+          echo "installation.node_id":          "${{github.event.installation.node_id}}"
+      - name: get-pr-info
+        run: |
+          echo "=== github.event.pull_request ==="
+          echo "number":               "${{github.event.pull_request.number}}"
+          echo "title":                "${{github.event.pull_request.title}}"
+          echo "body":                 "${{github.event.pull_request.body}}"
+          echo "state":                "${{github.event.pull_request.state}}"
+          echo "draft":                "${{github.event.pull_request.draft}}"
+          echo "merged":               "${{github.event.pull_request.merged}}"
+          echo "mergeable":            "${{github.event.pull_request.mergeable}}"
+          echo "mergeable_state":      "${{github.event.pull_request.mergeable_state}}"
+          echo "merged_by":            "${{github.event.pull_request.merged_by}}"
+          echo "rebaseable":           "${{github.event.pull_request.rebaseable}}"
+          echo "locked":               "${{github.event.pull_request.locked}}"
+          echo "author_association":   "${{github.event.pull_request.author_association}}"
+          echo "changed_files":        "${{github.event.pull_request.changed_files}}"
+          echo "additions":            "${{github.event.pull_request.additions}}"
+          echo "deletions":            "${{github.event.pull_request.deletions}}"
+          echo "commits":              "${{github.event.pull_request.commits}}"
+          echo "review_comments":      "${{github.event.pull_request.review_comments}}"
+          echo "comments":             "${{github.event.pull_request.comments}}"
+          echo "html_url":             "${{github.event.pull_request.html_url}}"
+          echo "url":                  "${{github.event.pull_request.url}}"
+          echo "diff_url":             "${{github.event.pull_request.diff_url}}"
+          echo "patch_url":            "${{github.event.pull_request.patch_url}}"
+          echo "issue_url":            "${{github.event.pull_request.issue_url}}"
+          echo "commits_url":          "${{github.event.pull_request.commits_url}}"
+          echo "review_comments_url":  "${{github.event.pull_request.review_comments_url}}"
+          echo "created_at":           "${{github.event.pull_request.created_at}}"
+          echo "updated_at":           "${{github.event.pull_request.updated_at}}"
+          echo "closed_at":            "${{github.event.pull_request.closed_at}}"
+          echo "merged_at":            "${{github.event.pull_request.merged_at}}"
+          echo "=== head (rama origen) ==="
+          echo "head.ref":             "${{github.event.pull_request.head.ref}}"
+          echo "head.sha":             "${{github.event.pull_request.head.sha}}"
+          echo "head.label":           "${{github.event.pull_request.head.label}}"
+          echo "head.repo.full_name":  "${{github.event.pull_request.head.repo.full_name}}"
+          echo "=== base (rama destino) ==="
+          echo "base.ref":             "${{github.event.pull_request.base.ref}}"
+          echo "base.sha":             "${{github.event.pull_request.base.sha}}"
+          echo "base.label":           "${{github.event.pull_request.base.label}}"
+          echo "base.repo.full_name":  "${{github.event.pull_request.base.repo.full_name}}"
+          echo "=== user (autor del PR) ==="
+          echo "user.login":           "${{github.event.pull_request.user.login}}"
+          echo "user.id":              "${{github.event.pull_request.user.id}}"
+          echo "user.type":            "${{github.event.pull_request.user.type}}"
+          echo "user.site_admin":      "${{github.event.pull_request.user.site_admin}}"
+          echo "=== auto_merge ==="
+          echo "auto_merge":                    "${{github.event.pull_request.auto_merge}}"
+          echo "auto_merge.merge_method":       "${{github.event.pull_request.auto_merge.merge_method}}"
+          echo "auto_merge.enabled_by.login":   "${{github.event.pull_request.auto_merge.enabled_by.login}}"
+          echo "=== arrays ==="
+          echo "labels":                   "${{join(github.event.pull_request.labels.*.name, ', ')}}"
+          echo "assignees":                "${{join(github.event.pull_request.assignees.*.login, ', ')}}"
+          echo "requested_reviewers":      "${{join(github.event.pull_request.requested_reviewers.*.login, ', ')}}"
+          echo "requested_teams":          "${{join(github.event.pull_request.requested_teams.*.name, ', ')}}"
+          echo "milestone":                "${{github.event.pull_request.milestone.title}}"
+      - name: workflow-info
+        run: |
+          echo "=== WORKFLOW INFO ==="
+          echo "github.workflow":              "${{ github.workflow }}"
+          echo "github.workflow_ref":          "${{ github.workflow_ref }}"
+          echo "github.workflow_sha":          "${{ github.workflow_sha }}"
+          echo "github.run_id":                "${{ github.run_id }}"
+          echo "github.run_number":            "${{ github.run_number }}"
+          echo "github.run_attempt":           "${{ github.run_attempt }}"
+          echo "github.job":                   "${{ github.job }}"
+          echo "github.action":                "${{ github.action }}"
+          echo "github.action_path":           "${{ github.action_path }}"
+          echo "github.action_ref":            "${{ github.action_ref }}"
+          echo "github.action_repository":     "${{ github.action_repository }}"
+          echo "github.action_status":         "${{ github.action_status }}"
+          echo "=== TRIGGER / ACTOR ==="
+          echo "github.event_name":            "${{ github.event_name }}"
+          echo "github.actor":                 "${{ github.actor }}"
+          echo "github.actor_id":              "${{ github.actor_id }}"
+          echo "github.triggering_actor":      "${{ github.triggering_actor }}"
+          echo "=== REF / SHA ==="
+          echo "github.ref":                   "${{ github.ref }}"
+          echo "github.ref_name":              "${{ github.ref_name }}"
+          echo "github.ref_type":              "${{ github.ref_type }}"
+          echo "github.ref_protected":         "${{ github.ref_protected }}"
+          echo "github.sha":                   "${{ github.sha }}"
+          echo "github.base_ref":              "${{ github.base_ref }}"
+          echo "github.head_ref":              "${{ github.head_ref }}"
+          echo "=== REPOSITORY ==="
+          echo "github.repository":            "${{ github.repository }}"
+          echo "github.repository_id":         "${{ github.repository_id }}"
+          echo "github.repository_owner":      "${{ github.repository_owner }}"
+          echo "github.repository_owner_id":   "${{ github.repository_owner_id }}"
+          echo "github.repositoryUrl":         "${{ github.repositoryUrl }}"
+          echo "=== RUNNER / ENVIRONMENT ==="
+          echo "github.server_url":            "${{ github.server_url }}"
+          echo "github.api_url":               "${{ github.api_url }}"
+          echo "github.graphql_url":           "${{ github.graphql_url }}"
+          echo "github.workspace":             "${{ github.workspace }}"
+          echo "github.env":                   "${{ github.env }}"
+          echo "github.path":                  "${{ github.path }}"
+          echo "github.step_summary":          "${{ github.step_summary }}"
+          echo "=== TOKEN / RETENTION ==="
+          echo "github.token (masked)":        "***"
+          echo "github.retention_days":        "${{ github.retention_days }}"
+          echo "github.secret_source":         "${{ github.secret_source }}"
+      - name: context-env
+        env:
+          MY_CUSTOM_VAR: "hello-from-env"
+        run: |
+          echo "=== ENV CONTEXT ==="
+          echo "GITHUB_WORKFLOW":       "$GITHUB_WORKFLOW"
+          echo "GITHUB_RUN_ID":         "$GITHUB_RUN_ID"
+          echo "GITHUB_RUN_NUMBER":     "$GITHUB_RUN_NUMBER"
+          echo "GITHUB_RUN_ATTEMPT":    "$GITHUB_RUN_ATTEMPT"
+          echo "GITHUB_JOB":            "$GITHUB_JOB"
+          echo "GITHUB_ACTION":         "$GITHUB_ACTION"
+          echo "GITHUB_ACTOR":          "$GITHUB_ACTOR"
+          echo "GITHUB_REPOSITORY":     "$GITHUB_REPOSITORY"
+          echo "GITHUB_REF":            "$GITHUB_REF"
+          echo "GITHUB_REF_NAME":       "$GITHUB_REF_NAME"
+          echo "GITHUB_REF_TYPE":       "$GITHUB_REF_TYPE"
+          echo "GITHUB_SHA":            "$GITHUB_SHA"
+          echo "GITHUB_HEAD_REF":       "$GITHUB_HEAD_REF"
+          echo "GITHUB_BASE_REF":       "$GITHUB_BASE_REF"
+          echo "GITHUB_EVENT_NAME":     "$GITHUB_EVENT_NAME"
+          echo "GITHUB_WORKSPACE":      "$GITHUB_WORKSPACE"
+          echo "GITHUB_SERVER_URL":     "$GITHUB_SERVER_URL"
+          echo "GITHUB_API_URL":        "$GITHUB_API_URL"
+          echo "GITHUB_GRAPHQL_URL":    "$GITHUB_GRAPHQL_URL"
+          echo "RUNNER_OS":             "$RUNNER_OS"
+          echo "RUNNER_ARCH":           "$RUNNER_ARCH"
+          echo "RUNNER_NAME":           "$RUNNER_NAME"
+          echo "RUNNER_TEMP":           "$RUNNER_TEMP"
+          echo "RUNNER_TOOL_CACHE":     "$RUNNER_TOOL_CACHE"
+          echo "MY_CUSTOM_VAR":         "$MY_CUSTOM_VAR"
+
+      - name: context-vars
+        run: |
+          echo "=== VARS CONTEXT (variables de repositorio/entorno/organización) ==="
+          echo "Nota: vars.* requiere que esten definidas en Settings > Variables"
+          echo "vars no tienen valores predefinidos como github.* o env.*"
+          echo "Ejemplo de uso: vars.MY_VAR -> ${{ vars.MY_VAR }}"
+          echo "vars.ENVIRONMENT ->  ${{ vars.ENVIRONMENT }}"
+
+      - name: context-job
+        id: context-job-step
+        run: |
+          echo "=== JOB CONTEXT ==="
+          echo "job.status":            "${{ job.status }}"
+          echo "--- container (si se usa 'container:' en el job) ---"
+          echo "job.container.id":      "${{ job.container.id }}"
+          echo "job.container.network": "${{ job.container.network }}"
+          echo "--- services (si se usan 'services:' en el job) ---"
+          echo "job.services.<id>.id":       "(requiere un service definido en el job)"
+          echo "job.services.<id>.network":  "(requiere un service definido en el job)"
+          echo "job.services.<id>.ports":    "(requiere un service definido en el job)"
+
+      - name: context-runner
+        run: |
+          echo "=== RUNNER CONTEXT ==="
+          echo "runner.name":           "${{ runner.name }}"
+          echo "runner.os":             "${{ runner.os }}"
+          echo "runner.arch":           "${{ runner.arch }}"
+          echo "runner.temp":           "${{ runner.temp }}"
+          echo "runner.tool_cache":     "${{ runner.tool_cache }}"
+          echo "runner.debug":          "${{ runner.debug }}"
+          echo "runner.environment":    "${{ runner.environment }}"
+
+      - name: context-steps
+        run: |
+          echo "=== STEPS CONTEXT (outputs de steps anteriores) ==="
+          echo "steps.getter.outcome":          "${{ steps.getter.outcome }}"
+          echo "steps.getter.conclusion":       "${{ steps.getter.conclusion }}"
+          echo "steps.getter.outputs.ref":      "${{ steps.getter.outputs.ref }}"
+          echo "steps.getter.outputs.current":  "${{ steps.getter.outputs.current }}"
+          echo "steps.getter.outputs.after":    "${{ steps.getter.outputs.after }}"
+          echo "steps.getter.outputs.before":   "${{ steps.getter.outputs.before }}"
+
+      - name: context-secrets
+        run: |
+          echo "=== SECRETS CONTEXT ==="
+          echo "Nota: los valores de secrets NUNCA se imprimen en claro, GitHub los enmascara automaticamente"
+          echo "secrets.MY_TOKEN definido":     "${{ secrets.MY_TOKEN != '' }}"
+          echo "secrets.GITHUB_TOKEN definido": "${{ secrets.GITHUB_TOKEN != '' }}"
+
+      - name: git-config
+        run: |
+          git config --global alias.l "log --graph --format=\"%C(yellow)%h%C(reset) - %C(cyan)%ad%C(reset) - %C(green)%<(15,trunc)%an%C(reset) - %s\" --date=local --date=format:\"%d-%m-%Y %H:%M\""
+          git clone https://x-access-token:${GITHUB_TOKEN}@github.com/dukono/learningGithubAction.git .
+          git fetch origin ${before}
+          git fetch origin ${after}
+          git fetch origin ${{ github.ref }}
+          git checkout ${{ github.sha }}
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+      - name: commit-comparator
+        run: |
+          echo "rama contiene: 'feature'": ${{ contains(steps.getter.outputs.ref, 'feature') }}
+          echo "ref empieza con 'refs/heads/'": ${{ startsWith(steps.getter.outputs.ref, 'refs/heads/') }}
+          echo "ref endsWith con '/main'": ${{ endsWith(steps.getter.outputs.ref, '/main') }}
+          echo "version": ${{ format('Version: {0}.{1}', '1', '2') }}
+          result=$(ls -lta ${{github.workspace}})
+          echo "-------------------"
+          echo "ls -lta 'github.workspace' (${{github.workspace}})" = "$result"
+
+          echo "'current'": $current
+          echo "'after'": $after
+          echo "'before'": $before
+          c=$(git l ${current} -10)
+          echo "-------------------"
+          echo ">>current<<<: $current"
+          echo "$c"
+          a=$(git l ${after} -10)
+          echo "-------------------"
+          echo ">>after<<: $after"
+          echo "$a"
+          b=$(git l ${before} -10)
+          echo "-------------------"
+          echo ">>before<<: $before"
+          echo "$b"
+          ab=$(git l ${before}..${after} -10)
+          echo "-------------------"
+          echo ">>after - before<<:"
+          echo "$ab"
+

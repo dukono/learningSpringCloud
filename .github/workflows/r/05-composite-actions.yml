@@ -1,0 +1,528 @@
+name: "05 - Composite Action Personalizada"
+
+# Este workflow demuestra cómo crear y usar Composite Actions
+# Las Composite Actions son acciones reutilizables personalizadas
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Entorno'
+        type: choice
+        options:
+          - dev
+          - staging
+          - production
+        default: dev
+
+jobs:
+  # ============================================================================
+  # JOB 1: Crear Composite Actions dinámicamente
+  # ============================================================================
+  setup-composite-actions:
+    name: "Setup Composite Actions"
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+      
+      - name: "Crear directorio para actions"
+        run: |
+          mkdir -p .github/actions/deploy-app
+          mkdir -p .github/actions/run-tests
+          mkdir -p .github/actions/notify
+      
+      # ----------------------------------------------------------------------
+      # Composite Action 1: Deploy App
+      # ----------------------------------------------------------------------
+      - name: "Crear composite action: deploy-app"
+        run: |
+          cat > .github/actions/deploy-app/action.yml << 'EOF'
+          name: 'Deploy Application'
+          description: 'Despliega la aplicación a un entorno específico'
+          
+          inputs:
+            environment:
+              description: 'Entorno de destino'
+              required: true
+            version:
+              description: 'Versión a desplegar'
+              required: true
+            config-path:
+              description: 'Path al archivo de configuración'
+              required: false
+              default: './config'
+            dry-run:
+              description: 'Modo de prueba'
+              required: false
+              default: 'false'
+          
+          outputs:
+            deployment-url:
+              description: 'URL del deployment'
+              value: ${{ steps.deploy.outputs.url }}
+            deployment-id:
+              description: 'ID del deployment'
+              value: ${{ steps.deploy.outputs.id }}
+            status:
+              description: 'Estado del deployment'
+              value: ${{ steps.deploy.outputs.status }}
+          
+          runs:
+            using: "composite"
+            steps:
+              - name: "Validar inputs"
+                shell: bash
+                run: |
+                  echo "🔍 Validando inputs..."
+                  echo "  Entorno: ${{ inputs.environment }}"
+                  echo "  Versión: ${{ inputs.version }}"
+                  echo "  Config: ${{ inputs.config-path }}"
+                  echo "  Dry Run: ${{ inputs.dry-run }}"
+              
+              - name: "Preparar configuración"
+                shell: bash
+                run: |
+                  echo "⚙️ Preparando configuración..."
+                  
+                  CONFIG_FILE="${{ inputs.config-path }}/${{ inputs.environment }}.json"
+                  
+                  # Crear config si no existe
+                  mkdir -p ${{ inputs.config-path }}
+                  if [ ! -f "$CONFIG_FILE" ]; then
+                    cat > "$CONFIG_FILE" << EOFCONFIG
+                  {
+                    "environment": "${{ inputs.environment }}",
+                    "version": "${{ inputs.version }}",
+                    "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                  }
+                  EOFCONFIG
+                  fi
+                  
+                  echo "✅ Configuración lista"
+              
+              - name: "Ejecutar deployment"
+                id: deploy
+                shell: bash
+                run: |
+                  DEPLOY_ID="deploy-$(date +%s)"
+                  URL="https://${{ inputs.environment }}.example.com"
+                  
+                  if [ "${{ inputs.dry-run }}" == "true" ]; then
+                    echo "🧪 DRY RUN - No se desplegará realmente"
+                    STATUS="dry-run"
+                  else
+                    echo "🚀 Desplegando versión ${{ inputs.version }}..."
+                    
+                    # Simular deployment
+                    for i in {1..3}; do
+                      echo "  Paso $i/3..."
+                      sleep 1
+                    done
+                    
+                    STATUS="deployed"
+                    echo "✅ Deployment completado"
+                  fi
+                  
+                  echo "url=$URL" >> $GITHUB_OUTPUT
+                  echo "id=$DEPLOY_ID" >> $GITHUB_OUTPUT
+                  echo "status=$STATUS" >> $GITHUB_OUTPUT
+                  
+                  echo "🔗 URL: $URL"
+                  echo "🆔 ID: $DEPLOY_ID"
+              
+              - name: "Health check"
+                shell: bash
+                run: |
+                  if [ "${{ inputs.dry-run }}" == "true" ]; then
+                    echo "🧪 Saltando health check (dry run)"
+                  else
+                    echo "🏥 Verificando salud del servicio..."
+                    sleep 2
+                    echo "✅ Servicio saludable"
+                  fi
+          EOF
+          
+          echo "✅ Composite action 'deploy-app' creada"
+      
+      # ----------------------------------------------------------------------
+      # Composite Action 2: Run Tests
+      # ----------------------------------------------------------------------
+      - name: "Crear composite action: run-tests"
+        run: |
+          cat > .github/actions/run-tests/action.yml << 'EOF'
+          name: 'Run Tests'
+          description: 'Ejecuta tests con configuración estándar'
+          
+          inputs:
+            test-type:
+              description: 'Tipo de tests (unit, integration, e2e)'
+              required: true
+            coverage:
+              description: 'Generar reporte de coverage'
+              required: false
+              default: 'true'
+            parallel:
+              description: 'Ejecutar en paralelo'
+              required: false
+              default: 'true'
+          
+          outputs:
+            total-tests:
+              description: 'Total de tests ejecutados'
+              value: ${{ steps.run.outputs.total }}
+            passed:
+              description: 'Tests pasados'
+              value: ${{ steps.run.outputs.passed }}
+            failed:
+              description: 'Tests fallados'
+              value: ${{ steps.run.outputs.failed }}
+            coverage-percent:
+              description: 'Porcentaje de coverage'
+              value: ${{ steps.run.outputs.coverage }}
+          
+          runs:
+            using: "composite"
+            steps:
+              - name: "Setup test environment"
+                shell: bash
+                run: |
+                  echo "🔧 Configurando entorno de tests..."
+                  echo "  Tipo: ${{ inputs.test-type }}"
+                  echo "  Coverage: ${{ inputs.coverage }}"
+                  echo "  Paralelo: ${{ inputs.parallel }}"
+              
+              - name: "Ejecutar tests"
+                id: run
+                shell: bash
+                run: |
+                  echo "🧪 Ejecutando tests ${{ inputs.test-type }}..."
+                  
+                  # Simular ejecución de tests
+                  case "${{ inputs.test-type }}" in
+                    unit)
+                      TOTAL=150
+                      PASSED=148
+                      FAILED=2
+                      COVERAGE=87
+                      ;;
+                    integration)
+                      TOTAL=45
+                      PASSED=44
+                      FAILED=1
+                      COVERAGE=76
+                      ;;
+                    e2e)
+                      TOTAL=20
+                      PASSED=20
+                      FAILED=0
+                      COVERAGE=65
+                      ;;
+                    *)
+                      TOTAL=0
+                      PASSED=0
+                      FAILED=0
+                      COVERAGE=0
+                      ;;
+                  esac
+                  
+                  # Simular progreso
+                  for i in {1..5}; do
+                    echo "  Ejecutando... $(($i * 20))%"
+                    sleep 1
+                  done
+                  
+                  echo "total=$TOTAL" >> $GITHUB_OUTPUT
+                  echo "passed=$PASSED" >> $GITHUB_OUTPUT
+                  echo "failed=$FAILED" >> $GITHUB_OUTPUT
+                  echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
+                  
+                  echo "✅ Tests completados: $PASSED/$TOTAL pasados"
+                  
+                  if [ $FAILED -gt 0 ]; then
+                    echo "⚠️ $FAILED test(s) fallaron"
+                  fi
+              
+              - name: "Generar reporte"
+                if: inputs.coverage == 'true'
+                shell: bash
+                run: |
+                  echo "📊 Generando reporte de coverage..."
+                  
+                  mkdir -p test-reports
+                  cat > test-reports/coverage-${{ inputs.test-type }}.txt << EOFREPORT
+                  Coverage Report - ${{ inputs.test-type }}
+                  ================================
+                  Total Tests: ${{ steps.run.outputs.total }}
+                  Passed: ${{ steps.run.outputs.passed }}
+                  Failed: ${{ steps.run.outputs.failed }}
+                  Coverage: ${{ steps.run.outputs.coverage }}%
+                  ================================
+                  EOFREPORT
+                  
+                  cat test-reports/coverage-${{ inputs.test-type }}.txt
+          EOF
+          
+          echo "✅ Composite action 'run-tests' creada"
+      
+      # ----------------------------------------------------------------------
+      # Composite Action 3: Notify
+      # ----------------------------------------------------------------------
+      - name: "Crear composite action: notify"
+        run: |
+          cat > .github/actions/notify/action.yml << 'EOF'
+          name: 'Send Notification'
+          description: 'Envía notificaciones a múltiples canales'
+          
+          inputs:
+            title:
+              description: 'Título de la notificación'
+              required: true
+            message:
+              description: 'Mensaje'
+              required: true
+            status:
+              description: 'Estado (success, failure, warning)'
+              required: true
+            channels:
+              description: 'Canales (comma-separated: slack,email,github)'
+              required: false
+              default: 'github'
+          
+          runs:
+            using: "composite"
+            steps:
+              - name: "Preparar notificación"
+                shell: bash
+                run: |
+                  echo "📢 Preparando notificación..."
+                  
+                  # Determinar icono basado en estado
+                  case "${{ inputs.status }}" in
+                    success)
+                      ICON="✅"
+                      COLOR="green"
+                      ;;
+                    failure)
+                      ICON="❌"
+                      COLOR="red"
+                      ;;
+                    warning)
+                      ICON="⚠️"
+                      COLOR="yellow"
+                      ;;
+                    *)
+                      ICON="ℹ️"
+                      COLOR="blue"
+                      ;;
+                  esac
+                  
+                  echo "ICON=$ICON" >> $GITHUB_ENV
+                  echo "COLOR=$COLOR" >> $GITHUB_ENV
+              
+              - name: "Enviar a GitHub (Step Summary)"
+                shell: bash
+                run: |
+                  cat >> $GITHUB_STEP_SUMMARY << EOFSUMMARY
+                  ## ${{ env.ICON }} ${{ inputs.title }}
+                  
+                  **Estado:** \`${{ inputs.status }}\`
+                  
+                  ${{ inputs.message }}
+                  
+                  ---
+                  *Timestamp: $(date -u +"%Y-%m-%d %H:%M:%S UTC")*
+                  EOFSUMMARY
+              
+              - name: "Simular envío a otros canales"
+                shell: bash
+                run: |
+                  IFS=',' read -ra CHANNELS <<< "${{ inputs.channels }}"
+                  
+                  for channel in "${CHANNELS[@]}"; do
+                    case "$channel" in
+                      slack)
+                        echo "📱 Enviando a Slack..."
+                        ;;
+                      email)
+                        echo "📧 Enviando email..."
+                        ;;
+                      github)
+                        echo "🐙 Notificación en GitHub registrada"
+                        ;;
+                    esac
+                  done
+                  
+                  echo "✅ Notificaciones enviadas"
+          EOF
+          
+          echo "✅ Composite action 'notify' creada"
+      
+      - name: "Commit actions (si es necesario)"
+        run: |
+          echo "💾 Composite actions creadas y listas para usar"
+
+  # ============================================================================
+  # JOB 2: Usar las Composite Actions
+  # ============================================================================
+  use-composite-actions:
+    name: "Usar Composite Actions"
+    runs-on: ubuntu-latest
+    needs: setup-composite-actions
+    
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+      
+      # Asegurarse que las actions estén disponibles
+      - name: "Preparar actions"
+        run: |
+          # En un caso real, las actions ya estarían en el repo
+          # Aquí las recreamos para el ejemplo
+          mkdir -p .github/actions/deploy-app
+          mkdir -p .github/actions/run-tests
+          mkdir -p .github/actions/notify
+          
+          echo "✅ Actions disponibles"
+      
+      # ----------------------------------------------------------------------
+      # Usar composite action: run-tests (multiple veces)
+      # ----------------------------------------------------------------------
+      - name: "Tests Unitarios"
+        id: unit-tests
+        uses: ./.github/actions/run-tests
+        with:
+          test-type: unit
+          coverage: 'true'
+          parallel: 'true'
+      
+      - name: "Tests de Integración"
+        id: integration-tests
+        uses: ./.github/actions/run-tests
+        with:
+          test-type: integration
+          coverage: 'true'
+          parallel: 'false'
+      
+      - name: "Tests E2E"
+        id: e2e-tests
+        uses: ./.github/actions/run-tests
+        with:
+          test-type: e2e
+          coverage: 'false'
+          parallel: 'false'
+      
+      # ----------------------------------------------------------------------
+      # Mostrar resultados de tests
+      # ----------------------------------------------------------------------
+      - name: "Resumen de tests"
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          # 🧪 Resultados de Tests
+          
+          ## Tests Unitarios
+          - **Total:** ${{ steps.unit-tests.outputs.total-tests }}
+          - **Pasados:** ${{ steps.unit-tests.outputs.passed }} ✅
+          - **Fallados:** ${{ steps.unit-tests.outputs.failed }} ❌
+          - **Coverage:** ${{ steps.unit-tests.outputs.coverage-percent }}%
+          
+          ## Tests de Integración
+          - **Total:** ${{ steps.integration-tests.outputs.total-tests }}
+          - **Pasados:** ${{ steps.integration-tests.outputs.passed }} ✅
+          - **Fallados:** ${{ steps.integration-tests.outputs.failed }} ❌
+          - **Coverage:** ${{ steps.integration-tests.outputs.coverage-percent }}%
+          
+          ## Tests E2E
+          - **Total:** ${{ steps.e2e-tests.outputs.total-tests }}
+          - **Pasados:** ${{ steps.e2e-tests.outputs.passed }} ✅
+          - **Fallados:** ${{ steps.e2e-tests.outputs.failed }} ❌
+          EOF
+      
+      # ----------------------------------------------------------------------
+      # Usar composite action: deploy-app
+      # ----------------------------------------------------------------------
+      - name: "Deploy (Dry Run)"
+        id: deploy-dry
+        uses: ./.github/actions/deploy-app
+        with:
+          environment: ${{ inputs.environment }}
+          version: '1.0.${{ github.run_number }}'
+          config-path: './config'
+          dry-run: 'true'
+      
+      - name: "Deploy (Real)"
+        id: deploy-real
+        uses: ./.github/actions/deploy-app
+        with:
+          environment: ${{ inputs.environment }}
+          version: '1.0.${{ github.run_number }}'
+          config-path: './config'
+          dry-run: 'false'
+      
+      - name: "Mostrar info de deployment"
+        run: |
+          echo "🚀 Deployment completado"
+          echo "  URL: ${{ steps.deploy-real.outputs.deployment-url }}"
+          echo "  ID: ${{ steps.deploy-real.outputs.deployment-id }}"
+          echo "  Estado: ${{ steps.deploy-real.outputs.status }}"
+      
+      # ----------------------------------------------------------------------
+      # Usar composite action: notify (múltiples notificaciones)
+      # ----------------------------------------------------------------------
+      - name: "Notificar tests completados"
+        uses: ./.github/actions/notify
+        with:
+          title: "Tests Completados"
+          message: |
+            Tests ejecutados exitosamente:
+            - Unitarios: ${{ steps.unit-tests.outputs.passed }}/${{ steps.unit-tests.outputs.total-tests }}
+            - Integración: ${{ steps.integration-tests.outputs.passed }}/${{ steps.integration-tests.outputs.total-tests }}
+            - E2E: ${{ steps.e2e-tests.outputs.passed }}/${{ steps.e2e-tests.outputs.total-tests }}
+          status: success
+          channels: 'github,slack'
+      
+      - name: "Notificar deployment"
+        uses: ./.github/actions/notify
+        with:
+          title: "Deployment a ${{ inputs.environment }}"
+          message: |
+            Versión 1.0.${{ github.run_number }} desplegada exitosamente
+            URL: ${{ steps.deploy-real.outputs.deployment-url }}
+          status: success
+          channels: 'github,slack,email'
+
+  # ============================================================================
+  # JOB 3: Demostrar reutilización en matriz
+  # ============================================================================
+  deploy-multiple-environments:
+    name: "Deploy a ${{ matrix.env }}"
+    runs-on: ubuntu-latest
+    needs: use-composite-actions
+    strategy:
+      matrix:
+        env: [dev, staging]
+    
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+      
+      - name: "Preparar actions"
+        run: mkdir -p .github/actions/{deploy-app,notify}
+      
+      - name: "Deploy usando composite action"
+        id: deploy
+        uses: ./.github/actions/deploy-app
+        with:
+          environment: ${{ matrix.env }}
+          version: '1.0.${{ github.run_number }}'
+          dry-run: 'false'
+      
+      - name: "Notificar"
+        if: always()
+        uses: ./.github/actions/notify
+        with:
+          title: "Deploy a ${{ matrix.env }}"
+          message: "Deployment ID: ${{ steps.deploy.outputs.deployment-id }}"
+          status: ${{ job.status }}
+          channels: 'github'

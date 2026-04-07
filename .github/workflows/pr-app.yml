@@ -1,0 +1,114 @@
+name: Info - PR App Read branch
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+
+#
+concurrency:
+  group: ci-${{ github.workflow_ref }}
+  cancel-in-progress: true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OPCIÓN A (activa): actions/setup-java
+#   → instala la JDK pedida en el runner efímero.
+#   → GitHub cachea la tool automáticamente; no descarga desde cero cada vez.
+#   → Es la solución estándar y más sencilla para proyectos normales.
+#
+# OPCIÓN B (comentada): contenedor Docker
+#   → el job corre DENTRO de un contenedor que ya tiene la JDK instalada.
+#   → cero instalación en runtime: entorno 100% reproducible.
+#   → descomenta el bloque "container:" y comenta el step "setup-java" si la prefieres.
+#
+#   jobs:
+#     show-app-info:
+#       runs-on: ubuntu-latest
+#       container:
+#         image: maven:3.9-eclipse-temurin-21          # Maven + JDK 21 oficiales
+#         # image: eclipse-temurin:21-jdk-jammy        # solo JDK, sin Maven
+#       steps:
+#         - ...
+# ─────────────────────────────────────────────────────────────────────────────
+
+jobs:
+  show-app-info:
+    runs-on: ubuntu-latest
+    steps:
+      - name: directory-info-before-checkout
+        run: |
+          echo "=== PATH: ${{ github.workspace }} ==="
+          ls -lta ${{ github.workspace }}
+          tree -d -L 3 ${{ github.workspace }}
+          echo "=== PATH: $(~) ==="
+          ls -lta ~
+          tree -d -L 3 ~
+      - name: git-config-before-checkout
+        run: |
+          sudo apt install tree
+          git config --global alias.l "log --graph --format=\"%C(yellow)%h%C(reset) - %C(cyan)%ad%C(reset) - %C(green)%<(15,trunc)%an%C(reset) - %s\" --date=local --date=format:\"%d-%m-%Y %H:%M\""
+          echo "===git config==="
+          echo "===git config --local --list==="
+          echo "$(git config --local --list)"
+          echo "===git config --global --list==="
+          echo $(git config --global --list)
+      - name: checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: git-config-after-checkout
+        run: |
+          git config --global alias.l "log --graph --format=\"%C(yellow)%h%C(reset) - %C(cyan)%ad%C(reset) - %C(green)%<(15,trunc)%an%C(reset) - %s\" --date=local --date=format:\"%d-%m-%Y %H:%M\""
+          echo "===git config==="
+          echo "===git config --local --list==="
+          echo "$(git config --local --list)"
+          echo "===git config --global --list==="
+          echo $(git config --global --list)
+          echo "=== includeIf ==="
+          git config --local --get-regexp '^includeIf\.gitdir' | awk '{print $2}'
+          ls -al ~
+          git config --local --get-regexp '^includeIf\.gitdir' | awk '{print $2}' | while read pattern; do
+          expanded_pattern="${pattern/#\~/$HOME}"
+          echo "=== $expanded_pattern ==="
+          if [ -f "$expanded_pattern" ]; then
+          echo "==cat=="
+          cat "$expanded_pattern"
+          else
+            echo "Archivo no encontrado: $expanded_pattern"
+          fi
+          done
+
+      - name: setup-java-21
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'maven'
+      - name: verify-java-version
+        run: |
+          echo "=== Java version ==="
+          java -version
+          echo "=== Maven version ==="
+          mvn -v
+      - name: directory-info-before-maven
+        run: |
+          run: |
+          echo "=== PATH: ${{ github.workspace }} ==="
+          ls -lta ${{ github.workspace }}
+          tree -d -L 3 ${{ github.workspace }}
+          echo "=== PATH: $(~) ==="
+          ls -lta ~
+          tree -d -L 3 ~
+      - name: maven-package
+        run: |
+          cd ${{ github.workspace }}/app
+          echo "=== Maven build ==="
+          mvn -f pom.xml clean package
+      - name: directory-info-after-maven
+        run: |
+          run: |
+          echo "=== PATH: ${{ github.workspace }} ==="
+          ls -lta ${{ github.workspace }}
+          tree -d -L 3 ${{ github.workspace }}
+          echo "=== PATH: $(~) ==="
+          ls -lta ~
+          tree -d -L 3 ~
+

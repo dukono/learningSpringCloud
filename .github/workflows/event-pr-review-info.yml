@@ -1,0 +1,92 @@
+name: Event - PR Review Info
+on:
+  pull_request_review:
+    types:
+      - submitted
+      - edited
+      - dismissed
+  pull_request_review_comment:
+    types:
+      - created
+      - edited
+      - deleted
+
+jobs:
+  show-review-info:
+    runs-on: ubuntu-latest
+    steps:
+      - name: review-event-root
+        run: |
+          echo "=== PR REVIEW / REVIEW COMMENT EVENT ==="
+          echo "github.event_name":                          "${{ github.event_name }}"
+          echo "github.event.action":                        "${{ github.event.action }}"
+
+      - name: review-main
+        if: github.event_name == 'pull_request_review'
+        run: |
+          echo "=== github.event.review (solo en pull_request_review) ==="
+          echo "review.id":                                  "${{ github.event.review.id }}"
+          echo "review.state (approved/changes_requested/commented)": "${{ github.event.review.state }}"
+          echo "review.body":                                "${{ github.event.review.body }}"
+          echo "review.html_url":                            "${{ github.event.review.html_url }}"
+          echo "review.submitted_at":                        "${{ github.event.review.submitted_at }}"
+          echo "review.commit_id":                           "${{ github.event.review.commit_id }}"
+          echo "review.author_association":                  "${{ github.event.review.author_association }}"
+          echo "review.user.login":                          "${{ github.event.review.user.login }}"
+          echo "review.user.id":                             "${{ github.event.review.user.id }}"
+          echo "review.user.type":                           "${{ github.event.review.user.type }}"
+
+      - name: review-comment-main
+        if: github.event_name == 'pull_request_review_comment'
+        run: |
+          echo "=== github.event.comment (solo en pull_request_review_comment) ==="
+          echo "comment.id":                                 "${{ github.event.comment.id }}"
+          echo "comment.body":                               "${{ github.event.comment.body }}"
+          echo "comment.path":                               "${{ github.event.comment.path }}"
+          echo "comment.position":                           "${{ github.event.comment.position }}"
+          echo "comment.original_position":                  "${{ github.event.comment.original_position }}"
+          echo "comment.line":                               "${{ github.event.comment.line }}"
+          echo "comment.original_line":                      "${{ github.event.comment.original_line }}"
+          echo "comment.side":                               "${{ github.event.comment.side }}"
+          echo "comment.commit_id":                          "${{ github.event.comment.commit_id }}"
+          echo "comment.original_commit_id":                 "${{ github.event.comment.original_commit_id }}"
+          echo "comment.html_url":                           "${{ github.event.comment.html_url }}"
+          echo "comment.created_at":                         "${{ github.event.comment.created_at }}"
+          echo "comment.updated_at":                         "${{ github.event.comment.updated_at }}"
+          echo "comment.author_association":                 "${{ github.event.comment.author_association }}"
+          echo "comment.user.login":                         "${{ github.event.comment.user.login }}"
+          echo "comment.user.id":                            "${{ github.event.comment.user.id }}"
+
+      - name: review-pull-request
+        run: |
+          echo "=== github.event.pull_request (disponible en ambos eventos) ==="
+          echo "pull_request.number":                        "${{ github.event.pull_request.number }}"
+          echo "pull_request.title":                         "${{ github.event.pull_request.title }}"
+          echo "pull_request.state":                         "${{ github.event.pull_request.state }}"
+          echo "pull_request.draft":                         "${{ github.event.pull_request.draft }}"
+          echo "pull_request.merged":                        "${{ github.event.pull_request.merged }}"
+          echo "pull_request.html_url":                      "${{ github.event.pull_request.html_url }}"
+          echo "pull_request.head.ref":                      "${{ github.event.pull_request.head.ref }}"
+          echo "pull_request.base.ref":                      "${{ github.event.pull_request.base.ref }}"
+          echo "pull_request.user.login":                    "${{ github.event.pull_request.user.login }}"
+          echo "pull_request.labels":                        "${{ join(github.event.pull_request.labels.*.name, ', ') }}"
+          echo "pull_request.requested_reviewers":           "${{ join(github.event.pull_request.requested_reviewers.*.login, ', ') }}"
+
+      - name: review-sender
+        run: |
+          echo "=== SENDER ==="
+          echo "sender.login":                               "${{ github.event.sender.login }}"
+          echo "sender.id":                                  "${{ github.event.sender.id }}"
+          echo "sender.type":                                "${{ github.event.sender.type }}"
+
+      - name: review-github-context
+        run: |
+          echo "=== GITHUB CONTEXT ==="
+          echo "github.event_name":                          "${{ github.event_name }}"
+          echo "github.actor":                               "${{ github.actor }}"
+          echo "github.ref":                                 "${{ github.ref }}"
+          echo "github.sha":                                 "${{ github.sha }}"
+          echo "github.run_id":                              "${{ github.run_id }}"
+          echo "github.run_number":                          "${{ github.run_number }}"
+          echo "github.workflow":                            "${{ github.workflow }}"
+

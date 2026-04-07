@@ -1,0 +1,620 @@
+name: "🎯 DEMO COMPLETA - Todas las Capacidades"
+
+# Este workflow demuestra TODAS las capacidades en un solo ejemplo ejecutable
+# Es una demostración interactiva de todo el poder de GitHub Actions
+
+on:
+  workflow_dispatch:
+    inputs:
+      demo-mode:
+        description: '🎮 Modo de demostración'
+        required: true
+        type: choice
+        options:
+          - quick      # Demo rápida (5 min)
+          - standard   # Demo estándar (15 min)
+          - complete   # Demo completa (30 min)
+        default: standard
+      
+      enable-cache:
+        description: '💾 Usar cache'
+        type: boolean
+        default: true
+      
+      enable-matrix:
+        description: '📊 Usar matrices'
+        type: boolean
+        default: true
+      
+      deploy-target:
+        description: '🚀 Desplegar a'
+        type: choice
+        options:
+          - none
+          - dev
+          - staging
+        default: dev
+
+env:
+  DEMO_VERSION: "2024.1.0"
+  PROJECT_NAME: "GitHubActionsDemo"
+
+# Permisos explícitos (seguridad)
+permissions:
+  contents: read
+  packages: write
+  issues: write
+
+jobs:
+  # ============================================================================
+  # 📋 JOB 1: ORQUESTADOR - Planifica toda la ejecución
+  # ============================================================================
+  orchestrator:
+    name: "🎯 Orquestador de Demo"
+    runs-on: ubuntu-latest
+    outputs:
+      # Outputs para controlar flujo
+      run-tests: ${{ steps.plan.outputs.run-tests }}
+      run-build: ${{ steps.plan.outputs.run-build }}
+      run-deploy: ${{ steps.plan.outputs.run-deploy }}
+      test-matrix: ${{ steps.plan.outputs.test-matrix }}
+      os-matrix: ${{ steps.plan.outputs.os-matrix }}
+      deploy-config: ${{ steps.plan.outputs.deploy-config }}
+      execution-id: ${{ steps.plan.outputs.execution-id }}
+    
+    steps:
+      - name: "🎬 Inicio de Demo"
+        run: |
+          cat << 'EOF'
+          ╔═══════════════════════════════════════════════════════════════╗
+          ║                                                               ║
+          ║   🎯 DEMO COMPLETA DE GITHUB ACTIONS                         ║
+          ║                                                               ║
+          ║   Esta es una demostración interactiva de TODAS              ║
+          ║   las capacidades avanzadas de GitHub Actions                ║
+          ║                                                               ║
+          ╚═══════════════════════════════════════════════════════════════╝
+          EOF
+      
+      - name: "📊 Planificar ejecución"
+        id: plan
+        run: |
+          EXEC_ID="demo-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "execution-id=$EXEC_ID" >> $GITHUB_OUTPUT
+          
+          # Planificar según modo
+          case "${{ inputs.demo-mode }}" in
+            quick)
+              echo "⚡ Modo RÁPIDO"
+              echo "run-tests=true" >> $GITHUB_OUTPUT
+              echo "run-build=true" >> $GITHUB_OUTPUT
+              echo "run-deploy=false" >> $GITHUB_OUTPUT
+              echo 'test-matrix=["unit"]' >> $GITHUB_OUTPUT
+              echo 'os-matrix=["ubuntu-latest"]' >> $GITHUB_OUTPUT
+              ;;
+            standard)
+              echo "📋 Modo ESTÁNDAR"
+              echo "run-tests=true" >> $GITHUB_OUTPUT
+              echo "run-build=true" >> $GITHUB_OUTPUT
+              echo "run-deploy=${{ inputs.deploy-target != 'none' }}" >> $GITHUB_OUTPUT
+              echo 'test-matrix=["unit","integration"]' >> $GITHUB_OUTPUT
+              echo 'os-matrix=["ubuntu-latest","windows-latest"]' >> $GITHUB_OUTPUT
+              ;;
+            complete)
+              echo "🎯 Modo COMPLETO"
+              echo "run-tests=true" >> $GITHUB_OUTPUT
+              echo "run-build=true" >> $GITHUB_OUTPUT
+              echo "run-deploy=${{ inputs.deploy-target != 'none' }}" >> $GITHUB_OUTPUT
+              echo 'test-matrix=["unit","integration","e2e"]' >> $GITHUB_OUTPUT
+              echo 'os-matrix=["ubuntu-latest","windows-latest","macos-latest"]' >> $GITHUB_OUTPUT
+              ;;
+          esac
+          
+          # Configuración de deploy
+          DEPLOY_CONFIG=$(cat << EOFJSON
+          {
+            "target": "${{ inputs.deploy-target }}",
+            "version": "${{ env.DEMO_VERSION }}",
+            "execId": "$EXEC_ID",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOFJSON
+          )
+          
+          echo "deploy-config=$(echo $DEPLOY_CONFIG | jq -c .)" >> $GITHUB_OUTPUT
+      
+      - name: "📄 Generar plan de ejecución"
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          # 🎯 Plan de Ejecución
+          
+          ## ⚙️ Configuración
+          - **Modo:** `${{ inputs.demo-mode }}`
+          - **Cache:** ${{ inputs.enable-cache && '✅' || '❌' }}
+          - **Matrices:** ${{ inputs.enable-matrix && '✅' || '❌' }}
+          - **Deploy:** `${{ inputs.deploy-target }}`
+          - **Execution ID:** `${{ steps.plan.outputs.execution-id }}`
+          
+          ## 📋 Jobs a Ejecutar
+          - **Tests:** ${{ steps.plan.outputs.run-tests == 'true' && '✅' || '⏭️' }}
+          - **Build:** ${{ steps.plan.outputs.run-build == 'true' && '✅' || '⏭️' }}
+          - **Deploy:** ${{ steps.plan.outputs.run-deploy == 'true' && '✅' || '⏭️' }}
+          
+          ## 📊 Matrices
+          - **Test types:** ${{ steps.plan.outputs.test-matrix }}
+          - **OS:** ${{ steps.plan.outputs.os-matrix }}
+          
+          ---
+          🚀 **Iniciando ejecución...**
+          EOF
+
+  # ============================================================================
+  # 🧪 JOB 2: TESTS CON MATRIZ DINÁMICA
+  # ============================================================================
+  tests:
+    name: "🧪 Tests: ${{ matrix.type }} on ${{ matrix.os }}"
+    runs-on: ${{ matrix.os }}
+    needs: orchestrator
+    if: needs.orchestrator.outputs.run-tests == 'true' && inputs.enable-matrix
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        type: ${{ fromJSON(needs.orchestrator.outputs.test-matrix) }}
+        os: ${{ fromJSON(needs.orchestrator.outputs.os-matrix) }}
+    
+    outputs:
+      test-results: ${{ steps.test.outputs.results }}
+    
+    steps:
+      - name: "📥 Checkout"
+        uses: actions/checkout@v4
+      
+      - name: "🐍 Setup Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: ${{ inputs.enable-cache && 'pip' || '' }}
+      
+      - name: "📦 Cache de dependencias (manual)"
+        if: inputs.enable-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache
+            .pytest_cache
+          key: test-${{ matrix.os }}-${{ matrix.type }}-${{ hashFiles('**/*.py') }}
+          restore-keys: |
+            test-${{ matrix.os }}-${{ matrix.type }}-
+            test-${{ matrix.os }}-
+      
+      - name: "🔧 Instalar dependencias"
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov
+          echo "✅ Dependencias instaladas"
+      
+      - name: "🧪 Ejecutar tests ${{ matrix.type }}"
+        id: test
+        run: |
+          echo "Ejecutando tests: ${{ matrix.type }}"
+          
+          # Simular tests con diferentes duraciones
+          case "${{ matrix.type }}" in
+            unit)
+              DURATION=3
+              TOTAL=50
+              PASSED=49
+              ;;
+            integration)
+              DURATION=8
+              TOTAL=25
+              PASSED=24
+              ;;
+            e2e)
+              DURATION=15
+              TOTAL=10
+              PASSED=10
+              ;;
+          esac
+          
+          for i in $(seq 1 $DURATION); do
+            echo "  Progreso: $((i * 100 / DURATION))%"
+            sleep 1
+          done
+          
+          RESULTS=$(cat << EOFJSON
+          {
+            "type": "${{ matrix.type }}",
+            "os": "${{ matrix.os }}",
+            "total": $TOTAL,
+            "passed": $PASSED,
+            "failed": $((TOTAL - PASSED))
+          }
+          EOFJSON
+          )
+          
+          echo "results=$(echo $RESULTS | jq -c .)" >> $GITHUB_OUTPUT
+          echo "✅ Tests completados: $PASSED/$TOTAL"
+      
+      - name: "📊 Subir resultados"
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.type }}-${{ matrix.os }}
+          path: |
+            test-results.json
+          retention-days: 7
+
+  # ============================================================================
+  # 🏗️ JOB 3: BUILD CON CACHE Y ARTIFACTS
+  # ============================================================================
+  build:
+    name: "🏗️ Build de Aplicación"
+    runs-on: ubuntu-latest
+    needs: [orchestrator, tests]
+    if: |
+      always() &&
+      needs.orchestrator.outputs.run-build == 'true' &&
+      (needs.tests.result == 'success' || needs.tests.result == 'skipped')
+    
+    outputs:
+      artifact-name: ${{ steps.build.outputs.artifact-name }}
+      build-sha: ${{ steps.build.outputs.sha }}
+    
+    steps:
+      - name: "📥 Checkout"
+        uses: actions/checkout@v4
+      
+      - name: "💾 Cache de build"
+        if: inputs.enable-cache
+        id: cache-build
+        uses: actions/cache@v4
+        with:
+          path: |
+            dist/
+            build/
+          key: build-${{ github.sha }}
+          restore-keys: |
+            build-
+      
+      - name: "🏗️ Build (o usar cache)"
+        id: build
+        if: steps.cache-build.outputs.cache-hit != 'true'
+        run: |
+          echo "🔨 Compilando aplicación..."
+          
+          mkdir -p dist
+          
+          # Simular build
+          cat > dist/app.js << 'EOFAPP'
+          console.log("${{ env.PROJECT_NAME }} v${{ env.DEMO_VERSION }}");
+          console.log("Build: ${{ needs.orchestrator.outputs.execution-id }}");
+          console.log("Commit: ${{ github.sha }}");
+          EOFAPP
+          
+          # Metadata
+          cat > dist/manifest.json << EOFMANIFEST
+          {
+            "name": "${{ env.PROJECT_NAME }}",
+            "version": "${{ env.DEMO_VERSION }}",
+            "buildId": "${{ needs.orchestrator.outputs.execution-id }}",
+            "commit": "${{ github.sha }}",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "actor": "${{ github.actor }}"
+          }
+          EOFMANIFEST
+          
+          # Generar checksum
+          BUILD_SHA=$(find dist -type f -exec sha256sum {} \; | sha256sum | cut -d' ' -f1)
+          
+          ARTIFACT_NAME="build-${{ env.DEMO_VERSION }}-${{ github.run_number }}"
+          
+          echo "artifact-name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
+          echo "sha=$BUILD_SHA" >> $GITHUB_OUTPUT
+          
+          sleep 3
+          echo "✅ Build completado"
+      
+      - name: "⚡ Usar build cacheado"
+        if: steps.cache-build.outputs.cache-hit == 'true'
+        run: |
+          echo "⚡ Build recuperado desde cache"
+          cat dist/manifest.json | jq .
+          
+          BUILD_SHA=$(find dist -type f -exec sha256sum {} \; | sha256sum | cut -d' ' -f1)
+          ARTIFACT_NAME="build-${{ env.DEMO_VERSION }}-${{ github.run_number }}"
+          
+          echo "artifact-name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
+          echo "sha=$BUILD_SHA" >> $GITHUB_OUTPUT
+      
+      - name: "📦 Subir artifacts"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.build.outputs.artifact-name }}
+          path: dist/
+          retention-days: 30
+      
+      - name: "📊 Resumen de build"
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          # 🏗️ Build Completado
+          
+          - **Artifact:** \`${{ steps.build.outputs.artifact-name }}\`
+          - **SHA256:** \`${{ steps.build.outputs.sha }}\`
+          - **Cache usado:** ${{ steps.cache-build.outputs.cache-hit == 'true' && '✅ Sí' || '❌ No' }}
+          - **Tamaño:** $(du -sh dist | cut -f1)
+          
+          ## 📄 Manifest
+          \`\`\`json
+          $(cat dist/manifest.json | jq .)
+          \`\`\`
+          EOF
+
+  # ============================================================================
+  # 🚀 JOB 4: DEPLOY USANDO WORKFLOW REUSABLE (si existe)
+  # ============================================================================
+  deploy:
+    name: "🚀 Deploy a ${{ inputs.deploy-target }}"
+    runs-on: ubuntu-latest
+    needs: [orchestrator, build]
+    if: |
+      needs.orchestrator.outputs.run-deploy == 'true' &&
+      inputs.deploy-target != 'none'
+    environment:
+      name: ${{ inputs.deploy-target }}
+      url: https://${{ inputs.deploy-target }}.example.com
+    
+    steps:
+      - name: "📥 Descargar artifact"
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: ./dist
+      
+      - name: "🔍 Verificar integridad"
+        run: |
+          echo "🔐 Verificando checksum..."
+          ACTUAL_SHA=$(find dist -type f -exec sha256sum {} \; | sha256sum | cut -d' ' -f1)
+          EXPECTED_SHA="${{ needs.build.outputs.build-sha }}"
+          
+          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "❌ Checksum no coincide!"
+            exit 1
+          fi
+          
+          echo "✅ Integridad verificada"
+      
+      - name: "🚀 Deploy"
+        env:
+          DEPLOY_CONFIG: ${{ needs.orchestrator.outputs.deploy-config }}
+        run: |
+          echo "🚀 Desplegando a: ${{ inputs.deploy-target }}"
+          echo "📦 Artifact: ${{ needs.build.outputs.artifact-name }}"
+          
+          # Parse config
+          echo "$DEPLOY_CONFIG" | jq .
+          
+          # Simular deployment
+          STEPS=("Preparando entorno" "Subiendo archivos" "Configurando" "Reiniciando servicios" "Verificando")
+          
+          for step in "${STEPS[@]}"; do
+            echo "  ⏳ $step..."
+            sleep 2
+            echo "  ✅ $step completado"
+          done
+          
+          echo "✅ Deploy exitoso"
+      
+      - name: "🏥 Health Check"
+        run: |
+          echo "🏥 Verificando salud del servicio..."
+          
+          URL="https://${{ inputs.deploy-target }}.example.com"
+          
+          # Simular health checks
+          for i in {1..5}; do
+            echo "  Check $i/5... OK"
+            sleep 1
+          done
+          
+          echo "✅ Servicio saludable"
+          echo "🔗 URL: $URL"
+
+  # ============================================================================
+  # 🔐 JOB 5: SECURITY AUDIT
+  # ============================================================================
+  security:
+    name: "🔐 Security Audit"
+    runs-on: ubuntu-latest
+    needs: [orchestrator, build]
+    if: inputs.demo-mode == 'complete'
+    
+    steps:
+      - name: "📥 Checkout"
+        uses: actions/checkout@v4
+      
+      - name: "🔍 Escanear dependencias"
+        run: |
+          echo "🔍 Escaneando dependencias por vulnerabilidades..."
+          
+          # Simular escaneo
+          sleep 3
+          
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          ## 🔐 Security Audit
+          
+          - ✅ No se encontraron vulnerabilidades críticas
+          - ⚠️ 2 vulnerabilidades menores detectadas
+          - ℹ️ 5 dependencias pueden actualizarse
+          
+          ### Recomendaciones
+          1. Actualizar `package-a` a v2.0.0
+          2. Revisar uso de `deprecated-lib`
+          EOF
+          
+          echo "✅ Audit completado"
+      
+      - name: "🔒 Verificar secretos"
+        run: |
+          echo "🔒 Verificando que no hay secretos expuestos..."
+          
+          # Esto está enmascarado automáticamente
+          echo "GitHub Token presente: ${{ secrets.GITHUB_TOKEN != '' }}"
+          
+          echo "✅ No hay secretos expuestos"
+
+  # ============================================================================
+  # 📊 JOB 6: REPORTE FINAL CONSOLIDADO
+  # ============================================================================
+  report:
+    name: "📊 Reporte Final"
+    runs-on: ubuntu-latest
+    needs: [orchestrator, tests, build, deploy, security]
+    if: always()
+    
+    steps:
+      - name: "📊 Generar reporte completo"
+        run: |
+          # Determinar estado general
+          if [ "${{ needs.tests.result }}" == "success" ] || [ "${{ needs.tests.result }}" == "skipped" ]; then
+            if [ "${{ needs.build.result }}" == "success" ]; then
+              OVERALL_STATUS="✅ EXITOSO"
+              STATUS_COLOR="green"
+            else
+              OVERALL_STATUS="⚠️ PARCIAL"
+              STATUS_COLOR="yellow"
+            fi
+          else
+            OVERALL_STATUS="❌ FALLIDO"
+            STATUS_COLOR="red"
+          fi
+          
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          # 🎯 Reporte Final de Demo
+          
+          ## Estado General
+          **$OVERALL_STATUS**
+          
+          ## 📋 Resultados de Jobs
+          
+          | Job | Estado | Duración |
+          |-----|--------|----------|
+          | Orchestrator | ${{ needs.orchestrator.result }} | - |
+          | Tests | ${{ needs.tests.result }} | ~${{ inputs.demo-mode == 'quick' && '3min' || inputs.demo-mode == 'standard' && '8min' || '15min' }} |
+          | Build | ${{ needs.build.result }} | ~3min |
+          | Deploy | ${{ needs.deploy.result }} | ~10min |
+          | Security | ${{ needs.security.result }} | ~3min |
+          
+          ## 🎯 Configuración Ejecutada
+          - **Modo:** `${{ inputs.demo-mode }}`
+          - **Cache habilitado:** ${{ inputs.enable-cache && '✅' || '❌' }}
+          - **Matrices habilitadas:** ${{ inputs.enable-matrix && '✅' || '❌' }}
+          - **Deploy target:** `${{ inputs.deploy-target }}`
+          - **Execution ID:** `${{ needs.orchestrator.outputs.execution-id }}`
+          
+          ## 📦 Artifacts Generados
+          - Build: `${{ needs.build.outputs.artifact-name }}`
+          - Test Results: Múltiples archivos por matriz
+          
+          ## 🎓 Capacidades Demostradas
+          
+          ✅ **Compartir Datos:**
+          - Job outputs entre jobs
+          - Artifacts para archivos
+          - GITHUB_OUTPUT para variables
+          - GITHUB_STEP_SUMMARY para UI
+          
+          ✅ **Matrices:**
+          - Matriz dinámica generada en runtime
+          - Multiple dimensiones (OS × Test Type)
+          - Condicionales según inputs
+          
+          ✅ **Cache:**
+          - Cache de dependencias (pip)
+          - Cache de build artifacts
+          - Restore keys con fallback
+          
+          ✅ **Seguridad:**
+          - Uso seguro de secretos
+          - Enmascaramiento automático
+          - Environments con protección
+          - Security audit
+          
+          ✅ **Condicionales:**
+          - Jobs condicionales según outputs
+          - Steps condicionales según cache
+          - Ejecución según inputs
+          
+          ✅ **Strategies:**
+          - fail-fast: false para ver todos los resultados
+          - Multiple OS support
+          - Timeout management
+          
+          ## 📊 Métricas
+          - **Total de jobs:** 6
+          - **Jobs ejecutados:** ${{ 
+            (needs.orchestrator.result != 'skipped' && 1 || 0) +
+            (needs.tests.result != 'skipped' && 1 || 0) +
+            (needs.build.result != 'skipped' && 1 || 0) +
+            (needs.deploy.result != 'skipped' && 1 || 0) +
+            (needs.security.result != 'skipped' && 1 || 0) + 1
+          }}
+          - **Artifacts generados:** 2+
+          - **Matrices ejecutadas:** ${{ inputs.enable-matrix && 'Sí (multiple runs)' || 'No' }}
+          
+          ## 🔗 Referencias
+          - [Ver Artifacts](#)
+          - [Ver Logs Completos](#)
+          - [Documentación](./EJEMPLOS_AVANZADOS_README.md)
+          
+          ---
+          
+          ### 🎉 Demo completada exitosamente!
+          
+          Esta demo ha mostrado el uso práctico de:
+          - Orquestación de workflows
+          - Matrices dinámicas
+          - Cache para performance
+          - Manejo seguro de secretos
+          - Environments
+          - Artifacts
+          - Conditional execution
+          - Job dependencies
+          - Outputs entre jobs
+          - Step summaries
+          
+          **Ejecutado por:** @${{ github.actor }}
+          **Run ID:** ${{ github.run_id }}
+          **Timestamp:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          EOF
+      
+      - name: "🎊 Celebración"
+        run: |
+          cat << 'EOF'
+          
+          ╔═══════════════════════════════════════════════════════════════╗
+          ║                                                               ║
+          ║                  🎉 DEMO COMPLETADA 🎉                        ║
+          ║                                                               ║
+          ║   Has visto en acción TODAS las capacidades avanzadas        ║
+          ║   de GitHub Actions en un workflow real y funcional          ║
+          ║                                                               ║
+          ║   ✅ Compartir datos entre jobs                              ║
+          ║   ✅ Matrices dinámicas                                      ║
+          ║   ✅ Cache y optimización                                    ║
+          ║   ✅ Seguridad y secretos                                    ║
+          ║   ✅ Environments                                            ║
+          ║   ✅ Artifacts                                               ║
+          ║   ✅ Conditional execution                                   ║
+          ║   ✅ Orquestación compleja                                   ║
+          ║                                                               ║
+          ║   📚 Ver más ejemplos en EJEMPLOS_AVANZADOS_README.md       ║
+          ║                                                               ║
+          ╚═══════════════════════════════════════════════════════════════╝
+          
+          EOF
+          
+          echo "🎯 Execution ID: ${{ needs.orchestrator.outputs.execution-id }}"
+          echo "📊 Modo ejecutado: ${{ inputs.demo-mode }}"
+          echo "✅ Estado: SUCCESS"
+

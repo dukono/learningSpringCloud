@@ -1,0 +1,388 @@
+name: "02 - Workflow Reusable (Llamable)"
+
+# Este workflow puede ser llamado por otros workflows
+# Demuestra: workflow_call, inputs, outputs, secrets
+
+on:
+  workflow_call:
+    # INPUTS: Parámetros que recibe este workflow
+    inputs:
+      environment:
+        description: 'Entorno de despliegue'
+        required: true
+        type: string
+      
+      version:
+        description: 'Versión a desplegar'
+        required: true
+        type: string
+      
+      dry-run:
+        description: 'Modo de prueba (sin despliegue real)'
+        required: false
+        type: boolean
+        default: false
+      
+      notification-enabled:
+        description: 'Enviar notificaciones'
+        required: false
+        type: boolean
+        default: true
+      
+      config-json:
+        description: 'Configuración adicional en JSON'
+        required: false
+        type: string
+        default: '{}'
+    
+    # SECRETS: Secretos que requiere este workflow
+    secrets:
+      DEPLOY_TOKEN:
+        description: 'Token para deployment'
+        required: true
+      
+      SLACK_WEBHOOK:
+        description: 'Webhook de Slack (opcional)'
+        required: false
+    
+    # OUTPUTS: Valores que retorna este workflow
+    outputs:
+      deployment-id:
+        description: "ID único del deployment"
+        value: ${{ jobs.deploy.outputs.deployment-id }}
+      
+      deployment-url:
+        description: "URL del deployment"
+        value: ${{ jobs.deploy.outputs.deployment-url }}
+      
+      deployment-status:
+        description: "Estado del deployment"
+        value: ${{ jobs.deploy.outputs.status }}
+      
+      deployment-duration:
+        description: "Duración en segundos"
+        value: ${{ jobs.verify.outputs.duration }}
+
+jobs:
+  # ============================================================================
+  # JOB 1: VALIDACIÓN
+  # ============================================================================
+  validate:
+    name: "Validar Inputs"
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: "Mostrar configuración recibida"
+        run: |
+          cat << EOF
+          ══════════════════════════════════════════════════════
+          📋 CONFIGURACIÓN RECIBIDA
+          ══════════════════════════════════════════════════════
+          🌍 Entorno:           ${{ inputs.environment }}
+          📦 Versión:           ${{ inputs.version }}
+          🧪 Dry Run:           ${{ inputs.dry-run }}
+          📢 Notificaciones:    ${{ inputs.notification-enabled }}
+          ⚙️  Config Extra:      ${{ inputs.config-json }}
+          🔐 Token presente:    ${{ secrets.DEPLOY_TOKEN != '' && '✅' || '❌' }}
+          📱 Slack presente:    ${{ secrets.SLACK_WEBHOOK != '' && '✅' || '❌' }}
+          ══════════════════════════════════════════════════════
+          EOF
+      
+      - name: "Validar entorno"
+        run: |
+          VALID_ENVS=("dev" "staging" "production")
+          ENV="${{ inputs.environment }}"
+          
+          if [[ ! " ${VALID_ENVS[@]} " =~ " ${ENV} " ]]; then
+            echo "❌ Entorno inválido: $ENV"
+            echo "✅ Entornos válidos: ${VALID_ENVS[@]}"
+            exit 1
+          fi
+          
+          echo "✅ Entorno válido: $ENV"
+      
+      - name: "Validar formato de versión"
+        run: |
+          VERSION="${{ inputs.version }}"
+          
+          # Validar formato semver básico (x.y.z)
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "❌ Formato de versión inválido: $VERSION"
+            echo "✅ Formato esperado: X.Y.Z (semver)"
+            exit 1
+          fi
+          
+          echo "✅ Versión válida: $VERSION"
+      
+      - name: "Parsear configuración JSON"
+        if: inputs.config-json != '{}'
+        run: |
+          echo '${{ inputs.config-json }}' | jq . > /dev/null
+          echo "✅ JSON válido"
+          echo "📄 Contenido:"
+          echo '${{ inputs.config-json }}' | jq .
+
+  # ============================================================================
+  # JOB 2: PREPARACIÓN
+  # ============================================================================
+  prepare:
+    name: "Preparar Deployment"
+    runs-on: ubuntu-latest
+    needs: validate
+    outputs:
+      artifact-name: ${{ steps.prep.outputs.artifact-name }}
+      checksum: ${{ steps.prep.outputs.checksum }}
+    
+    steps:
+      - name: "Crear artifact de deployment"
+        id: prep
+        run: |
+          ARTIFACT_NAME="deploy-${{ inputs.environment }}-${{ inputs.version }}"
+          
+          # Crear estructura de deployment
+          mkdir -p deployment
+          
+          cat > deployment/manifest.json << EOF
+          {
+            "version": "${{ inputs.version }}",
+            "environment": "${{ inputs.environment }}",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "runId": "${{ github.run_id }}",
+            "actor": "${{ github.actor }}",
+            "dryRun": ${{ inputs.dry-run }},
+            "config": ${{ inputs.config-json }}
+          }
+          EOF
+          
+          # Simular archivos de aplicación
+          echo "Application binary v${{ inputs.version }}" > deployment/app.bin
+          echo "Configuration for ${{ inputs.environment }}" > deployment/config.yml
+          
+          # Generar checksum
+          CHECKSUM=$(find deployment -type f -exec sha256sum {} \; | sha256sum | cut -d' ' -f1)
+          echo "$CHECKSUM" > deployment/checksum.txt
+          
+          echo "artifact-name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
+          echo "checksum=$CHECKSUM" >> $GITHUB_OUTPUT
+          
+          echo "✅ Artifact preparado: $ARTIFACT_NAME"
+          echo "🔐 Checksum: $CHECKSUM"
+      
+      - name: "Subir artifact"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.prep.outputs.artifact-name }}
+          path: deployment/
+          retention-days: 3
+
+  # ============================================================================
+  # JOB 3: DEPLOYMENT
+  # ============================================================================
+  deploy:
+    name: "Desplegar a ${{ inputs.environment }}"
+    runs-on: ubuntu-latest
+    needs: prepare
+    outputs:
+      deployment-id: ${{ steps.deploy.outputs.deployment-id }}
+      deployment-url: ${{ steps.deploy.outputs.url }}
+      status: ${{ steps.deploy.outputs.status }}
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ steps.deploy.outputs.url }}
+    
+    steps:
+      - name: "Descargar artifact"
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.artifact-name }}
+          path: ./deployment
+      
+      - name: "Verificar checksum"
+        run: |
+          EXPECTED="${{ needs.prepare.outputs.checksum }}"
+          ACTUAL=$(cat deployment/checksum.txt)
+          
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "❌ Checksum no coincide!"
+            exit 1
+          fi
+          
+          echo "✅ Checksum verificado"
+      
+      - name: "Ejecutar deployment"
+        id: deploy
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+        run: |
+          DEPLOYMENT_ID="deploy-${{ github.run_id }}-${{ github.run_attempt }}"
+          
+          if [ "${{ inputs.dry-run }}" == "true" ]; then
+            echo "🧪 DRY RUN MODE - No se realizará deployment real"
+            URL="https://dry-run.${{ inputs.environment }}.example.com"
+            STATUS="dry-run"
+          else
+            echo "🚀 Desplegando versión ${{ inputs.version }} a ${{ inputs.environment }}"
+            
+            # Simular deployment real
+            echo "  📦 Extrayendo archivos..."
+            sleep 2
+            echo "  🔧 Configurando entorno..."
+            sleep 2
+            echo "  ⚡ Iniciando servicios..."
+            sleep 2
+            
+            URL="https://${{ inputs.environment }}.example.com"
+            STATUS="deployed"
+            
+            echo "✅ Deployment completado"
+          fi
+          
+          echo "deployment-id=$DEPLOYMENT_ID" >> $GITHUB_OUTPUT
+          echo "url=$URL" >> $GITHUB_OUTPUT
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          
+          echo "🆔 Deployment ID: $DEPLOYMENT_ID"
+          echo "🔗 URL: $URL"
+      
+      - name: "Registrar deployment"
+        run: |
+          cat > deployment-info.json << EOF
+          {
+            "id": "${{ steps.deploy.outputs.deployment-id }}",
+            "version": "${{ inputs.version }}",
+            "environment": "${{ inputs.environment }}",
+            "url": "${{ steps.deploy.outputs.url }}",
+            "status": "${{ steps.deploy.outputs.status }}",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          
+          cat deployment-info.json
+
+  # ============================================================================
+  # JOB 4: VERIFICACIÓN
+  # ============================================================================
+  verify:
+    name: "Verificar Deployment"
+    runs-on: ubuntu-latest
+    needs: deploy
+    outputs:
+      duration: ${{ steps.verify.outputs.duration }}
+    
+    steps:
+      - name: "Health check"
+        id: verify
+        run: |
+          START_TIME=$(date +%s)
+          URL="${{ needs.deploy.outputs.deployment-url }}"
+          
+          echo "🏥 Verificando health de: $URL"
+          
+          if [ "${{ inputs.dry-run }}" == "true" ]; then
+            echo "🧪 Dry run - Saltando verificación real"
+            HEALTH_STATUS="ok (dry-run)"
+          else
+            # Simular health checks
+            for i in {1..5}; do
+              echo "  Intento $i/5..."
+              sleep 1
+            done
+            HEALTH_STATUS="ok"
+          fi
+          
+          END_TIME=$(date +%s)
+          DURATION=$((END_TIME - START_TIME))
+          
+          echo "duration=$DURATION" >> $GITHUB_OUTPUT
+          
+          echo "✅ Health check: $HEALTH_STATUS"
+          echo "⏱️  Duración: ${DURATION}s"
+      
+      - name: "Smoke tests"
+        if: inputs.dry-run == false
+        run: |
+          echo "🧪 Ejecutando smoke tests..."
+          
+          # Simular tests básicos
+          TESTS=("API endpoint" "Database connection" "Cache service" "Message queue")
+          
+          for test in "${TESTS[@]}"; do
+            echo "  ✓ $test"
+            sleep 1
+          done
+          
+          echo "✅ Todos los smoke tests pasaron"
+
+  # ============================================================================
+  # JOB 5: NOTIFICACIÓN
+  # ============================================================================
+  notify:
+    name: "Enviar Notificaciones"
+    runs-on: ubuntu-latest
+    needs: [deploy, verify]
+    if: always() && inputs.notification-enabled
+    
+    steps:
+      - name: "Preparar mensaje"
+        id: message
+        run: |
+          if [ "${{ needs.verify.result }}" == "success" ]; then
+            ICON="✅"
+            STATUS="EXITOSO"
+            COLOR="good"
+          else
+            ICON="❌"
+            STATUS="FALLIDO"
+            COLOR="danger"
+          fi
+          
+          MESSAGE=$(cat << EOF
+          $ICON Deployment $STATUS
+          
+          🌍 Entorno: ${{ inputs.environment }}
+          📦 Versión: ${{ inputs.version }}
+          🔗 URL: ${{ needs.deploy.outputs.deployment-url }}
+          🆔 ID: ${{ needs.deploy.outputs.deployment-id }}
+          ⏱️  Duración: ${{ needs.verify.outputs.duration }}s
+          👤 Por: ${{ github.actor }}
+          🔗 Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+          )
+          
+          echo "$MESSAGE"
+          
+          # Guardar para uso posterior
+          echo "$MESSAGE" > notification.txt
+      
+      - name: "Simular envío a Slack"
+        if: secrets.SLACK_WEBHOOK != ''
+        run: |
+          echo "📱 Enviando notificación a Slack..."
+          echo "Webhook configurado: ${{ secrets.SLACK_WEBHOOK != '' && '✅' || '❌' }}"
+          cat notification.txt
+          
+          # En producción real:
+          # curl -X POST ${{ secrets.SLACK_WEBHOOK }} -H 'Content-Type: application/json' -d '...'
+      
+      - name: "Resumen en GitHub"
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          # 🚀 Deployment Completado
+          
+          ## Información
+          - **Entorno:** \`${{ inputs.environment }}\`
+          - **Versión:** \`${{ inputs.version }}\`
+          - **Dry Run:** ${{ inputs.dry-run && '✅' || '❌' }}
+          - **URL:** [${{ needs.deploy.outputs.deployment-url }}](${{ needs.deploy.outputs.deployment-url }})
+          - **Deployment ID:** \`${{ needs.deploy.outputs.deployment-id }}\`
+          
+          ## Resultados
+          - **Deploy:** ${{ needs.deploy.result == 'success' && '✅' || '❌' }}
+          - **Verificación:** ${{ needs.verify.result == 'success' && '✅' || '❌' }}
+          - **Duración:** ${{ needs.verify.outputs.duration }}s
+          
+          ## Ejecutado por
+          - **Usuario:** @${{ github.actor }}
+          - **Run ID:** ${{ github.run_id }}
+          EOF
+

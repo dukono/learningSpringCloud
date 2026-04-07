@@ -1,0 +1,208 @@
+name: "03 - Caller: Usar Workflow Reusable"
+
+# Este workflow LLAMA al workflow reusable
+# Demuestra cómo usar workflow_call desde otro workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy-all:
+        description: 'Desplegar a todos los entornos'
+        type: boolean
+        default: false
+      
+      version:
+        description: 'Versión a desplegar (formato: X.Y.Z)'
+        required: true
+        default: '1.0.0'
+
+jobs:
+  # ============================================================================
+  # JOB 1: Preparar información
+  # ============================================================================
+  prepare:
+    name: "Preparar Despliegues"
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      environments: ${{ steps.envs.outputs.environments }}
+    
+    steps:
+      - name: "Validar y normalizar versión"
+        id: version
+        run: |
+          VERSION="${{ inputs.version }}"
+          
+          # Agregar build number si es necesario
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "⚠️ Agregando build number"
+            VERSION="$VERSION.${{ github.run_number }}"
+          fi
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "✅ Versión final: $VERSION"
+      
+      - name: "Determinar entornos"
+        id: envs
+        run: |
+          if [ "${{ inputs.deploy-all }}" == "true" ]; then
+            ENVS='["dev","staging","production"]'
+          else
+            ENVS='["dev"]'
+          fi
+          
+          echo "environments=$ENVS" >> $GITHUB_OUTPUT
+          echo "🌍 Entornos seleccionados: $ENVS"
+
+  # ============================================================================
+  # JOB 2: Deploy a DEV (siempre)
+  # ============================================================================
+  deploy-dev:
+    name: "Deploy a DEV"
+    needs: prepare
+    uses: ./.github/workflows/02-reusable-workflow.yml
+    with:
+      environment: dev
+      version: ${{ needs.prepare.outputs.version }}
+      dry-run: false
+      notification-enabled: true
+      config-json: |
+        {
+          "features": {
+            "beta": true,
+            "debug": true
+          },
+          "replicas": 1
+        }
+    secrets:
+      DEPLOY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+
+  # ============================================================================
+  # JOB 3: Deploy a STAGING (condicional)
+  # ============================================================================
+  deploy-staging:
+    name: "Deploy a STAGING"
+    needs: [prepare, deploy-dev]
+    if: contains(fromJSON(needs.prepare.outputs.environments), 'staging')
+    uses: ./.github/workflows/02-reusable-workflow.yml
+    with:
+      environment: staging
+      version: ${{ needs.prepare.outputs.version }}
+      dry-run: false
+      notification-enabled: true
+      config-json: |
+        {
+          "features": {
+            "beta": true,
+            "debug": false
+          },
+          "replicas": 2
+        }
+    secrets:
+      DEPLOY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+
+  # ============================================================================
+  # JOB 4: Deploy a PRODUCTION (condicional, requiere aprobación manual)
+  # ============================================================================
+  deploy-production:
+    name: "Deploy a PRODUCTION"
+    needs: [prepare, deploy-staging]
+    if: contains(fromJSON(needs.prepare.outputs.environments), 'production')
+    uses: ./.github/workflows/02-reusable-workflow.yml
+    with:
+      environment: production
+      version: ${{ needs.prepare.outputs.version }}
+      dry-run: false
+      notification-enabled: true
+      config-json: |
+        {
+          "features": {
+            "beta": false,
+            "debug": false
+          },
+          "replicas": 5
+        }
+    secrets:
+      DEPLOY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+
+  # ============================================================================
+  # JOB 5: Reporte consolidado
+  # ============================================================================
+  report:
+    name: "Reporte de Despliegues"
+    runs-on: ubuntu-latest
+    needs: [prepare, deploy-dev, deploy-staging, deploy-production]
+    if: always()
+    
+    steps:
+      - name: "Generar reporte completo"
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          # 📊 Reporte de Despliegues
+          
+          ## 📦 Versión Desplegada
+          `${{ needs.prepare.outputs.version }}`
+          
+          ## 🌍 Entornos
+          
+          ### DEV
+          - **Estado:** ${{ needs.deploy-dev.result }}
+          - **Deployment ID:** `${{ needs.deploy-dev.outputs.deployment-id }}`
+          - **URL:** [${{ needs.deploy-dev.outputs.deployment-url }}](${{ needs.deploy-dev.outputs.deployment-url }})
+          - **Duración:** ${{ needs.deploy-dev.outputs.deployment-duration }}s
+          
+          ### STAGING
+          ${{ needs.deploy-staging.result != 'skipped' && format('- **Estado:** {0}
+          - **Deployment ID:** `{1}`
+          - **URL:** [{2}]({2})
+          - **Duración:** {3}s', 
+            needs.deploy-staging.result, 
+            needs.deploy-staging.outputs.deployment-id,
+            needs.deploy-staging.outputs.deployment-url,
+            needs.deploy-staging.outputs.deployment-duration) || '- ⏭️ Saltado' }}
+          
+          ### PRODUCTION
+          ${{ needs.deploy-production.result != 'skipped' && format('- **Estado:** {0}
+          - **Deployment ID:** `{1}`
+          - **URL:** [{2}]({2})
+          - **Duración:** {3}s', 
+            needs.deploy-production.result, 
+            needs.deploy-production.outputs.deployment-id,
+            needs.deploy-production.outputs.deployment-url,
+            needs.deploy-production.outputs.deployment-duration) || '- ⏭️ Saltado' }}
+          
+          ## 👤 Ejecutado por
+          @${{ github.actor }}
+          
+          ---
+          *Run ID: ${{ github.run_id }}*
+          EOF
+      
+      - name: "Verificar estado general"
+        run: |
+          echo "📋 Estado de los despliegues:"
+          echo "  DEV: ${{ needs.deploy-dev.result }}"
+          echo "  STAGING: ${{ needs.deploy-staging.result }}"
+          echo "  PRODUCTION: ${{ needs.deploy-production.result }}"
+          
+          # Fallar si algún despliegue requerido falló
+          if [ "${{ needs.deploy-dev.result }}" == "failure" ]; then
+            echo "❌ Deployment a DEV falló"
+            exit 1
+          fi
+          
+          if [ "${{ needs.deploy-staging.result }}" == "failure" ]; then
+            echo "❌ Deployment a STAGING falló"
+            exit 1
+          fi
+          
+          if [ "${{ needs.deploy-production.result }}" == "failure" ]; then
+            echo "❌ Deployment a PRODUCTION falló"
+            exit 1
+          fi
+          
+          echo "✅ Todos los despliegues exitosos"
+

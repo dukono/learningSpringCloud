@@ -1,0 +1,76 @@
+name: Event - Fork / Watch(Star) / Member Info
+on:
+  fork:
+  watch:
+    types:
+      - started
+  member:
+    types:
+      - added
+      - removed
+      - edited
+
+jobs:
+  show-collab-info:
+    runs-on: ubuntu-latest
+    steps:
+      - name: collab-event-root
+        run: |
+          echo "=== FORK / STAR / MEMBER EVENT ==="
+          echo "github.event_name":             "${{ github.event_name }}"
+          echo "github.event.action":           "${{ github.event.action }}"
+
+      - name: fork-info
+        if: github.event_name == 'fork'
+        run: |
+          echo "=== FORK INFO ==="
+          echo "forkee.id":                     "${{ github.event.forkee.id }}"
+          echo "forkee.name":                   "${{ github.event.forkee.name }}"
+          echo "forkee.full_name":              "${{ github.event.forkee.full_name }}"
+          echo "forkee.private":                "${{ github.event.forkee.private }}"
+          echo "forkee.html_url":               "${{ github.event.forkee.html_url }}"
+          echo "forkee.owner.login":            "${{ github.event.forkee.owner.login }}"
+          echo "forkee.owner.id":               "${{ github.event.forkee.owner.id }}"
+          echo "forkee.created_at":             "${{ github.event.forkee.created_at }}"
+
+      - name: watch-info
+        if: github.event_name == 'watch'
+        run: |
+          echo "=== WATCH (STAR) INFO ==="
+          echo "NOTA: 'watch' se dispara cuando alguien da estrella al repo"
+          echo "action (started)":              "${{ github.event.action }}"
+          echo "sender.login":                  "${{ github.event.sender.login }}"
+
+      - name: member-info
+        if: github.event_name == 'member'
+        run: |
+          echo "=== MEMBER INFO ==="
+          echo "action (added/removed/edited)": "${{ github.event.action }}"
+          echo "member.login":                  "${{ github.event.member.login }}"
+          echo "member.id":                     "${{ github.event.member.id }}"
+          echo "member.type":                   "${{ github.event.member.type }}"
+          echo "member.site_admin":             "${{ github.event.member.site_admin }}"
+          echo "member.html_url":               "${{ github.event.member.html_url }}"
+          echo "--- changes (solo en action=edited) ---"
+          echo "changes.permission.from":       "${{ github.event.changes.permission.from }}"
+          echo "changes.permission.to":         "${{ github.event.changes.permission.to }}"
+
+      - name: collab-sender
+        run: |
+          echo "=== SENDER ==="
+          echo "sender.login":                  "${{ github.event.sender.login }}"
+          echo "sender.id":                     "${{ github.event.sender.id }}"
+          echo "sender.type":                   "${{ github.event.sender.type }}"
+          echo "sender.html_url":               "${{ github.event.sender.html_url }}"
+
+      - name: collab-github-context
+        run: |
+          echo "=== GITHUB CONTEXT ==="
+          echo "github.event_name":             "${{ github.event_name }}"
+          echo "github.actor":                  "${{ github.actor }}"
+          echo "github.ref":                    "${{ github.ref }}"
+          echo "github.repository":             "${{ github.repository }}"
+          echo "github.repository_owner":       "${{ github.repository_owner }}"
+          echo "github.run_id":                 "${{ github.run_id }}"
+          echo "github.workflow":               "${{ github.workflow }}"
+

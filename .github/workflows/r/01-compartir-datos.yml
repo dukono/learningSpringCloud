@@ -1,0 +1,312 @@
+name: "01 - Compartir Datos entre Steps y Jobs"
+
+# Demuestra todas las formas de compartir datos en GitHub Actions
+on:
+  workflow_dispatch:
+    inputs:
+      test-mode:
+        description: 'Modo de prueba'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - minimal
+
+jobs:
+  # ============================================================================
+  # JOB 1: PRODUCER - Genera datos de múltiples formas
+  # ============================================================================
+  producer:
+    name: "Producir Datos"
+    runs-on: ubuntu-latest
+    outputs:
+      # Outputs para compartir con otros jobs
+      build-version: ${{ steps.version.outputs.version }}
+      build-timestamp: ${{ steps.version.outputs.timestamp }}
+      test-results: ${{ steps.tests.outputs.results }}
+      matrix-data: ${{ steps.matrix.outputs.environments }}
+    
+    steps:
+      - name: "Checkout código"
+        uses: actions/checkout@v4
+      
+      # ----------------------------------------------------------------------
+      # 1. COMPARTIR ENTRE STEPS: Variables de entorno de step
+      # ----------------------------------------------------------------------
+      - name: "Step 1: Generar versión"
+        id: version
+        run: |
+          VERSION="1.0.${{ github.run_number }}"
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "timestamp=$TIMESTAMP" >> $GITHUB_OUTPUT
+          
+          # También guardar en archivo para otros steps
+          echo "$VERSION" > version.txt
+          echo "$TIMESTAMP" > timestamp.txt
+          
+          echo "✅ Versión generada: $VERSION"
+      
+      - name: "Step 2: Usar datos del step anterior"
+        run: |
+          echo "📦 Versión: ${{ steps.version.outputs.version }}"
+          echo "🕐 Timestamp: ${{ steps.version.outputs.timestamp }}"
+          echo "📁 Desde archivo: $(cat version.txt)"
+      
+      # ----------------------------------------------------------------------
+      # 2. GITHUB_ENV: Variables de entorno globales para todo el job
+      # ----------------------------------------------------------------------
+      - name: "Step 3: Crear variables de entorno globales"
+        run: |
+          echo "BUILD_VERSION=${{ steps.version.outputs.version }}" >> $GITHUB_ENV
+          echo "PROJECT_NAME=MiProyecto" >> $GITHUB_ENV
+          echo "BUILD_USER=${{ github.actor }}" >> $GITHUB_ENV
+      
+      - name: "Step 4: Usar variables de entorno"
+        run: |
+          echo "🏗️ Construyendo $PROJECT_NAME v$BUILD_VERSION"
+          echo "👤 Usuario: $BUILD_USER"
+      
+      # ----------------------------------------------------------------------
+      # 3. GITHUB_PATH: Agregar directorios al PATH
+      # ----------------------------------------------------------------------
+      - name: "Step 5: Agregar scripts al PATH"
+        run: |
+          mkdir -p ${{ github.workspace }}/bin
+          echo '#!/bin/bash' > ${{ github.workspace }}/bin/mi-comando
+          echo 'echo "🚀 Comando personalizado ejecutado"' >> ${{ github.workspace }}/bin/mi-comando
+          chmod +x ${{ github.workspace }}/bin/mi-comando
+          echo "${{ github.workspace }}/bin" >> $GITHUB_PATH
+      
+      - name: "Step 6: Ejecutar comando desde PATH"
+        run: mi-comando
+      
+      # ----------------------------------------------------------------------
+      # 4. Crear archivos de build (para artifacts)
+      # ----------------------------------------------------------------------
+      - name: "Step 7: Compilar aplicación (simulado)"
+        id: build
+        run: |
+          mkdir -p build/output
+          echo "Binary compilado v${{ steps.version.outputs.version }}" > build/output/app.bin
+          echo "Dependencias incluidas" > build/output/dependencies.txt
+          
+          # Crear reporte de build
+          cat > build/build-report.json << EOF
+          {
+            "version": "${{ steps.version.outputs.version }}",
+            "timestamp": "${{ steps.version.outputs.timestamp }}",
+            "status": "success",
+            "artifacts": ["app.bin", "dependencies.txt"]
+          }
+          EOF
+          
+          echo "✅ Build completado"
+      
+      # ----------------------------------------------------------------------
+      # 5. Ejecutar tests y generar resultados
+      # ----------------------------------------------------------------------
+      - name: "Step 8: Ejecutar tests"
+        id: tests
+        run: |
+          mkdir -p test-results
+          
+          # Simular ejecución de tests
+          cat > test-results/results.json << EOF
+          {
+            "total": 150,
+            "passed": 148,
+            "failed": 2,
+            "skipped": 0
+          }
+          EOF
+          
+          # Exportar resumen como output (como JSON escapado)
+          RESULTS='{"passed":148,"failed":2}'
+          echo "results=$RESULTS" >> $GITHUB_OUTPUT
+          
+          echo "✅ Tests ejecutados: 148/150 pasaron"
+      
+      # ----------------------------------------------------------------------
+      # 6. ARTIFACTS: Subir archivos para otros jobs
+      # ----------------------------------------------------------------------
+      - name: "Step 9: Subir artifacts de build"
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            build/
+            version.txt
+            timestamp.txt
+          retention-days: 7
+      
+      - name: "Step 10: Subir artifacts de tests"
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results/
+          retention-days: 7
+      
+      # ----------------------------------------------------------------------
+      # 7. Generar matriz dinámica para otros jobs
+      # ----------------------------------------------------------------------
+      - name: "Step 11: Generar matriz de entornos"
+        id: matrix
+        run: |
+          # Crear matriz dinámica basada en lógica de negocio
+          if [ "${{ inputs.test-mode }}" == "full" ]; then
+            MATRIX='["dev","staging","production"]'
+          else
+            MATRIX='["dev"]'
+          fi
+          
+          echo "environments=$MATRIX" >> $GITHUB_OUTPUT
+          echo "📋 Entornos a desplegar: $MATRIX"
+      
+      # ----------------------------------------------------------------------
+      # 8. GITHUB_STEP_SUMMARY: Resumen visual en la UI
+      # ----------------------------------------------------------------------
+      - name: "Step 12: Generar resumen"
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          # 📊 Resumen del Build
+          
+          ## ℹ️ Información General
+          - **Versión:** \`${{ steps.version.outputs.version }}\`
+          - **Timestamp:** \`${{ steps.version.outputs.timestamp }}\`
+          - **Usuario:** \`${{ github.actor }}\`
+          - **Modo:** \`${{ inputs.test-mode }}\`
+          
+          ## 🏗️ Build
+          - ✅ Compilación exitosa
+          - 📦 Artifacts generados: 2
+          
+          ## 🧪 Tests
+          - ✅ Pasados: 148
+          - ❌ Fallados: 2
+          - ⏭️ Omitidos: 0
+          
+          ## 🚀 Entornos
+          \`\`\`json
+          ${{ steps.matrix.outputs.environments }}
+          \`\`\`
+          EOF
+
+  # ============================================================================
+  # JOB 2: CONSUMER - Consume datos del job producer
+  # ============================================================================
+  consumer:
+    name: "Consumir Datos del Producer"
+    runs-on: ubuntu-latest
+    needs: producer
+    
+    steps:
+      - name: "Usar outputs del job anterior"
+        run: |
+          echo "📦 Versión recibida: ${{ needs.producer.outputs.build-version }}"
+          echo "🕐 Timestamp recibido: ${{ needs.producer.outputs.build-timestamp }}"
+          echo "🧪 Resultados tests: ${{ needs.producer.outputs.test-results }}"
+      
+      # Descargar artifacts
+      - name: "Descargar build artifacts"
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: ./downloaded-build
+      
+      - name: "Descargar test results"
+        uses: actions/download-artifact@v4
+        with:
+          name: test-results
+          path: ./downloaded-tests
+      
+      - name: "Verificar artifacts descargados"
+        run: |
+          echo "📂 Contenido de build:"
+          ls -la downloaded-build/
+          cat downloaded-build/version.txt
+          
+          echo ""
+          echo "📂 Contenido de tests:"
+          ls -la downloaded-tests/
+          cat downloaded-tests/results.json
+      
+      - name: "Procesar datos"
+        run: |
+          VERSION=$(cat downloaded-build/version.txt)
+          echo "🔄 Procesando versión $VERSION"
+          
+          # Simular procesamiento
+          echo "Deployment package v$VERSION creado" > deployment-package.txt
+      
+      - name: "Subir package final"
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-package
+          path: deployment-package.txt
+
+  # ============================================================================
+  # JOB 3: MATRIX DYNAMIC - Usa la matriz generada dinámicamente
+  # ============================================================================
+  deploy-matrix:
+    name: "Deploy a ${{ matrix.environment }}"
+    runs-on: ubuntu-latest
+    needs: [producer, consumer]
+    strategy:
+      matrix:
+        # Matriz dinámica desde output del producer
+        environment: ${{ fromJSON(needs.producer.outputs.matrix-data) }}
+      fail-fast: false
+    
+    steps:
+      - name: "Descargar deployment package"
+        uses: actions/download-artifact@v4
+        with:
+          name: deployment-package
+      
+      - name: "Deploy a ${{ matrix.environment }}"
+        run: |
+          echo "🚀 Desplegando a: ${{ matrix.environment }}"
+          echo "📦 Versión: ${{ needs.producer.outputs.build-version }}"
+          cat deployment-package.txt
+          
+          # Simular deployment
+          sleep 2
+          echo "✅ Deploy exitoso en ${{ matrix.environment }}"
+      
+      - name: "Verificar deployment"
+        run: |
+          echo "✓ Verificación de ${{ matrix.environment }} completada"
+
+  # ============================================================================
+  # JOB 4: FINAL REPORT - Consolida todo
+  # ============================================================================
+  report:
+    name: "Reporte Final"
+    runs-on: ubuntu-latest
+    needs: [producer, consumer, deploy-matrix]
+    if: always()
+    
+    steps:
+      - name: "Generar reporte completo"
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          # 🎯 Reporte Final del Pipeline
+          
+          ## Resultados de Jobs
+          - **Producer:** ${{ needs.producer.result }}
+          - **Consumer:** ${{ needs.consumer.result }}
+          - **Deploy Matrix:** ${{ needs.deploy-matrix.result }}
+          
+          ## Datos Compartidos
+          - **Versión:** ${{ needs.producer.outputs.build-version }}
+          - **Tests:** ${{ needs.producer.outputs.test-results }}
+          
+          ## Estado General
+          Pipeline completado exitosamente ✅
+          EOF
+          
+          echo "📊 Reporte generado"
+

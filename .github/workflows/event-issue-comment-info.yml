@@ -1,0 +1,74 @@
+name: Event - Issue Comment Info
+on:
+  issue_comment:
+    types:
+      - created
+      - edited
+      - deleted
+
+jobs:
+  show-issue-comment-info:
+    runs-on: ubuntu-latest
+    steps:
+      - name: comment-event-root
+        run: |
+          echo "=== ISSUE_COMMENT EVENT (atributos raíz) ==="
+          echo "github.event.action":                   "${{ github.event.action }}"
+
+      - name: comment-main
+        run: |
+          echo "=== github.event.comment ==="
+          echo "comment.id":                            "${{ github.event.comment.id }}"
+          echo "comment.body":                          "${{ github.event.comment.body }}"
+          echo "comment.html_url":                      "${{ github.event.comment.html_url }}"
+          echo "comment.url":                           "${{ github.event.comment.url }}"
+          echo "comment.created_at":                    "${{ github.event.comment.created_at }}"
+          echo "comment.updated_at":                    "${{ github.event.comment.updated_at }}"
+          echo "comment.author_association":            "${{ github.event.comment.author_association }}"
+          echo "comment.user.login":                    "${{ github.event.comment.user.login }}"
+          echo "comment.user.id":                       "${{ github.event.comment.user.id }}"
+          echo "comment.user.type":                     "${{ github.event.comment.user.type }}"
+
+      - name: comment-issue
+        run: |
+          echo "=== github.event.issue (issue/PR al que pertenece el comentario) ==="
+          echo "issue.number":                          "${{ github.event.issue.number }}"
+          echo "issue.title":                           "${{ github.event.issue.title }}"
+          echo "issue.state":                           "${{ github.event.issue.state }}"
+          echo "issue.locked":                          "${{ github.event.issue.locked }}"
+          echo "issue.body":                            "${{ github.event.issue.body }}"
+          echo "issue.html_url":                        "${{ github.event.issue.html_url }}"
+          echo "issue.created_at":                      "${{ github.event.issue.created_at }}"
+          echo "issue.updated_at":                      "${{ github.event.issue.updated_at }}"
+          echo "issue.user.login":                      "${{ github.event.issue.user.login }}"
+          echo "--- si el issue es un PR, este objeto existe ---"
+          echo "issue.pull_request.url":                "${{ github.event.issue.pull_request.url }}"
+          echo "issue.pull_request.html_url":           "${{ github.event.issue.pull_request.html_url }}"
+          echo "issue.pull_request.merged_at":          "${{ github.event.issue.pull_request.merged_at }}"
+
+      - name: comment-detect-if-pr
+        run: |
+          echo "=== ¿ES COMENTARIO EN PR O EN ISSUE? ==="
+          echo "es PR (pull_request existe)":           "${{ github.event.issue.pull_request != null }}"
+          echo "--- arrays del issue ---"
+          echo "issue.labels":                          "${{ join(github.event.issue.labels.*.name, ', ') }}"
+          echo "issue.assignees":                       "${{ join(github.event.issue.assignees.*.login, ', ') }}"
+
+      - name: comment-sender
+        run: |
+          echo "=== SENDER ==="
+          echo "sender.login":                          "${{ github.event.sender.login }}"
+          echo "sender.id":                             "${{ github.event.sender.id }}"
+          echo "sender.type":                           "${{ github.event.sender.type }}"
+
+      - name: comment-github-context
+        run: |
+          echo "=== GITHUB CONTEXT ==="
+          echo "github.event_name":                     "${{ github.event_name }}"
+          echo "github.actor":                          "${{ github.actor }}"
+          echo "github.ref":                            "${{ github.ref }}"
+          echo "github.sha":                            "${{ github.sha }}"
+          echo "github.run_id":                         "${{ github.run_id }}"
+          echo "github.run_number":                     "${{ github.run_number }}"
+          echo "github.workflow":                       "${{ github.workflow }}"
+

@@ -1,0 +1,42 @@
+# Indica que este es el archivo de configuración raíz
+root = true
+
+# Configuración general para todos los archivos
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# Configuración específica para archivos Java
+[*.java]
+# Forzar 4 espacios de indentación
+indent_size = 4
+continuation_indent_size = 8
+
+# Organización de Imports (Evita los .* que ensucian el código)
+ij_java_use_single_class_imports = true
+ij_java_insert_inner_class_imports = true
+ij_java_class_count_to_use_import_on_demand = 99
+ij_java_names_count_to_use_import_on_demand = 99
+
+# Espacios y llaves
+ij_java_spaces_within_brackets = false
+ij_java_space_before_method_parentheses = false
+ij_java_brace_style = end_of_line
+ij_java_class_brace_style = end_of_line
+
+# Envoltura de líneas (Wrap)
+ij_java_line_comment_at_first_column = false
+ij_java_block_comment_at_first_column = false
+max_line_length = 120
+
+# Configuración para archivos Build (Maven/Gradle) y XML
+[{pom.xml,*.gradle,*.xml}]
+indent_size = 2
+
+# Configuración para archivos JSON y YAML
+[{*.json,*.yml,*.yaml}]
+indent_size = 2

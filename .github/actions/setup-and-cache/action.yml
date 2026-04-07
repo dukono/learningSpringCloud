@@ -1,0 +1,81 @@
+name: 'Setup Node con Cache'
+description: |
+  Composite action que instala Node.js con cache optimizado.
+  Ejemplo de cómo crear una Composite Action reutilizable.
+author: 'Ejemplo GitHub Actions'
+
+# ─── Inputs ──────────────────────────────────────────────
+inputs:
+  node-version:
+    description: 'Versión de Node.js'
+    required: false
+    default: '20'
+  working-directory:
+    description: 'Directorio de trabajo'
+    required: false
+    default: '.'
+  install-deps:
+    description: 'Si instalar dependencias automáticamente'
+    required: false
+    default: 'true'
+
+# ─── Outputs ─────────────────────────────────────────────
+outputs:
+  cache-hit:
+    description: 'true si se restauró la caché, false si fue cache miss'
+    value: ${{ steps.cache.outputs.cache-hit }}
+  node-version-installed:
+    description: 'Versión exacta de Node.js instalada'
+    value: ${{ steps.get-node-version.outputs.version }}
+
+# ─── Tipo: Composite ─────────────────────────────────────
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+    
+    - name: Cache npm
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.npm
+        key: ${{ runner.os }}-node-${{ inputs.node-version }}-${{ hashFiles(format('{0}/**/package-lock.json', inputs.working-directory)) }}
+        restore-keys: |
+          ${{ runner.os }}-node-${{ inputs.node-version }}-
+          ${{ runner.os }}-node-
+    
+    - name: Obtener versión instalada
+      id: get-node-version
+      shell: bash
+      run: |
+        VERSION=$(node --version)
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "✅ Node.js $VERSION instalado"
+    
+    - name: Mostrar estado del cache
+      shell: bash
+      run: |
+        if [ "${{ steps.cache.outputs.cache-hit }}" == "true" ]; then
+          echo "📦 Cache HIT - npm restaurado desde caché"
+        else
+          echo "⚠️ Cache MISS - descargando dependencias"
+        fi
+    
+    - name: Instalar dependencias
+      if: inputs.install-deps == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        if [ -f "package-lock.json" ]; then
+          echo "Ejecutando npm ci..."
+          npm ci
+        elif [ -f "package.json" ]; then
+          echo "Ejecutando npm install (no hay package-lock.json)..."
+          npm install
+        else
+          echo "ℹ️ No hay package.json en ${{ inputs.working-directory }}, saltando instalación"
+        fi
+

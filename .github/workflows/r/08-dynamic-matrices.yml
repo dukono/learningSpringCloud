@@ -1,0 +1,170 @@
+name: "08 - Matrices Dinámicas y Estrategias Avanzadas"
+
+# Demuestra matrices dinámicas, condicionales complejas y estrategias avanzadas
+
+on:
+  workflow_dispatch:
+    inputs:
+      test-scope:
+        description: 'Alcance de tests'
+        type: choice
+        options:
+          - minimal
+          - standard
+          - full
+        default: standard
+
+jobs:
+  # ============================================================================
+  # JOB 1: GENERAR MATRIZ DINÁMICAMENTE
+  # ============================================================================
+  generate-matrix:
+    name: "Generar Matriz Dinámica"
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.generate.outputs.matrix }}
+      test-matrix: ${{ steps.generate.outputs.test-matrix }}
+    
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+      
+      - name: "Generar matriz según input"
+        id: generate
+        run: |
+          case "${{ inputs.test-scope }}" in
+            minimal)
+              MATRIX='{"os":["ubuntu-latest"],"python":["3.11"]}'
+              TEST_MATRIX='["unit"]'
+              ;;
+            standard)
+              MATRIX='{"os":["ubuntu-latest","windows-latest"],"python":["3.10","3.11"]}'
+              TEST_MATRIX='["unit","integration"]'
+              ;;
+            full)
+              MATRIX='{"os":["ubuntu-latest","windows-latest","macos-latest"],"python":["3.9","3.10","3.11","3.12"]}'
+              TEST_MATRIX='["unit","integration","e2e"]'
+              ;;
+          esac
+          
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+          echo "test-matrix=$TEST_MATRIX" >> $GITHUB_OUTPUT
+          
+          echo "📊 Matriz generada para scope: ${{ inputs.test-scope }}"
+
+  # ============================================================================
+  # JOB 2: MATRIZ ESTÁTICA COMPLEJA
+  # ============================================================================
+  static-matrix:
+    name: "${{ matrix.os }} - ${{ matrix.arch }}"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        arch: [x64]
+        include:
+          - os: ubuntu-latest
+            arch: x64
+            extra-flags: "--extra"
+        exclude:
+          - os: macos-latest
+            arch: arm64
+    
+    steps:
+      - name: "Información de la matriz"
+        run: |
+          echo "🖥️ Sistema Operativo: ${{ matrix.os }}"
+          echo "🏗️ Arquitectura: ${{ matrix.arch }}"
+      
+      - name: "Simular build"
+        run: |
+          echo "Compilando para ${{ matrix.arch }}..."
+          sleep 2
+          echo "✅ Build completado"
+
+  # ============================================================================
+  # JOB 3: USAR MATRIZ DINÁMICA
+  # ============================================================================
+  dynamic-matrix-tests:
+    name: "Test: ${{ matrix.type }}"
+    runs-on: ubuntu-latest
+    needs: generate-matrix
+    strategy:
+      fail-fast: false
+      matrix:
+        type: ${{ fromJSON(needs.generate-matrix.outputs.test-matrix) }}
+    
+    steps:
+      - name: "Ejecutar tests ${{ matrix.type }}"
+        run: |
+          echo "🧪 Ejecutando tests de tipo: ${{ matrix.type }}"
+          
+          case "${{ matrix.type }}" in
+            unit)
+              DURATION=3
+              ;;
+            integration)
+              DURATION=5
+              ;;
+            e2e)
+              DURATION=10
+              ;;
+          esac
+          
+          sleep $DURATION
+          echo "✅ Tests ${{ matrix.type }} completados"
+
+  # ============================================================================
+  # JOB 4: REPORTE CONSOLIDADO
+  # ============================================================================
+  matrix-report:
+    name: "Reporte de Matrices"
+    runs-on: ubuntu-latest
+    needs: [generate-matrix, static-matrix, dynamic-matrix-tests]
+    if: always()
+    
+    steps:
+      - name: "Generar reporte completo"
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          # 📊 Reporte de Matrices
+          
+          ## Resultados de Jobs
+          - **Generate Matrix:** ${{ needs.generate-matrix.result }}
+          - **Static Matrix:** ${{ needs.static-matrix.result }}
+          - **Dynamic Matrix Tests:** ${{ needs.dynamic-matrix-tests.result }}
+          
+          ## 💡 Técnicas Demostradas
+          
+          ### 1. Matriz Estática
+          ```yaml
+          strategy:
+            matrix:
+              os: [ubuntu, windows, macos]
+              version: [3.10, 3.11]
+          ```
+          
+          ### 2. Matriz Dinámica
+          ```yaml
+          strategy:
+            matrix:
+              config: ${{ fromJSON(needs.job.outputs.matrix) }}
+          ```
+          
+          ### 3. Include/Exclude
+          ```yaml
+          strategy:
+            matrix:
+              include:
+                - os: ubuntu
+                  extra: "special"
+              exclude:
+                - os: windows
+                  version: "3.12"
+          ```
+          
+          ## 📈 Métricas
+          - **Scope:** `${{ inputs.test-scope }}`
+          - **Test types:** `${{ needs.generate-matrix.outputs.test-matrix }}`
+          EOF

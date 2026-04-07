@@ -1,0 +1,56 @@
+name: Event - Schedule Info
+on:
+  schedule:
+    - cron: '0 2 * * *'   # 2am UTC diario
+
+jobs:
+  show-schedule-info:
+    runs-on: ubuntu-latest
+    steps:
+      - name: schedule-event-root
+        run: |
+          echo "=== SCHEDULE EVENT ==="
+          echo "NOTA: el evento schedule NO tiene github.event.* con datos propios"
+          echo "github.event_name":             "${{ github.event_name }}"
+          echo "github.event (json)":           "${{ toJson(github.event) }}"
+
+      - name: schedule-github-context
+        run: |
+          echo "=== GITHUB CONTEXT ==="
+          echo "github.ref":                    "${{ github.ref }}"
+          echo "github.ref_name":               "${{ github.ref_name }}"
+          echo "github.sha":                    "${{ github.sha }}"
+          echo "github.actor":                  "${{ github.actor }}"
+          echo "github.triggering_actor":       "${{ github.triggering_actor }}"
+          echo "github.workflow":               "${{ github.workflow }}"
+          echo "github.workflow_ref":           "${{ github.workflow_ref }}"
+          echo "github.run_id":                 "${{ github.run_id }}"
+          echo "github.run_number":             "${{ github.run_number }}"
+          echo "github.run_attempt":            "${{ github.run_attempt }}"
+          echo "github.repository":             "${{ github.repository }}"
+          echo "github.server_url":             "${{ github.server_url }}"
+
+      - name: schedule-runner-context
+        run: |
+          echo "=== RUNNER CONTEXT ==="
+          echo "runner.name":                   "${{ runner.name }}"
+          echo "runner.os":                     "${{ runner.os }}"
+          echo "runner.arch":                   "${{ runner.arch }}"
+          echo "runner.temp":                   "${{ runner.temp }}"
+          echo "runner.tool_cache":             "${{ runner.tool_cache }}"
+          echo "runner.debug":                  "${{ runner.debug }}"
+          echo "runner.environment":            "${{ runner.environment }}"
+
+      - name: schedule-env-context
+        run: |
+          echo "=== ENV CONTEXT ==="
+          echo "GITHUB_WORKFLOW":               "$GITHUB_WORKFLOW"
+          echo "GITHUB_RUN_ID":                 "$GITHUB_RUN_ID"
+          echo "GITHUB_RUN_NUMBER":             "$GITHUB_RUN_NUMBER"
+          echo "GITHUB_EVENT_NAME":             "$GITHUB_EVENT_NAME"
+          echo "GITHUB_REF":                    "$GITHUB_REF"
+          echo "GITHUB_SHA":                    "$GITHUB_SHA"
+          echo "RUNNER_OS":                     "$RUNNER_OS"
+          echo "RUNNER_ARCH":                   "$RUNNER_ARCH"
+          date
+

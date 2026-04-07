@@ -1,0 +1,58 @@
+name: Event - Repository Dispatch Info
+on:
+  repository_dispatch:
+    types:
+      - webhook
+      - deployment
+      - custom-event
+
+jobs:
+  show-repo-dispatch-info:
+    runs-on: ubuntu-latest
+    steps:
+      - name: repo-dispatch-event-root
+        run: |
+          echo "=== REPOSITORY_DISPATCH EVENT ==="
+          echo "github.event.action (= event_type enviado)":  "${{ github.event.action }}"
+          echo "github.event.client_payload (json)":          "${{ toJson(github.event.client_payload) }}"
+
+      - name: repo-dispatch-payload-acceso
+        run: |
+          echo "=== ACCESO AL CLIENT PAYLOAD ==="
+          echo "NOTA: los campos dependen de lo que envíe el llamador externo"
+          echo "client_payload.key":            "${{ github.event.client_payload.key }}"
+          echo "client_payload.version":        "${{ github.event.client_payload.version }}"
+          echo "client_payload.environment":    "${{ github.event.client_payload.environment }}"
+          echo "client_payload.sha":            "${{ github.event.client_payload.sha }}"
+          echo "client_payload.triggered_by":   "${{ github.event.client_payload.triggered_by }}"
+
+      - name: repo-dispatch-sender
+        run: |
+          echo "=== SENDER (quien hizo la llamada a la API) ==="
+          echo "sender.login":                  "${{ github.event.sender.login }}"
+          echo "sender.id":                     "${{ github.event.sender.id }}"
+          echo "sender.type":                   "${{ github.event.sender.type }}"
+          echo "sender.site_admin":             "${{ github.event.sender.site_admin }}"
+
+      - name: repo-dispatch-github-context
+        run: |
+          echo "=== GITHUB CONTEXT ==="
+          echo "github.event_name":             "${{ github.event_name }}"
+          echo "github.ref":                    "${{ github.ref }}"
+          echo "github.ref_name":               "${{ github.ref_name }}"
+          echo "github.sha":                    "${{ github.sha }}"
+          echo "github.actor":                  "${{ github.actor }}"
+          echo "github.workflow":               "${{ github.workflow }}"
+          echo "github.run_id":                 "${{ github.run_id }}"
+          echo "github.run_number":             "${{ github.run_number }}"
+          echo "github.repository":             "${{ github.repository }}"
+
+      - name: repo-dispatch-how-to-trigger
+        run: |
+          echo "=== CÓMO DISPARAR ESTE WORKFLOW DESDE CLI ==="
+          echo "curl -X POST \\"
+          echo "  -H 'Accept: application/vnd.github+json' \\"
+          echo "  -H 'Authorization: Bearer <TOKEN>' \\"
+          echo "  https://api.github.com/repos/${{ github.repository }}/dispatches \\"
+          echo "  -d '{\"event_type\":\"webhook\",\"client_payload\":{\"key\":\"value\",\"version\":\"1.0.0\"}}'"
+

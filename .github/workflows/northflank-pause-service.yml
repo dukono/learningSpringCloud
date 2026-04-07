@@ -1,0 +1,184 @@
+name: Northflank Inactive Services Pause
+
+on:
+  schedule:
+    # 1. De 8:00 a 22:00 cada 30 minutos (Formato: min hora días mes día-semana)
+    # Se ejecuta en el minuto 0 y 30 de cada hora entre las 8 y las 22.
+    - cron: '0,30 8-22 * * *'
+    
+    # 2. De 22:00 a 8:00 cada 1 hora
+    # Se ejecuta en el minuto 0 de las horas 23, 0, 1, 2, 3, 4, 5, 6, 7
+    - cron: '0 23-23/1,0-7/1 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Ejecutar en modo prueba (no escalar realmente)'
+        required: false
+        default: 'false'
+
+jobs:
+  scale-down:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install requests
+        run: |
+          pip install requests
+
+      - name: Check Usage and Pause Services
+        env:
+          NORTHFLANK_API_KEY: ${{ secrets.NORTHFLANK_API_KEY }}
+          NORTHFLANK_PROJECT_ID: ${{ vars.NORTHFLANK_PROJECT_ID }}
+          NORTHFLANK_SERVICE_ID: ${{ vars.NORTHFLANK_SERVICE_ID }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        shell: python
+        run: |
+          import os
+          import sys
+          import requests
+          import datetime
+
+          API_KEY = os.getenv("NORTHFLANK_API_KEY")
+          PROJECT_ID = os.getenv("NORTHFLANK_PROJECT_ID")
+          APP_SERVICE_ID = os.getenv("NORTHFLANK_SERVICE_ID")
+          DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
+
+          if not API_KEY or not PROJECT_ID:
+            print("❌ Error: Faltan NORTHFLANK_API_KEY o NORTHFLANK_PROJECT_ID")
+            sys.exit(1)
+
+          BASE_URL = "https://api.northflank.com/v1"
+          HEADERS = {
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json"
+          }
+
+          def get_services():
+            url = f"{BASE_URL}/projects/{PROJECT_ID}/services"
+            try:
+              resp = requests.get(url, headers=HEADERS, timeout=10)
+              resp.raise_for_status()
+              return resp.json().get("data", {}).get("services", [])
+            except Exception as e:
+              print(f"❌ Error al obtener servicios: {e}")
+              return []  # FIX: indentación correcta dentro del except
+
+
+          def get_metrics(service_id):
+            now = datetime.datetime.now(datetime.timezone.utc)
+            now_iso = now.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            duration_seconds = 60 * 30
+
+            url = (
+              f"{BASE_URL}/projects/{PROJECT_ID}/services/{service_id}/metrics"
+              f"?metricTypes=networkIngress&duration={duration_seconds}&endTime={now_iso}"
+            )
+            try:
+              resp = requests.get(url, headers=HEADERS, timeout=10)
+              if resp.status_code == 404:
+                print(f"⚠️ No se encontraron métricas para {service_id}.")
+                return None
+              resp.raise_for_status()
+              data = resp.json()
+
+              nodes = data.get("data", {}).get("networkIngress", {}).get("values", [])
+              total_traffic = sum(
+                point.get("value", 0)
+                for node in nodes
+                for point in node.get("data", [])
+              )
+              return {"total_traffic": total_traffic}
+            except Exception as e:
+              print(f"⚠️ No se pudieron obtener métricas para {service_id}: {e}")
+              return None  # FIX: indentación correcta dentro del except
+
+
+          def pause_service(service_id, service_name):
+            if DRY_RUN:
+              print(f"🧪 [DRY RUN] Pausando servicio '{service_name}' ({service_id}).")
+              return True  # FIX: return True debe estar DENTRO del if DRY_RUN, no fuera
+
+            url = f"{BASE_URL}/projects/{PROJECT_ID}/services/{service_id}/pause"
+            try:
+              resp = requests.post(url, headers=HEADERS, timeout=10)
+              resp.raise_for_status()
+              print(f"⏸️ Servicio '{service_name}' pausado correctamente.")
+              return True
+            except Exception as e:
+              print(f"❌ Error al pausar '{service_name}': {e}")
+              return False  # FIX: indentación correcta dentro del except
+
+
+          def _pause_all_except(services, skip_id=None):
+            paused_count = 0
+            checked_count = 0
+            for svc in services:
+              svc_id = svc.get("id")
+              svc_name = svc.get("name")
+              svc_status = svc.get("status")
+              if svc_id == skip_id:
+                print(f"⏭️ Saltando '{svc_name}' (ya pausado).")
+                continue
+              if not svc_status:
+                print(f"⏸️ Saltando '{svc_name}' (ya pausado)")
+                continue
+              checked_count += 1
+              if pause_service(svc_id, svc_name):
+                paused_count += 1
+            print(f"\n--- Resumen ---")
+            print(f"Servicios procesados: {checked_count}")
+            print(f"Servicios pausados:   {paused_count}")  # FIX: indentación correcta al nivel del for
+
+
+          def main():
+            if not APP_SERVICE_ID:
+              print("❌ Error: Falta NORTHFLANK_SERVICE_ID")
+              sys.exit(1)  # FIX: sys.exit debe estar DENTRO del if, no fuera
+
+            # 1. Obtener todos los servicios
+            services = get_services()
+            if not services:
+              print("No se encontraron servicios o error en la API.")
+              return
+
+            # 2. Encontrar APP_SERVICE_ID y comprobar su status
+            app_service = next((svc for svc in services if svc.get("id") == APP_SERVICE_ID), None)
+            if app_service is None:
+              print(f"❌ Servicio '{APP_SERVICE_ID}' no encontrado en el proyecto.")
+              return
+
+            app_status = app_service.get("status", {})
+            print(f"ℹ️ Estado de '{APP_SERVICE_ID}': {app_status}")
+
+            # 3. Si status == {} → servicio pausado → pausar todos los demás sin mirar métricas
+            if not app_status:
+              print(f"⏸️ '{APP_SERVICE_ID}' ya está pausado. Pausando el resto de servicios...")
+              _pause_all_except(services, skip_id=APP_SERVICE_ID)
+              return
+
+            # 4. Si status != {} → servicio activo → comprobar métricas de tráfico
+            print(f"🔍 '{APP_SERVICE_ID}' está activo. Comprobando métricas de tráfico...")
+            metrics = get_metrics(APP_SERVICE_ID)
+            if metrics is None:
+              print(f"⚠️ Sin métricas para '{APP_SERVICE_ID}'. Abortando por precaución.")
+              return
+
+            total_traffic = metrics.get("total_traffic", 0)
+            if total_traffic > 0:
+              print(f"✅ Servicio '{APP_SERVICE_ID}' tiene tráfico (total: {total_traffic}). No se hace nada.")
+              return
+
+            # Sin tráfico → pausar TODOS los servicios
+            print(f"📉 Sin tráfico en los últimos 30 min. Apagando todos los servicios...")
+            _pause_all_except(services, skip_id=None)
+
+
+          if __name__ == "__main__":
+            main()

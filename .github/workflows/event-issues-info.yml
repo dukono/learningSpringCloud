@@ -1,0 +1,96 @@
+name: Event - Issues Info
+on:
+  issues:
+    types:
+      - opened
+      - edited
+      - deleted
+      - transferred
+      - pinned
+      - unpinned
+      - closed
+      - reopened
+      - assigned
+      - unassigned
+      - labeled
+      - unlabeled
+      - locked
+      - unlocked
+      - milestoned
+      - demilestoned
+
+jobs:
+  show-issue-info:
+    runs-on: ubuntu-latest
+    steps:
+      - name: issue-event-root
+        run: |
+          echo "=== ISSUE EVENT (atributos raíz) ==="
+          echo "github.event.action":           "${{ github.event.action }}"
+
+      - name: issue-main
+        run: |
+          echo "=== github.event.issue ==="
+          echo "issue.id":                      "${{ github.event.issue.id }}"
+          echo "issue.number":                  "${{ github.event.issue.number }}"
+          echo "issue.title":                   "${{ github.event.issue.title }}"
+          echo "issue.body":                    "${{ github.event.issue.body }}"
+          echo "issue.state":                   "${{ github.event.issue.state }}"
+          echo "issue.state_reason":            "${{ github.event.issue.state_reason }}"
+          echo "issue.locked":                  "${{ github.event.issue.locked }}"
+          echo "issue.comments":                "${{ github.event.issue.comments }}"
+          echo "issue.author_association":      "${{ github.event.issue.author_association }}"
+          echo "issue.html_url":                "${{ github.event.issue.html_url }}"
+          echo "issue.url":                     "${{ github.event.issue.url }}"
+          echo "issue.created_at":              "${{ github.event.issue.created_at }}"
+          echo "issue.updated_at":              "${{ github.event.issue.updated_at }}"
+          echo "issue.closed_at":               "${{ github.event.issue.closed_at }}"
+
+      - name: issue-user
+        run: |
+          echo "=== github.event.issue.user (autor del issue) ==="
+          echo "issue.user.login":              "${{ github.event.issue.user.login }}"
+          echo "issue.user.id":                 "${{ github.event.issue.user.id }}"
+          echo "issue.user.type":               "${{ github.event.issue.user.type }}"
+          echo "issue.user.site_admin":         "${{ github.event.issue.user.site_admin }}"
+
+      - name: issue-arrays
+        run: |
+          echo "=== ARRAYS ==="
+          echo "issue.labels":                  "${{ join(github.event.issue.labels.*.name, ', ') }}"
+          echo "issue.assignees":               "${{ join(github.event.issue.assignees.*.login, ', ') }}"
+          echo "issue.milestone.title":         "${{ github.event.issue.milestone.title }}"
+          echo "issue.milestone.number":        "${{ github.event.issue.milestone.number }}"
+          echo "issue.milestone.state":         "${{ github.event.issue.milestone.state }}"
+
+      - name: issue-event-specific
+        run: |
+          echo "=== DATOS ESPECÍFICOS SEGÚN ACCIÓN ==="
+          echo "--- assigned/unassigned ---"
+          echo "assignee.login":                "${{ github.event.assignee.login }}"
+          echo "assignee.id":                   "${{ github.event.assignee.id }}"
+          echo "--- labeled/unlabeled ---"
+          echo "label.name":                    "${{ github.event.label.name }}"
+          echo "label.color":                   "${{ github.event.label.color }}"
+          echo "--- milestoned/demilestoned ---"
+          echo "milestone.title":               "${{ github.event.milestone.title }}"
+          echo "milestone.number":              "${{ github.event.milestone.number }}"
+
+      - name: issue-sender
+        run: |
+          echo "=== SENDER ==="
+          echo "sender.login":                  "${{ github.event.sender.login }}"
+          echo "sender.id":                     "${{ github.event.sender.id }}"
+          echo "sender.type":                   "${{ github.event.sender.type }}"
+
+      - name: issue-github-context
+        run: |
+          echo "=== GITHUB CONTEXT ==="
+          echo "github.event_name":             "${{ github.event_name }}"
+          echo "github.actor":                  "${{ github.actor }}"
+          echo "github.ref":                    "${{ github.ref }}"
+          echo "github.sha":                    "${{ github.sha }}"
+          echo "github.run_id":                 "${{ github.run_id }}"
+          echo "github.run_number":             "${{ github.run_number }}"
+          echo "github.workflow":               "${{ github.workflow }}"
+

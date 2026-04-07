@@ -1,0 +1,86 @@
+name: Event - Push Info
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - 'feature/**'
+      - 'hotfix/**'
+      - 'release/**'
+
+jobs:
+  show-push-info:
+    runs-on: ubuntu-latest
+    steps:
+      - name: push-event-root
+        run: |
+          echo "=== PUSH EVENT (atributos raíz) ==="
+          echo "github.event.ref":              "${{ github.event.ref }}"
+          echo "github.event.before":           "${{ github.event.before }}"
+          echo "github.event.after":            "${{ github.event.after }}"
+          echo "github.event.created":          "${{ github.event.created }}"
+          echo "github.event.deleted":          "${{ github.event.deleted }}"
+          echo "github.event.forced":           "${{ github.event.forced }}"
+          echo "github.event.compare":          "${{ github.event.compare }}"
+          echo "github.event.base_ref":         "${{ github.event.base_ref }}"
+
+      - name: push-head-commit
+        run: |
+          echo "=== HEAD COMMIT ==="
+          echo "head_commit.id":                "${{ github.event.head_commit.id }}"
+          echo "head_commit.message":           "${{ github.event.head_commit.message }}"
+          echo "head_commit.timestamp":         "${{ github.event.head_commit.timestamp }}"
+          echo "head_commit.url":               "${{ github.event.head_commit.url }}"
+          echo "head_commit.distinct":          "${{ github.event.head_commit.distinct }}"
+          echo "head_commit.author.name":       "${{ github.event.head_commit.author.name }}"
+          echo "head_commit.author.email":      "${{ github.event.head_commit.author.email }}"
+          echo "head_commit.author.username":   "${{ github.event.head_commit.author.username }}"
+          echo "head_commit.committer.name":    "${{ github.event.head_commit.committer.name }}"
+          echo "head_commit.committer.email":   "${{ github.event.head_commit.committer.email }}"
+          echo "head_commit.added":             "${{ join(github.event.head_commit.added, ', ') }}"
+          echo "head_commit.modified":          "${{ join(github.event.head_commit.modified, ', ') }}"
+          echo "head_commit.removed":           "${{ join(github.event.head_commit.removed, ', ') }}"
+
+      - name: push-commits-array
+        run: |
+          echo "=== COMMITS ARRAY ==="
+          echo "commits (json)": "${{ toJson(github.event.commits) }}"
+
+      - name: push-pusher
+        run: |
+          echo "=== PUSHER (quien hace el push) ==="
+          echo "pusher.name":                   "${{ github.event.pusher.name }}"
+          echo "pusher.email":                  "${{ github.event.pusher.email }}"
+
+      - name: push-sender
+        run: |
+          echo "=== SENDER ==="
+          echo "sender.login":                  "${{ github.event.sender.login }}"
+          echo "sender.id":                     "${{ github.event.sender.id }}"
+          echo "sender.type":                   "${{ github.event.sender.type }}"
+          echo "sender.site_admin":             "${{ github.event.sender.site_admin }}"
+          echo "sender.html_url":               "${{ github.event.sender.html_url }}"
+
+      - name: push-repository
+        run: |
+          echo "=== REPOSITORY ==="
+          echo "repository.id":                 "${{ github.event.repository.id }}"
+          echo "repository.name":               "${{ github.event.repository.name }}"
+          echo "repository.full_name":          "${{ github.event.repository.full_name }}"
+          echo "repository.private":            "${{ github.event.repository.private }}"
+          echo "repository.default_branch":     "${{ github.event.repository.default_branch }}"
+          echo "repository.html_url":           "${{ github.event.repository.html_url }}"
+
+      - name: push-github-context
+        run: |
+          echo "=== GITHUB CONTEXT ==="
+          echo "github.ref":                    "${{ github.ref }}"
+          echo "github.ref_name":               "${{ github.ref_name }}"
+          echo "github.ref_type":               "${{ github.ref_type }}"
+          echo "github.sha":                    "${{ github.sha }}"
+          echo "github.actor":                  "${{ github.actor }}"
+          echo "github.event_name":             "${{ github.event_name }}"
+          echo "github.run_id":                 "${{ github.run_id }}"
+          echo "github.run_number":             "${{ github.run_number }}"
+          echo "github.workflow":               "${{ github.workflow }}"
+

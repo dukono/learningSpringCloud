@@ -1,0 +1,74 @@
+name: Event - Release Info
+on:
+  release:
+    types:
+      - published
+      - unpublished
+      - created
+      - edited
+      - deleted
+      - prereleased
+      - released
+
+jobs:
+  show-release-info:
+    runs-on: ubuntu-latest
+    steps:
+      - name: release-event-root
+        run: |
+          echo "=== RELEASE EVENT (atributos raíz) ==="
+          echo "github.event.action":           "${{ github.event.action }}"
+
+      - name: release-main
+        run: |
+          echo "=== github.event.release ==="
+          echo "release.id":                    "${{ github.event.release.id }}"
+          echo "release.tag_name":              "${{ github.event.release.tag_name }}"
+          echo "release.name":                  "${{ github.event.release.name }}"
+          echo "release.body":                  "${{ github.event.release.body }}"
+          echo "release.draft":                 "${{ github.event.release.draft }}"
+          echo "release.prerelease":            "${{ github.event.release.prerelease }}"
+          echo "release.target_commitish":      "${{ github.event.release.target_commitish }}"
+          echo "release.html_url":              "${{ github.event.release.html_url }}"
+          echo "release.url":                   "${{ github.event.release.url }}"
+          echo "release.assets_url":            "${{ github.event.release.assets_url }}"
+          echo "release.upload_url":            "${{ github.event.release.upload_url }}"
+          echo "release.tarball_url":           "${{ github.event.release.tarball_url }}"
+          echo "release.zipball_url":           "${{ github.event.release.zipball_url }}"
+          echo "release.created_at":            "${{ github.event.release.created_at }}"
+          echo "release.published_at":          "${{ github.event.release.published_at }}"
+
+      - name: release-author
+        run: |
+          echo "=== AUTHOR (quien creó el release) ==="
+          echo "release.author.login":          "${{ github.event.release.author.login }}"
+          echo "release.author.id":             "${{ github.event.release.author.id }}"
+          echo "release.author.type":           "${{ github.event.release.author.type }}"
+          echo "release.author.site_admin":     "${{ github.event.release.author.site_admin }}"
+          echo "release.author.html_url":       "${{ github.event.release.author.html_url }}"
+
+      - name: release-assets
+        run: |
+          echo "=== ASSETS (archivos adjuntos al release) ==="
+          echo "release.assets (json)":         "${{ toJson(github.event.release.assets) }}"
+
+      - name: release-sender
+        run: |
+          echo "=== SENDER ==="
+          echo "sender.login":                  "${{ github.event.sender.login }}"
+          echo "sender.id":                     "${{ github.event.sender.id }}"
+          echo "sender.type":                   "${{ github.event.sender.type }}"
+
+      - name: release-github-context
+        run: |
+          echo "=== GITHUB CONTEXT ==="
+          echo "github.event_name":             "${{ github.event_name }}"
+          echo "github.ref":                    "${{ github.ref }}"
+          echo "github.ref_name":               "${{ github.ref_name }}"
+          echo "github.ref_type":               "${{ github.ref_type }}"
+          echo "github.sha":                    "${{ github.sha }}"
+          echo "github.actor":                  "${{ github.actor }}"
+          echo "github.run_id":                 "${{ github.run_id }}"
+          echo "github.run_number":             "${{ github.run_number }}"
+          echo "github.workflow":               "${{ github.workflow }}"
+

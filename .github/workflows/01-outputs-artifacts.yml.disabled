@@ -1,0 +1,115 @@
+name: "01 - Compartir Datos (Outputs, Env, Artifacts)"
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/01-outputs-artifacts.yml'
+
+jobs:
+  # ─────────────────────────────────────────────────────────
+  # JOB 1: Produce datos usando todos los mecanismos
+  # ─────────────────────────────────────────────────────────
+  producer:
+    runs-on: ubuntu-latest
+    outputs:
+      # Exponer outputs del job para otros jobs (via GITHUB_OUTPUT)
+      version: ${{ steps.calc-version.outputs.version }}
+      build-time: ${{ steps.calc-version.outputs.build-time }}
+    
+    steps:
+      - name: "Paso 1: GITHUB_OUTPUT → steps.id.outputs"
+        id: calc-version
+        run: |
+          VERSION="1.0.${{ github.run_number }}"
+          BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          
+          # Guardar en GITHUB_OUTPUT → accesible como steps.calc-version.outputs.version
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "build-time=$BUILD_TIME" >> $GITHUB_OUTPUT
+          
+          echo "✅ version=$VERSION guardado en GITHUB_OUTPUT"
+      
+      - name: "Paso 2: GITHUB_ENV → variable de entorno bash"
+        run: |
+          # GITHUB_ENV crea variables de entorno para STEPS SIGUIENTES
+          echo "APP_ENV=production" >> $GITHUB_ENV
+          echo "BUILD_ID=${{ github.run_id }}" >> $GITHUB_ENV
+          echo "✅ APP_ENV y BUILD_ID guardados en GITHUB_ENV"
+      
+      - name: "Paso 3: Verificar GITHUB_ENV en step siguiente"
+        run: |
+          echo "APP_ENV es: $APP_ENV"          # Funciona (bash var)
+          echo "BUILD_ID es: $BUILD_ID"         # Funciona (bash var)
+          echo "Versión (output): ${{ steps.calc-version.outputs.version }}"
+      
+      - name: "Paso 4: GITHUB_PATH → añadir al PATH"
+        run: |
+          mkdir -p /tmp/my-tools
+          printf '#!/bin/bash\necho "🛠️ Herramienta personalizada! Args: $@"\n' > /tmp/my-tools/my-script.sh
+          chmod +x /tmp/my-tools/my-script.sh
+          
+          echo "/tmp/my-tools" >> $GITHUB_PATH
+          echo "✅ /tmp/my-tools añadido al PATH"
+      
+      - name: "Paso 5: Usar herramienta del PATH"
+        run: |
+          my-script.sh "argumento1" "argumento2"
+      
+      - name: "Paso 6: Crear artifact para compartir con otros jobs"
+        run: |
+          mkdir -p build-output
+          echo "Versión: ${{ steps.calc-version.outputs.version }}" > build-output/version.txt
+          echo "Fecha: ${{ steps.calc-version.outputs.build-time }}" >> build-output/version.txt
+          echo "Run ID: ${{ github.run_id }}" >> build-output/version.txt
+          cat build-output/version.txt
+      
+      - name: "Subir artifact"
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: build-output/
+          retention-days: 1    # Guardar solo 1 día (es un ejemplo)
+      
+      - name: "Paso 7: GITHUB_STEP_SUMMARY → resumen visual"
+        run: |
+          echo "## 📦 Resultados del Producer" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Versión | ${{ steps.calc-version.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build Time | ${{ steps.calc-version.outputs.build-time }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Run ID | ${{ github.run_id }} |" >> $GITHUB_STEP_SUMMARY
+
+  # ─────────────────────────────────────────────────────────
+  # JOB 2: Consume los datos del JOB 1
+  # ─────────────────────────────────────────────────────────
+  consumer:
+    needs: producer
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Acceder a outputs del job anterior"
+        run: |
+          echo "=== Datos desde needs.producer.outputs ==="
+          echo "Versión: ${{ needs.producer.outputs.version }}"
+          echo "Build time: ${{ needs.producer.outputs.build-time }}"
+      
+      - name: "Descargar artifact del job anterior"
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: downloaded/
+      
+      - name: "Usar artifact descargado"
+        run: |
+          echo "=== Contenido del artifact ==="
+          cat downloaded/version.txt
+      
+      - name: "Resumen del consumer"
+        run: |
+          echo "## 📥 Consumer recibió" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          cat downloaded/version.txt >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+

@@ -1,0 +1,157 @@
+name: Debug outputs
+
+on:
+  workflow_dispatch:  # Ejecución manual para testing
+    inputs:
+      environment:   # 👈 Nombre del input (tú lo defines)
+        description: "Entorno de despliegue"
+        required: true
+        type: choice
+        options:
+          - production
+          - staging
+          - development
+      
+      debug-mode:
+        description: "Habilitar modo debug"
+        required: false
+        default: false
+        type: boolean
+jobs:
+  read_inputs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Debug inputs
+        run: |
+          echo "Contenido de input como json:"
+          echo '${{ toJSON(github.event.inputs) }}'
+          JSON='${{ toJSON(github.event.inputs) }}'
+          echo "Contenido de input como json variable:"
+          echo $JSON 
+          echo "Contenido valor de input desde json variable:"
+          echo $JSON | jq -r '.environment'
+  
+  read_inputs_python:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Debug inputs con Python (shell: python)
+        shell: python
+        run: |
+          import json
+          import os
+          
+          # Leer inputs desde variables de entorno de GitHub Actions
+          inputs_json = '''${{ toJSON(github.event.inputs) }}'''
+          
+          print("="*60)
+          print("🐍 LECTURA DE INPUTS CON PYTHON (shell: python)")
+          print("="*60)
+          
+          # Parsear el JSON
+          inputs = json.loads(inputs_json)
+          
+          print("\n📋 Contenido de inputs como diccionario:")
+          print(inputs)
+          
+          print("\n📝 Contenido de inputs formateado (pretty print):")
+          print(json.dumps(inputs, indent=2))
+          
+          print("\n🔍 Acceso a valores individuales:")
+          print(f"   Environment: {inputs.get('environment', 'N/A')}")
+          print(f"   Debug Mode: {inputs.get('debug-mode', 'N/A')}")
+          
+          print("\n✨ Usando f-strings:")
+          env = inputs['environment']
+          debug = inputs['debug-mode']
+          print(f"   Desplegando a: {env}")
+          print(f"   Debug habilitado: {debug}")
+          
+          print("\n🔄 Iterando sobre todos los inputs:")
+          for key, value in inputs.items():
+              print(f"   {key} = {value}")
+          
+          # Ejemplo de uso condicional
+          print("\n⚙️ Lógica condicional:")
+          if inputs['debug-mode'] == True or inputs['debug-mode'] == 'true':
+              print("   🐛 Modo debug ACTIVADO")
+              print("   Mostrando logs verbosos...")
+          else:
+              print("   ✅ Modo normal")
+          
+          if inputs['environment'] == 'production':
+              print("   🚀 Desplegando a PRODUCCIÓN")
+              print("   Ejecutando validaciones adicionales...")
+          elif inputs['environment'] == 'staging':
+              print("   🧪 Desplegando a STAGING")
+          else:
+              print("   🔧 Desplegando a DESARROLLO")
+          
+          print("\n" + "="*60)
+
+      - name: Usar inputs desde variables de entorno
+        shell: python
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment }}
+          DEBUG_MODE: ${{ github.event.inputs.debug-mode }}
+        run: |
+          import os
+          
+          print("="*60)
+          print("🔧 LECTURA DESDE VARIABLES DE ENTORNO")
+          print("="*60)
+          
+          # Leer desde variables de entorno
+          environment = os.environ.get('ENVIRONMENT')
+          debug_mode = os.environ.get('DEBUG_MODE')
+          
+          print(f"\n✅ Environment: {environment}")
+          print(f"✅ Debug Mode: {debug_mode}")
+          
+          # Convertir string a boolean
+          is_debug = debug_mode.lower() in ['true', '1', 'yes']
+          
+          print(f"\n🔍 Debug como boolean: {is_debug}")
+          
+          if is_debug:
+              print("   → Logs verbosos habilitados")
+          
+          print("="*60)
+  
+  read_write_outputs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Paso 1 - Crear output
+        id: get_version
+        run: |
+          echo "=== DEBUG PASO 1 ==="
+          
+          # Mostrar dónde está el archivo GITHUB_OUTPUT
+          echo "Ruta de GITHUB_OUTPUT: $GITHUB_OUTPUT"
+          
+          # Mostrar contenido actual (vacío al inicio)
+          echo "Contenido inicial:"
+          cat "$GITHUB_OUTPUT" || echo "(archivo vacío)"
+          
+          # Escribir nuestro valor
+          echo "Escribiendo: version=1.2.3"
+          echo "version=1.2.3" >> "$GITHUB_OUTPUT"
+          
+          # Verificar que se escribió
+          echo "Contenido después de escribir:"
+          cat "$GITHUB_OUTPUT"
+
+      - name: Paso 2 - Leer output
+        run: |
+          echo "=== DEBUG PASO 2 ==="
+          
+          # ✅ Forma CORRECTA: usar contexto steps
+          echo "Versión desde steps.get_version.outputs.version: ${{ steps.get_version.outputs.version }}"
+          
+          # ❌ Forma INCORRECTA: no existe como variable de entorno
+          echo "Versión desde $VERSION (no existe): $VERSION"
+
+      - name: Paso 3 - Usar el valor en operaciones reales
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+          echo "Deployando versión $VERSION a producción..."
+          # ./deploy.sh --version "$VERSION"
