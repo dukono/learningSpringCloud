@@ -1,106 +1,64 @@
-# Parte 6.1 — API Gateway: Concepto y Arquitectura Reactiva
+# 6.1 Concepto y Arquitectura Reactiva
 
-← [Parte 5 — Load Balancing](./05-load-balancing.md) | [Volver al índice](./README.md) | Siguiente: [Rutas →](./06-02-gateway-rutas.md)
-
----
-
-## 6.1 Qué es un API Gateway y sus responsabilidades
-
-Un **API Gateway** es el **punto de entrada único** para todos los clientes externos (browsers, apps móviles, servicios de terceros) a la arquitectura de microservicios.
-
-Sin Gateway, los clientes tendrían que conocer la URL interna de cada microservicio:
-```
-# SIN GATEWAY — el cliente conoce todo
-app móvil → http://10.0.0.1:8081/usuarios/...
-app móvil → http://10.0.0.2:8082/productos/...
-app móvil → http://10.0.0.3:8083/pedidos/...
-```
-
-Con Gateway, hay una única fachada:
-```
-# CON GATEWAY — el cliente solo conoce una URL
-app móvil → https://api.miempresa.com/usuarios/...
-app móvil → https://api.miempresa.com/productos/...
-app móvil → https://api.miempresa.com/pedidos/...
-```
-
-### Responsabilidades del Gateway
-
-| Responsabilidad | Descripción |
-|---|---|
-| **Routing** | Enruta peticiones al microservicio correcto según la ruta |
-| **Autenticación** | Valida tokens JWT antes de dejar pasar la petición |
-| **Rate Limiting** | Limita el número de peticiones por cliente/IP |
-| **SSL Termination** | Gestiona HTTPS; los servicios internos usan HTTP |
-| **CORS** | Centraliza la gestión de Cross-Origin |
-| **Transformación** | Modifica headers, rutas, body de peticiones/respuestas |
-| **Logging** | Registra todas las peticiones de entrada |
-| **Circuit Breaker** | Protege los servicios de sobrecarga desde el Gateway |
-| **Load Balancing** | Distribuye carga entre instancias del mismo servicio |
+← [5 — Load Balancing](./05-load-balancing.md) | [Índice](./README.md) | [6.2 Rutas y Predicates →](./06-02-gateway-rutas.md)
 
 ---
 
-## 6.2 Spring Cloud Gateway (arquitectura reactiva)
+Sin Gateway, los clientes externos tienen que conocer la URL de cada microservicio: puerto, ruta base, versión de la API. Cualquier cambio en esa estructura (mover un servicio, cambiar un prefijo de ruta, escalar horizontalmente) rompe a los clientes. **Spring Cloud Gateway** es el punto de entrada único que oculta toda esa complejidad: los clientes solo conocen una URL pública y el Gateway se encarga del enrutamiento, seguridad, rate limiting, transformación de peticiones y observabilidad de forma centralizada.
 
-Spring Cloud Gateway está construido sobre **Spring WebFlux** (reactivo, no-bloqueante), lo que le permite manejar gran concurrencia con pocos hilos.
+> [PREREQUISITO] El proyecto Gateway debe excluir `spring-boot-starter-web`. El stack es WebFlux (reactivo); incluir ambos hace que la aplicación falle al arrancar.
 
-### Ciclo completo de una petición
+---
+
+## 6.1.1 Qué es un API Gateway y sus responsabilidades
 
 ```
 Cliente HTTP/HTTPS
         │
         ▼
-┌──────────────────────────────────────────────┐
-│            Spring Cloud Gateway              │
-│                                              │
-│  ① Evaluación de Predicates                  │
-│     ¿Path coincide? ¿Method correcto?        │
-│     ¿Header presente? ¿IP permitida?...      │
-│     → Si ninguna ruta coincide: 404          │
-│                                              │
-│  ② GlobalFilters (pre, orden ascendente)     │
-│     JwtAuthFilter (orden -200)               │
-│     LoggingGlobalFilter (orden -100)         │
-│     → 401/403 si falla la autenticación      │
-│                                              │
-│  ③ GatewayFilters de la ruta (pre)           │
-│     RateLimiter → 429 si excede el límite    │
-│     CircuitBreaker → fallback si CB abierto  │
-│     StripPrefix, RewritePath, AddHeader...   │
-└───────────────────────┬──────────────────────┘
-                        │ petición transformada
-                        ▼
-           Microservicio destino
-           lb://pedidos-service
-           (selección de instancia por LB)
-                        │ respuesta
-                        ▼
-┌──────────────────────────────────────────────┐
-│            Spring Cloud Gateway              │
-│                                              │
-│  ④ GatewayFilters de la ruta (post)          │
-│     AddResponseHeader, SetStatus...          │
-│                                              │
-│  ⑤ GlobalFilters (post, orden descendente)   │
-│     LoggingGlobalFilter (loguea respuesta)   │
-└───────────────────────┬──────────────────────┘
-                        │ respuesta transformada
-                        ▼
-               Cliente (respuesta final)
+┌─────────────────────────────────────────────────────┐
+│                Spring Cloud Gateway                  │
+│                                                      │
+│  ① Evaluación de Predicates                          │
+│     Path, Method, Header, Query, Host, RemoteAddr…  │
+│     → si ninguna ruta coincide: 404                  │
+│                                                      │
+│  ② GlobalFilters  (pre, orden ascendente)            │
+│     JwtAuthFilter (orden -200)                       │
+│     LoggingFilter (orden -100)                       │
+│     → 401/403 si falla autenticación                 │
+│                                                      │
+│  ③ GatewayFilters de la ruta (pre)                   │
+│     RateLimiter → 429 si excede límite               │
+│     CircuitBreaker → fallback si CB abierto          │
+│     StripPrefix, RewritePath, AddHeader…             │
+└──────────────────────────┬──────────────────────────┘
+                           │ petición transformada
+                           ▼
+              Microservicio destino
+              lb://pedidos-service
+              (instancia seleccionada por LB)
+                           │ respuesta
+                           ▼
+┌─────────────────────────────────────────────────────┐
+│                Spring Cloud Gateway                  │
+│                                                      │
+│  ④ GatewayFilters de la ruta (post)                  │
+│     AddResponseHeader, SetStatus…                    │
+│                                                      │
+│  ⑤ GlobalFilters (post, orden descendente)           │
+│     LoggingFilter (loguea respuesta + latencia)      │
+└──────────────────────────┬──────────────────────────┘
+                           │ respuesta transformada
+                           ▼
+                  Cliente (respuesta final)
 ```
 
-> Los pasos ② y ③ son **pre-filters** (se ejecutan antes de llamar al microservicio). Los pasos ④ y ⑤ son **post-filters** (se ejecutan después de recibir la respuesta). Un filtro puede actuar en ambas fases en el mismo bean (ver `06-03-gateway-filtros.md`).
+> [CONCEPTO] Los pasos ② y ③ son **pre-filters** (antes del microservicio). Los pasos ④ y ⑤ son **post-filters** (tras recibir la respuesta). Un mismo bean puede actuar en ambas fases usando `.then(Mono.fromRunnable(...))`.
 
-### Diferencia con Zuul
+---
 
-| Aspecto | Zuul 1.x (antiguo) | Spring Cloud Gateway |
-|---|---|---|
-| **Modelo** | Bloqueante (Servlet) | No-bloqueante (Reactor/WebFlux) |
-| **Rendimiento** | Limitado por hilos | Alto, maneja miles de conexiones concurrentes |
-| **Estado** | Deprecado | Activo, mantenido |
-| **Filtros** | ZuulFilter | GatewayFilter / GlobalFilter |
-
-### Dependencia Maven
+## 6.1.2 Arquitectura reactiva: ciclo completo de una petición
 
 ```xml
 <dependency>
@@ -108,16 +66,16 @@ Cliente HTTP/HTTPS
     <artifactId>spring-cloud-starter-gateway</artifactId>
 </dependency>
 
-<!-- IMPORTANTE: NO incluir spring-boot-starter-web junto con gateway -->
-<!-- Gateway usa WebFlux; son incompatibles entre sí -->
+<!--
+  NO incluir spring-boot-starter-web junto con gateway.
+  Gateway usa WebFlux; los dos stacks son incompatibles.
+-->
 ```
 
-### Clase principal
-
 ```java
+// No requiere ninguna anotación especial en la clase principal
 @SpringBootApplication
 public class GatewayApplication {
-    // No necesita ninguna anotación especial
     public static void main(String[] args) {
         SpringApplication.run(GatewayApplication.class, args);
     }
@@ -126,46 +84,58 @@ public class GatewayApplication {
 
 ---
 
-### Propiedades globales del Gateway
+## 6.1.3 Spring Cloud Gateway vs Zuul
 
-Conforme el Gateway crece y gestiona decenas de rutas, hay tres problemas que aparecen repetidamente si no se configura nada a nivel global: CORS se declara en cada ruta por separado y acaban siendo incoherentes; el cliente HTTP reactivo (Reactor Netty) usa sus valores por defecto de pool y timeouts, que son inadecuados para producción; y hay filtros que deberían aplicarse a todas las rutas (como `DedupeResponseHeader` para CORS) pero se olvidan en alguna. Las propiedades globales del Gateway resuelven estos tres problemas en un único bloque de configuración.
+| Aspecto | Zuul 1.x | Spring Cloud Gateway |
+|---|---|---|
+| **Modelo de E/S** | Bloqueante — un hilo por conexión | No-bloqueante — Reactor/WebFlux |
+| **Framework base** | Spring MVC (Servlet) | Spring WebFlux |
+| **Estado oficial** | Deprecado | Activo y mantenido |
+| **Rendimiento bajo carga** | Limitado por pool de hilos | Excelente, miles de conexiones concurrentes |
+| **Filtros** | `ZuulFilter` | `GatewayFilter` / `GlobalFilter` |
+| **WebSocket** | Soporte limitado (módulo separado) | Soporte nativo |
+| **Predicates** | No existe el concepto | Potentes y extensibles |
+
+> [EXAMEN] Pregunta frecuente: *¿por qué no se puede usar `spring-boot-starter-web` en un Gateway?* Porque Gateway depende de `spring-webflux` y el starter web registra un `DispatcherServlet` (Servlet API), lo que genera un conflicto de contexto en el arranque con un mensaje de error poco descriptivo.
+
+---
+
+## 6.1.4 Propiedades globales
+
+Las propiedades globales resuelven tres problemas recurrentes cuando el Gateway crece: CORS declarado en cada ruta de forma inconsistente, timeouts del cliente HTTP con valores por defecto inadecuados para producción, y filtros que deberían aplicarse a todas las rutas pero se olvidan en alguna.
 
 ```yaml
 spring:
   cloud:
     gateway:
-      # Filtros aplicados a TODAS las rutas (sin necesidad de declararlos en cada ruta)
+
+      # Filtros aplicados a TODAS las rutas sin necesidad de declararlos en cada una
       default-filters:
         - AddResponseHeader=X-Gateway, spring-cloud-gateway
         - DedupeResponseHeader=Access-Control-Allow-Origin
 
-      # Configuración del cliente HTTP reactivo (Reactor Netty)
+      # Cliente HTTP reactivo (Reactor Netty)
       httpclient:
-        connect-timeout: 2000          # ms para establecer conexión TCP con el microservicio
-        response-timeout: 10s          # tiempo máximo para recibir la respuesta completa
+        connect-timeout: 2000           # ms para establecer conexión TCP
+        response-timeout: 10s           # tiempo máximo para recibir la respuesta completa
         pool:
-          max-connections: 500         # máximo de conexiones en el pool
-          acquire-timeout: 5000        # ms esperando una conexión libre del pool
+          max-connections: 500          # máximo de conexiones en el pool
+          acquire-timeout: 5000         # ms esperando una conexión libre del pool
 
-      # CORS global para todas las rutas
+      # CORS centralizado para todas las rutas
       globalcors:
         cors-configurations:
-          '[/**]':                              # aplica a todas las rutas
+          '[/**]':
             allowed-origins: "https://miapp.com"
             allowed-methods: GET,POST,PUT,DELETE
             allowed-headers: "*"
             allow-credentials: true
             max-age: 3600
 
-      # Endpoint de Actuator para inspeccionar rutas en runtime
-      # GET /actuator/gateway/routes — lista todas las rutas configuradas
-      # GET /actuator/gateway/routes/{id} — detalle de una ruta concreta
-      # POST /actuator/gateway/refresh — recarga rutas dinámicas sin reiniciar
-
-      # Métricas del Gateway para Micrometer/Prometheus
+      # Métricas por ruta para Micrometer/Prometheus
       metrics:
-        enabled: true   # defecto: false; expone métricas por ruta (latencia, errores, etc.)
-                        # añade tags: routeId, routeUri, outcome (SUCCESSFUL/CLIENT_ERROR/SERVER_ERROR)
+        enabled: true    # defecto: false
+                         # añade tags: routeId, routeUri, outcome (SUCCESSFUL/CLIENT_ERROR/SERVER_ERROR)
 ```
 
 ```yaml
@@ -174,64 +144,53 @@ management:
     web:
       exposure:
         include: health, gateway, prometheus
+# Endpoints útiles:
+# GET  /actuator/gateway/routes           → lista todas las rutas configuradas
+# GET  /actuator/gateway/routes/{id}      → detalle de una ruta
+# POST /actuator/gateway/refresh          → recarga rutas dinámicas sin reiniciar
 ```
+
+### Parámetros del cliente HTTP
+
+| Parámetro | Tipo | Valor por defecto | Descripción |
+|---|---|---|---|
+| `httpclient.connect-timeout` | int (ms) | 45000 | Tiempo máximo para establecer conexión TCP |
+| `httpclient.response-timeout` | Duration | 30s | Tiempo máximo esperando respuesta completa |
+| `httpclient.pool.max-connections` | int | 500 | Máximo de conexiones en el pool de Netty |
+| `httpclient.pool.acquire-timeout` | long (ms) | 45000 | Tiempo esperando una conexión libre del pool |
+| `metrics.enabled` | boolean | false | Activa métricas Micrometer por ruta |
+| `discovery.locator.enabled` | boolean | false | Crea rutas automáticas desde el registro de servicios |
+| `discovery.locator.lower-case-service-id` | boolean | false | Convierte el serviceId a minúsculas en la URL |
 
 ---
 
-### Auto-registro de rutas desde el Service Discovery (Discovery Locator)
+## 6.1.5 SSL Termination — HTTPS en el Gateway
 
-En lugar de declarar cada ruta manualmente, se puede activar la creación automática de rutas a partir del registro de servicios (Eureka, Consul):
+El Gateway gestiona HTTPS con los clientes externos; los microservicios internos siguen usando HTTP plano.
 
-```yaml
-spring:
-  cloud:
-    gateway:
-      discovery:
-        locator:
-          enabled: true           # crea automáticamente una ruta por cada servicio registrado en Eureka
-                                  # defecto: false
-          lower-case-service-id: true   # convierte el nombre del servicio a minúsculas en la URL
-                                        # sin esto: /PEDIDOS-SERVICE/** ; con esto: /pedidos-service/**
-```
-
-Con esto activo, si `pedidos-service` está en Eureka, el Gateway crea automáticamente:
-```
-GET /pedidos-service/**  →  lb://pedidos-service/**
-```
-
-> **Ventaja:** sin configuración de rutas en YAML para cada servicio nuevo.
-> **Inconveniente:** las rutas generadas no tienen filtros personalizados ni control fino sobre predicates. Para producción, combinar: Discovery Locator para servicios nuevos + rutas explícitas para los que necesitan filtros específicos.
-
----
-
-### SSL Termination — configurar HTTPS en el Gateway
-
-El Gateway gestiona HTTPS con los clientes externos; los microservicios internos usan HTTP plano.
-
-```xml
-<!-- Necesario para generar el keystore si no tienes uno ya -->
-<!-- keytool -genkeypair -alias gateway -keyalg RSA -keysize 2048
-     -storetype PKCS12 -keystore gateway-keystore.p12 -validity 365 -->
+```bash
+# Generar keystore PKCS12 para desarrollo
+keytool -genkeypair -alias gateway -keyalg RSA -keysize 2048 \
+  -storetype PKCS12 -keystore gateway-keystore.p12 -validity 365
 ```
 
 ```yaml
 server:
-  port: 443                              # puerto HTTPS estándar
+  port: 443
   ssl:
     enabled: true
-    key-store: classpath:gateway-keystore.p12   # ruta al keystore (classpath o file:)
+    key-store: classpath:gateway-keystore.p12
     key-store-password: ${SSL_KEYSTORE_PASSWORD}
-    key-store-type: PKCS12               # PKCS12 (recomendado) o JKS (legacy)
-    key-alias: gateway                   # alias del certificado dentro del keystore
-    # Para TLS mutuo (mTLS) — el cliente también presenta certificado:
-    # client-auth: need                  # need = obligatorio, want = opcional
+    key-store-type: PKCS12
+    key-alias: gateway
+    # Para mTLS (el cliente también presenta certificado):
+    # client-auth: need
     # trust-store: classpath:trusted-clients.p12
     # trust-store-password: ${TRUST_STORE_PASSWORD}
 ```
 
 ```yaml
 # Los microservicios internos siguen usando HTTP
-# El Gateway termina el SSL y redirige internamente:
 spring:
   cloud:
     gateway:
@@ -242,13 +201,13 @@ spring:
             - Path=/api/pedidos/**
 ```
 
-> Los certificados autofirmados son válidos para desarrollo pero los browsers los rechazan. En producción usar Let's Encrypt o un certificado firmado por una CA corporativa.
+> [ADVERTENCIA] Los certificados autofirmados funcionan en desarrollo pero los navegadores los rechazan. En producción usar Let's Encrypt (`certbot`) o un certificado firmado por la CA corporativa.
 
 ---
 
-### WebSocket proxying
+## 6.1.6 WebSocket proxying
 
-Spring Cloud Gateway soporta proxying de WebSocket de forma nativa. Solo hay que usar `ws://` o `wss://` como esquema de la URI destino:
+Spring Cloud Gateway soporta proxying de WebSocket de forma nativa usando `ws://` o `wss://` como esquema:
 
 ```yaml
 spring:
@@ -256,24 +215,78 @@ spring:
     gateway:
       routes:
         - id: ws-chat
-          uri: ws://chat-service:8080      # ws:// para WebSocket sin TLS
+          uri: ws://chat-service:8080
           predicates:
             - Path=/ws/chat/**
 
         - id: wss-notificaciones
-          uri: wss://notif-service:8443    # wss:// para WebSocket con TLS
+          uri: wss://notif-service:8443
           predicates:
             - Path=/ws/notificaciones/**
 ```
 
-El Gateway eleva automáticamente la conexión HTTP a WebSocket cuando el cliente envía el header `Upgrade: websocket`. No requiere configuración adicional.
-
-> Con Zuul 1.x era necesario un módulo separado y el soporte era limitado. Con Spring Cloud Gateway, WebSocket funciona igual que cualquier otra ruta.
+El Gateway eleva automáticamente la conexión HTTP a WebSocket cuando el cliente envía `Upgrade: websocket`. No requiere configuración adicional ni dependencias extra.
 
 ---
 
-> **[ADVERTENCIA]** Si se incluye `spring-boot-starter-web` junto con `spring-cloud-starter-gateway`, la aplicación fallará al arrancar. Gateway usa WebFlux y es incompatible con el stack Servlet (MVC/Tomcat). Elegir uno de los dos.
+## 6.1.7 Discovery Locator — rutas automáticas desde Eureka/Consul
+
+En lugar de declarar cada ruta manualmente, el Discovery Locator crea rutas automáticas para cada servicio registrado:
+
+```yaml
+spring:
+  cloud:
+    gateway:
+      discovery:
+        locator:
+          enabled: true                  # defecto: false
+          lower-case-service-id: true    # /PEDIDOS-SERVICE/** → /pedidos-service/**
+```
+
+Con esto activo, si `pedidos-service` está en Eureka, el Gateway crea automáticamente:
+```
+GET /pedidos-service/**  →  lb://pedidos-service/**
+```
+
+**Ventaja:** sin configuración de rutas en YAML para cada servicio nuevo.
+**Inconveniente:** las rutas generadas no tienen filtros personalizados. Para producción: Discovery Locator para servicios nuevos + rutas explícitas para los que necesitan filtros específicos.
 
 ---
 
-← [Parte 5 — Load Balancing](./05-load-balancing.md) | [Volver al índice](./README.md) | Siguiente: [Rutas →](./06-02-gateway-rutas.md)
+## 6.1.8 Actuator — gestión del Gateway en runtime
+
+El Gateway expone endpoints de Actuator específicos para inspeccionar y administrar rutas sin reiniciar el proceso:
+
+| Endpoint | Método | Descripción |
+|---|---|---|
+| `/actuator/gateway/routes` | GET | Lista todas las rutas activas con sus predicates y filtros |
+| `/actuator/gateway/routes/{id}` | GET | Detalle de una ruta concreta por su ID |
+| `/actuator/gateway/refresh` | POST | Recarga las rutas dinámicas (p. ej. desde `RouteDefinitionLocator`) |
+| `/actuator/gateway/globalfilters` | GET | Lista todos los `GlobalFilter` activos y su orden |
+| `/actuator/gateway/routefilters` | GET | Lista todos los `GatewayFilterFactory` disponibles |
+
+```yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, gateway, prometheus
+  endpoint:
+    gateway:
+      enabled: true
+```
+
+```bash
+# Inspeccionar todas las rutas en producción sin reiniciar
+curl http://localhost:8080/actuator/gateway/routes | jq .
+
+# Forzar recarga de rutas dinámicas (después de un cambio en BD o Config Server)
+curl -X POST http://localhost:8080/actuator/gateway/refresh
+```
+
+> [ADVERTENCIA] El endpoint `POST /actuator/gateway/refresh` recarga las rutas definidas por `RouteDefinitionLocator` pero **no** las rutas declaradas en YAML. Las rutas YAML solo cambian con un reinicio del proceso (o a través de Spring Cloud Config Bus si se usa `@RefreshScope`).
+
+---
+
+
+← [5 — Load Balancing](./05-load-balancing.md) | [Índice](./README.md) | [6.2 Rutas y Predicates →](./06-02-gateway-rutas.md)

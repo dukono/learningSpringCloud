@@ -1,273 +1,256 @@
-# Parte 6.2 — API Gateway: Routes, Predicates y Configuración
+# 6.2 Rutas: Route, Predicates y YAML vs DSL
 
-← [Concepto y Arquitectura](./06-01-gateway-concepto.md) | [Volver al índice](./README.md) | Siguiente: [Filtros →](./06-03-gateway-filtros.md)
-
----
-
-## 6.3 Conceptos: Route, Predicate, Filter
-
-Spring Cloud Gateway tiene tres conceptos fundamentales:
-
-### Route (Ruta)
-
-Una **Route** es la unidad básica de configuración. Define:
-- Un **ID** único
-- La **URI destino** (a dónde enrutar)
-- Un conjunto de **Predicates** (condiciones que deben cumplirse)
-- Un conjunto de **Filters** (transformaciones a aplicar)
-
-```
-Route: si la petición cumple los Predicates, aplicar los Filters y enrutar a la URI
-```
-
-### Predicate
-
-Un **Predicate** es una condición que debe cumplir la petición para que la ruta aplique. En YAML, varios predicates en la misma ruta se evalúan como **AND lógico** (todos deben cumplirse). Para combinarlos con **OR** es necesario usar el Java DSL:
-
-| Predicate | Ejemplo | Descripción |
-|---|---|---|
-| `Path` | `Path=/pedidos/**` | Por ruta URL |
-| `Method` | `Method=GET,POST` | Por método HTTP |
-| `Header` | `Header=X-Request-Id, \d+` | Por header (con regex) |
-| `Query` | `Query=version, v2` | Por query parameter |
-| `Host` | `Host=**.miempresa.com` | Por hostname |
-| `After` | `After=2024-01-01T00:00:00Z` | Solo después de una fecha/hora (ISO-8601) |
-| `Before` | `Before=2024-12-31T23:59:59Z` | Solo antes de una fecha/hora |
-| `Between` | `Between=2024-01-01T00:00:00Z, 2024-12-31T23:59:59Z` | Ventana temporal |
-| `Cookie` | `Cookie=sessionId, abc123` | Por valor de cookie (con regex) |
-| `RemoteAddr` | `RemoteAddr=192.168.1.0/24` | Por IP o CIDR del cliente |
-| `XForwardedRemoteAddr` | `XForwardedRemoteAddr=192.168.1.0/24` | Como RemoteAddr pero lee `X-Forwarded-For` (cuando hay proxy/LB delante) |
-| `Weight` | `Weight=group1, 80` | Porcentaje de tráfico del grupo (A/B testing) |
-
-> En YAML no existe sintaxis para OR. Si se necesita lógica OR, la opción más limpia es declarar dos rutas separadas que apunten al mismo `uri`.
-
-```yaml
-# Equivalente en YAML usando dos rutas (OR implícito)
-routes:
-  - id: pedidos-desde-red-interna
-    uri: lb://pedidos-service
-    predicates:
-      - Path=/api/pedidos/**
-      - RemoteAddr=10.0.0.0/8
-
-  - id: pedidos-con-api-key
-    uri: lb://pedidos-service
-    predicates:
-      - Path=/api/pedidos/**
-      - Header=X-Internal-Token, .+
-```
-
-```yaml
-# Ejemplo: Weight para canary deployment — 80% a v1, 20% a v2
-spring:
-  cloud:
-    gateway:
-      routes:
-        - id: servicio-v1
-          uri: lb://servicio-v1
-          predicates:
-            - Path=/api/**
-            - Weight=servicio-group, 80   # 80% del tráfico
-
-        - id: servicio-v2
-          uri: lb://servicio-v2
-          predicates:
-            - Path=/api/**
-            - Weight=servicio-group, 20   # 20% del tráfico (canary)
-```
-
-### Filter
-
-Un **Filter** transforma la petición antes de enviarla al servicio (**pre**) o la respuesta antes de devolverla al cliente (**post**):
-
-| Filter | Tipo | Descripción |
-|---|---|---|
-| `AddRequestHeader` | Pre | Añade header a la petición |
-| `AddResponseHeader` | Post | Añade header a la respuesta |
-| `SetRequestHeader` | Pre | Reemplaza un header (si existe, lo sobreescribe) |
-| `SetResponseHeader` | Post | Reemplaza un header en la respuesta |
-| `RemoveRequestHeader` | Pre | Elimina un header de la petición |
-| `RemoveResponseHeader` | Post | Elimina un header de la respuesta |
-| `AddRequestHeadersIfNotPresent` | Pre | Añade headers solo si no existen ya |
-| `MapRequestHeader` | Pre | Copia el valor de un header a otro nombre |
-| `DedupeResponseHeader` | Post | Elimina duplicados de un header |
-| `RewriteResponseHeader` | Post | Modifica el valor de un header de respuesta con regex |
-| `RewriteLocationResponseHeader` | Post | Reescribe el header `Location` en respuestas de redirección |
-| `RewritePath` | Pre | Reescribe la URL con regex |
-| `StripPrefix` | Pre | Elimina segmentos del path |
-| `SetPath` | Pre | Reemplaza el path completo |
-| `CircuitBreaker` | Pre | Aplica circuit breaker |
-| `RequestRateLimiter` | Pre | Limita peticiones |
-| `Retry` | Pre | Reintenta en caso de error |
-| `SetStatus` | Post | Cambia el HTTP status code |
-| `RedirectTo` | Pre | Redirige a otra URL |
-| `RequestSize` | Pre | Rechaza peticiones que superen un tamaño máximo |
-| `SecureHeaders` | Post | Añade headers de seguridad estándar (HSTS, CSP, etc.) |
-| `SaveSession` | Pre | Fuerza guardar la sesión antes de enrutar |
-| `ModifyRequestBody` | Pre | Modifica el body de la petición (solo Java DSL) |
-| `ModifyResponseBody` | Post | Modifica el body de la respuesta (solo Java DSL) |
+← [6.1 Concepto y Arquitectura](./06-01-gateway-concepto.md) | [Índice](./README.md) | [6.3 Filtros Predefinidos →](./06-03-gateway-filtros-predefinidos.md)
 
 ---
 
-## 6.4 Configuración de rutas (YAML y Java DSL)
+Sin rutas, el Gateway devuelve 404 para toda petición. Una **Route** une tres elementos: qué peticiones aplican (Predicates), qué transformaciones se hacen (Filters) y a dónde se enrutan (URI). Dominar la sintaxis de rutas y saber cuándo usar YAML frente al Java DSL es la base para gestionar un Gateway con decenas de servicios sin que la configuración se vuelva inmanejable.
 
-### Configuración en YAML (más común)
+> [PREREQUISITO] Tener `spring-cloud-starter-gateway` como dependencia y **sin** `spring-boot-starter-web` en el classpath. Ver [6.1](./06-01-gateway-concepto.md).
 
-YAML es la forma recomendada para la mayoría de proyectos: es declarativa, vive en el repositorio Git junto con el resto de la configuración del servicio, y puede ser actualizada sin tocar código Java. El Java DSL se reserva para los casos que YAML no puede expresar: lógica condicional en tiempo de arranque (rutas que se crean o no según variables de entorno), transformaciones de body (`ModifyRequestBody`/`ModifyResponseBody`), y predicates con lógica OR que requieren encadenamiento de lambdas. Para el 95% de los proyectos, YAML es suficiente.
+---
+
+## 6.2.1 Árbol de componentes de una Route
+
+```
+Route
+├── id          identificador único (string libre)
+├── uri         destino: lb://servicio | http://host:puerto | forward:/path
+├── order       prioridad de evaluación (menor número = se evalúa antes)
+├── predicates  condiciones AND — todas deben cumplirse
+│   ├── Path=/api/pedidos/**
+│   ├── Method=GET,POST
+│   └── Header=X-API-Version, v2
+└── filters     transformaciones pre/post
+    ├── StripPrefix=1
+    ├── AddRequestHeader=X-Source, gateway
+    └── CircuitBreaker(name=pedidosCB, fallbackUri=forward:/fallback/pedidos)
+```
+
+> [CONCEPTO] Varios predicates en la misma ruta se evalúan como **AND lógico**. Para lógica OR en YAML la única opción es declarar dos rutas separadas apuntando al mismo `uri`.
+
+---
+
+## 6.2.3 Configuración en YAML
 
 ```yaml
 spring:
   application:
     name: gateway-service
-
   cloud:
     gateway:
       routes:
-        # Ruta para el servicio de pedidos
+
+        # Ruta básica con StripPrefix
         - id: pedidos-route
-          uri: lb://pedidos-service       # lb:// = usa LoadBalancer (Eureka/Consul)
-                                          # También puede ser una URL fija: https://api.externo.com
+          uri: lb://pedidos-service        # lb:// delega la resolución al LoadBalancer (Eureka/Consul)
           predicates:
             - Path=/api/pedidos/**
           filters:
-            - StripPrefix=1               # elimina /api del path antes de enrutar
-            # /api/pedidos/42 → /pedidos/42
+            - StripPrefix=1                # /api/pedidos/42  →  /pedidos/42
 
-        # Ruta para el servicio de productos con múltiples predicates
-        - id: productos-route
+        # Múltiples predicates (todos deben cumplirse — AND)
+        - id: productos-v2-route
           uri: lb://productos-service
           predicates:
             - Path=/api/productos/**
-            - Method=GET                  # solo peticiones GET
-            - Header=X-API-Version, v2    # solo si el header tiene ese valor
+            - Method=GET
+            - Header=X-API-Version, v2
           filters:
             - StripPrefix=1
             - AddRequestHeader=X-Gateway-Source, spring-cloud-gateway
-            - AddResponseHeader=X-Response-From, gateway
 
-        # Ruta con URL directa (sin Eureka)
-        - id: servicio-externo
-          uri: https://api.externo.com
+        # URL externa fija (sin LoadBalancer)
+        - id: pagos-externos-route
+          uri: https://api.pagos-externos.com
           predicates:
-            - Path=/externo/**
+            - Path=/pagos/**
           filters:
-            - RewritePath=/externo/(?<segment>.*), /${segment}
+            - RewritePath=/pagos/(?<segmento>.*), /v3/${segmento}
 
-        # Ruta con ventana temporal (solo activa en fechas concretas)
-        - id: promo-navidad
-          uri: lb://promo-service
+        # Canary deployment — 80 % v1, 20 % v2
+        - id: catalogo-v1
+          uri: lb://catalogo-service-v1
           predicates:
-            - Path=/promo/**
-            - Between=2024-12-01T00:00:00Z, 2024-12-31T23:59:59Z
+            - Path=/api/catalogo/**
+            - Weight=catalogo-group, 80
 
-        # Ruta restringida a IP interna
+        - id: catalogo-v2
+          uri: lb://catalogo-service-v2
+          predicates:
+            - Path=/api/catalogo/**
+            - Weight=catalogo-group, 20
+
+        # Restringida por IP — solo red interna
         - id: admin-route
           uri: lb://admin-service
           predicates:
             - Path=/admin/**
-            - RemoteAddr=10.0.0.0/8       # solo desde red interna 10.x.x.x
+            - RemoteAddr=10.0.0.0/8
+          order: 1                         # se evalúa antes que rutas genéricas
+
+        # Ventana temporal (campaña)
+        - id: promo-navidad
+          uri: lb://promo-service
+          predicates:
+            - Path=/promo/**
+            - Between=2025-12-01T00:00:00Z, 2025-12-31T23:59:59Z
 ```
 
-### Configuración en Java DSL
+---
 
-El Java DSL es equivalente al YAML pero permite lógica dinámica (condicionales, bucles, inyección de dependencias):
+## 6.2.4 Configuración en Java DSL
 
 ```java
+import org.springframework.cloud.gateway.route.RouteLocator;
+import org.springframework.cloud.gateway.route.builder.RouteLocatorBuilder;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
+import reactor.core.publisher.Mono;
+
 @Configuration
-public class GatewayConfig {
+public class GatewayRoutesConfig {
 
     @Bean
-    public RouteLocator customRoutes(RouteLocatorBuilder builder) {
+    public RouteLocator routes(RouteLocatorBuilder builder) {
         return builder.routes()
+
+            // Equivalente al YAML anterior
             .route("pedidos-route", r -> r
                 .path("/api/pedidos/**")
                 .filters(f -> f
                     .stripPrefix(1)
                     .addRequestHeader("X-Gateway-Source", "spring-cloud-gateway")
-                    .circuitBreaker(config -> config
-                        .setName("pedidosCircuitBreaker")
+                    .circuitBreaker(c -> c
+                        .setName("pedidosCB")
                         .setFallbackUri("forward:/fallback/pedidos"))
                 )
                 .uri("lb://pedidos-service")
             )
-            .route("productos-route", r -> r
+
+            // OR lógico entre métodos — solo posible en DSL
+            .route("productos-get-o-head", r -> r
                 .path("/api/productos/**")
-                .and().method(HttpMethod.GET)
-                .filters(f -> f
-                    .stripPrefix(1)
-                    .modifyResponseBody(String.class, String.class,
-                        (exchange, body) -> Mono.just(body.toUpperCase()))  // solo disponible en DSL
-                )
+                .and()
+                .method(HttpMethod.GET, HttpMethod.HEAD)
+                .filters(f -> f.stripPrefix(1))
                 .uri("lb://productos-service")
             )
+
+            // ModifyResponseBody — solo disponible en DSL, no en YAML
+            .route("legacy-xml-route", r -> r
+                .path("/legacy/**")
+                .filters(f -> f
+                    .modifyResponseBody(String.class, String.class,
+                        (exchange, body) -> Mono.just(transformarXmlAJson(body)))
+                )
+                .uri("http://sistema-legacy:8080")
+            )
+
             .build();
+    }
+
+    private String transformarXmlAJson(String xml) {
+        // Elimina tags XML y envuelve en JSON; en producción usar Jackson-dataformat-xml
+        return "{\"data\": \"" + xml.replaceAll("<[^>]+>", "").trim() + "\"}";
     }
 }
 ```
 
-> **[ADVERTENCIA]** `ModifyRequestBody` y `ModifyResponseBody` solo están disponibles en Java DSL, no en YAML. Para modificar el body en YAML hay que implementar un `GatewayFilter` personalizado.
+> [ADVERTENCIA] `ModifyRequestBody` y `ModifyResponseBody` **solo existen en Java DSL**, no en YAML. Para modificar el body desde YAML hay que implementar un `GatewayFilter` personalizado (ver [6.4](./06-04-gateway-filtros-custom.md)).
 
-### Orden de rutas y regla del primer match
+---
 
-Las rutas se evalúan **en el orden en que están declaradas**. La primera ruta cuyo predicate coincide con la petición es la que se aplica; el resto no se evalúan:
+## 6.2.2 Todos los Predicates disponibles
+
+| Predicate | Ejemplo YAML | Descripción |
+|---|---|---|
+| `Path` | `Path=/pedidos/**` | Patrón de ruta URL (ant-style) |
+| `Method` | `Method=GET,POST` | Método HTTP |
+| `Header` | `Header=X-Version, v2` | Header presente con valor (regex) |
+| `Query` | `Query=format, json` | Query param con valor (regex) |
+| `Host` | `Host=**.miempresa.com` | Valor del header `Host` |
+| `After` | `After=2025-01-01T00:00:00Z` | Solo tras fecha ISO-8601 |
+| `Before` | `Before=2025-12-31T23:59:59Z` | Solo antes de fecha ISO-8601 |
+| `Between` | `Between=2025-01-01T00:00:00Z, 2025-06-30T23:59:59Z` | Ventana temporal |
+| `Cookie` | `Cookie=sessionId, abc\d+` | Cookie con valor (regex) |
+| `RemoteAddr` | `RemoteAddr=192.168.1.0/24` | IP del cliente o rango CIDR |
+| `XForwardedRemoteAddr` | `XForwardedRemoteAddr=10.0.0.0/8` | Como `RemoteAddr` pero lee `X-Forwarded-For` (cuando hay proxy delante) |
+| `Weight` | `Weight=grupo1, 80` | Porcentaje de tráfico del grupo para A/B o canary |
+
+---
+
+## 6.2.5 Orden de evaluación y campo `order`
+
+| Parámetro | Tipo | Valor por defecto | Descripción |
+|---|---|---|---|
+| `id` | String | Autogenerado (UUID) | Identificador único de la ruta |
+| `uri` | String | — (obligatorio) | Destino: `lb://`, `http://`, `https://`, `forward:/` |
+| `order` | int | 0 | Prioridad de evaluación; menor número se evalúa antes |
+| `predicates` | List | `[]` | Condiciones AND que debe cumplir la petición |
+| `filters` | List | `[]` | Transformaciones pre/post aplicadas a la petición/respuesta |
+
+---
+
+## 6.2.6 Canary deployment y A/B testing con Weight
+
+El predicate `Weight` distribuye el tráfico entre grupos de rutas según un porcentaje. Es la forma estándar de hacer canary deployment o A/B testing en el Gateway sin infraestructura adicional.
 
 ```yaml
 spring:
   cloud:
     gateway:
       routes:
-        # ORDEN INCORRECTO — la ruta genérica bloquea a la específica
-        - id: ruta-generica
-          uri: lb://servicio-general
+        # 90 % del tráfico va a la versión estable
+        - id: checkout-v1
+          uri: lb://checkout-service-v1
           predicates:
-            - Path=/api/**            # coincide con /api/admin/usuarios también
+            - Path=/api/checkout/**
+            - Weight=checkout-group, 90
 
-        - id: ruta-admin              # NUNCA se alcanza para /api/admin/**
-          uri: lb://admin-service
+        # 10 % va a la nueva versión bajo prueba
+        - id: checkout-v2
+          uri: lb://checkout-service-v2
           predicates:
-            - Path=/api/admin/**
-
-        # ORDEN CORRECTO — las rutas más específicas van primero
-        - id: ruta-admin
-          uri: lb://admin-service
-          predicates:
-            - Path=/api/admin/**      # se evalúa primero; si coincide, termina
-
-        - id: ruta-generica
-          uri: lb://servicio-general
-          predicates:
-            - Path=/api/**            # fallback para el resto de /api/
+            - Path=/api/checkout/**
+            - Weight=checkout-group, 10
 ```
 
-> **[ADVERTENCIA]** Este es uno de los errores más frecuentes en la configuración del Gateway: una ruta genérica declarada antes que una específica hace que la específica nunca se aplique, sin ningún mensaje de error.
+El Gateway asigna cada petición a uno de los dos grupos de forma aleatoria pero manteniendo la distribución porcentual. No hay afinidad de sesión por defecto: el mismo usuario puede ser dirigido a v1 en una petición y a v2 en la siguiente.
 
-El campo `order` permite fijar explícitamente la prioridad sin depender del orden de declaración en el YAML (menor número = mayor prioridad):
+> [EXAMEN] Los pesos son relativos dentro del grupo, no porcentajes absolutos. `Weight=grupo, 1` y `Weight=grupo, 9` distribuyen el tráfico en proporción 10 %/90 %, igual que `Weight=grupo, 10` y `Weight=grupo, 90`. Los valores absolutos no importan, solo la proporción entre ellos.
 
-```yaml
-spring:
-  cloud:
-    gateway:
-      routes:
-        - id: ruta-generica
-          uri: lb://servicio-general
-          predicates:
-            - Path=/api/**
-          order: 10            # se evalúa después
+---
 
-        - id: ruta-admin
-          uri: lb://admin-service
-          predicates:
-            - Path=/api/admin/**
-          order: 1             # se evalúa primero, independientemente de la posición en el YAML
+## 6.2.7 Rutas con `forward:` — fallbacks internos
+
+Cuando el Circuit Breaker detecta que un microservicio está fallando, redirige la petición a un endpoint del propio Gateway en lugar de devolver un error genérico al cliente. `forward:` es la URI especial que indica que el destino es un controller en el mismo proceso del Gateway.
+
+```java
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+import java.util.Map;
+
+@RestController
+public class FallbackController {
+
+    // Un único endpoint genérico para todos los servicios
+    @RequestMapping("/fallback/{servicio}")
+    public ResponseEntity<Map<String, String>> fallback(@PathVariable String servicio) {
+        return ResponseEntity
+            .status(HttpStatus.SERVICE_UNAVAILABLE)
+            .body(Map.of(
+                "error", "service_unavailable",
+                "servicio", servicio,
+                "mensaje", "El servicio no está disponible temporalmente. Inténtelo de nuevo en unos segundos."
+            ));
+    }
+}
 ```
-
-> Si no se declara `order`, las rutas se evalúan en el orden de aparición en el YAML. Con `order` explícito, el orden de declaración no importa.
-
-### URI `forward:` — reenvío interno al propio Gateway
-
-Cuando un Circuit Breaker detecta que un microservicio está fallando, necesita devolver alguna respuesta al cliente en lugar de un error genérico. La opción de redirigir a otro microservicio crea una dependencia cruzada que complica el diagnóstico. La solución es que el propio Gateway tenga un controller de fallback y la URI de fallback apunte a ese controller con el prefijo `forward:`. El flujo de la petición nunca sale del proceso del Gateway, lo que garantiza que el fallback funciona aunque todos los microservicios estén caídos.
-
-Además de `lb://` (LoadBalancer) y `https://` (URL directa), se puede usar `forward:` para reenviar la petición a un endpoint del propio Gateway (útil para fallbacks de Circuit Breaker):
 
 ```yaml
 spring:
@@ -279,56 +262,19 @@ spring:
           predicates:
             - Path=/api/pedidos/**
           filters:
+            - StripPrefix=1
             - name: CircuitBreaker
               args:
-                name: pedidosCircuitBreaker
-                fallbackUri: forward:/fallback/pedidos   # redirige al controller de fallback del Gateway
+                name: pedidosCB
+                fallbackUri: forward:/fallback/pedidos
 ```
 
-```java
-// Controller de fallback en el propio Gateway
-@RestController
-public class FallbackController {
-
-    @GetMapping("/fallback/pedidos")
-    public ResponseEntity<Map<String, String>> pedidosFallback() {
-        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
-            .body(Map.of("mensaje", "Servicio de pedidos temporalmente no disponible"));
-    }
-}
+El flujo cuando el Circuit Breaker está abierto:
+```
+Cliente → Gateway → CB abierto → forward:/fallback/pedidos → FallbackController → 503 al cliente
+                               (nunca llega al microservicio)
 ```
 
 ---
 
-### Rutas dinámicas (desde base de datos u otra fuente)
-
-Las rutas en YAML son estáticas: requieren reiniciar el Gateway para que un cambio sea efectivo. Esto es aceptable para arquitecturas estables, pero no para plataformas donde los equipos necesitan registrar nuevas rutas sin un deploy del Gateway. Un ejemplo típico es una plataforma de APIs interna donde cada equipo puede exponer su servicio a través del Gateway sin intervención del equipo de plataforma. La solución es implementar `RouteDefinitionLocator`, que lee las definiciones de rutas desde una base de datos (o cualquier otra fuente), y usar el endpoint `POST /actuator/gateway/refresh` para recargar las rutas en caliente sin reiniciar el proceso.
-
-```java
-// Implementar RouteDefinitionLocator para cargar rutas desde una fuente dinámica
-@Component
-public class DatabaseRouteDefinitionLocator implements RouteDefinitionLocator {
-
-    private final RouteRepository routeRepository;
-
-    @Override
-    public Flux<RouteDefinition> getRouteDefinitions() {
-        return routeRepository.findAll()
-            .map(this::toRouteDefinition);
-    }
-}
-```
-
-```yaml
-# Forzar recarga de rutas dinámicas sin reiniciar:
-# POST /actuator/gateway/refresh
-management:
-  endpoints:
-    web:
-      exposure:
-        include: gateway
-```
-
----
-
-← [Concepto y Arquitectura](./06-01-gateway-concepto.md) | [Volver al índice](./README.md) | Siguiente: [Filtros →](./06-03-gateway-filtros.md)
+← [6.1 Concepto y Arquitectura](./06-01-gateway-concepto.md) | [Índice](./README.md) | [6.3 Filtros Predefinidos →](./06-03-gateway-filtros-predefinidos.md)
