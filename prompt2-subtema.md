@@ -134,6 +134,35 @@ Si el nombre contiene "Extensión Avanzada":
 REGLAS DE CALIDAD
 
 R1. Ninguna sección empieza con código o tabla. Siempre hay un párrafo antes.
+
+    *** Esta regla es la que más frecuentemente se viola. Aplícala con atención. ***
+
+    MAL — el título promete un diagrama y el diagrama aparece inmediatamente:
+
+      ## Diagrama: flujo de autenticación
+
+      ```
+      Cliente → Gateway → ...
+      ```
+
+    BIEN — una frase contextualiza qué muestra el diagrama y por qué importa:
+
+      ## Diagrama: flujo de autenticación
+
+      El siguiente diagrama muestra el recorrido completo de la petición desde
+      que llega al Gateway hasta que el microservicio recibe la identidad verificada.
+
+      ```
+      Cliente → Gateway → ...
+      ```
+
+    La regla aplica a TODA sección con ##, ### o ####, sin excepción:
+    - ## Implementación completa: X  → párrafo antes del ```java
+    - ## Configuración YAML          → párrafo antes del ```yaml
+    - ## Diagrama: X                 → párrafo antes del ``` o diagrama ASCII
+    - ## Parámetros / ## Tabla de X  → párrafo antes del | col1 | col2 |
+    - ## Comparación: X vs Y         → párrafo antes del | col1 | col2 |
+
 R2. Todo ejemplo es completo y funcional. Sin fragmentos incompletos ni "...".
 R3. Los diagramas representan relaciones o flujos reales, no listas con formato visual.
 R4. Los marcadores van siempre en blockquote (>), excepto [LEGACY] que va en el texto.
