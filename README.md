@@ -189,70 +189,58 @@
 
 ### 6. API Gateway
 
-- 6.1 Concepto y Arquitectura Reactiva
-  - [6.1.1 Qué es un API Gateway y sus responsabilidades](./06-01-gateway-concepto.md)
-  - [6.1.2 Arquitectura reactiva: ciclo completo de una petición](./06-01-gateway-concepto.md)
-  - [6.1.3 Spring Cloud Gateway vs Zuul](./06-01-gateway-concepto.md)
-  - [6.1.4 Propiedades globales: `default-filters`, `httpclient`, `globalcors`, `metrics`](./06-01-gateway-concepto.md)
-  - [6.1.5 SSL Termination: HTTPS, PKCS12, mTLS](./06-01-gateway-concepto.md)
-  - [6.1.6 WebSocket proxying (`ws://`, `wss://`)](./06-01-gateway-concepto.md)
-  - [6.1.7 Discovery Locator: auto-rutas desde Eureka/Consul](./06-01-gateway-concepto.md)
-  - [6.1.8 Actuator: endpoints `/actuator/gateway/routes`, `/actuator/gateway/refresh`](./06-01-gateway-concepto.md)
+- 6.1 Concepto y Arquitectura (agrupa 7 hojas — concepto, ciclo reactivo, comparación, configuración base, protocolos y servicios de infraestructura son sub-dominios distintos del setup inicial)
+  - [6.1.1 Qué es un API Gateway: responsabilidades y casos de uso](./06-01-gateway-concepto.md)
+  - [6.1.2 Arquitectura reactiva: ciclo completo de una petición](./06-02-gateway-arquitectura.md)
+  - [6.1.3 Spring Cloud Gateway vs Zuul](./06-03-gateway-vs-zuul.md)
+  - [6.1.4 Propiedades globales: `default-filters`, `httpclient`, `globalcors`, `metrics`](./06-04-gateway-propiedades-globales.md)
+  - [6.1.5 SSL Termination: HTTPS, PKCS12 y mTLS](./06-05-gateway-ssl.md)
+  - [6.1.6 WebSocket proxying: `ws://` y `wss://`](./06-06-gateway-websocket.md)
+  - [6.1.7 Discovery Locator y Actuator](./06-07-gateway-discovery-actuator.md)
 
-- 6.2 Rutas: Route, Predicates y YAML vs DSL
-  - [6.2.1 Árbol de componentes: Route, id, uri, order, predicates, filters](./06-02-gateway-rutas.md)
-  - [6.2.2 Todos los predicates: Path, Method, Header, Query, Host, After/Before/Between, Cookie, RemoteAddr, XForwardedRemoteAddr, Weight](./06-02-gateway-rutas.md)
-  - [6.2.3 Configuración en YAML: ejemplos completos con casos reales](./06-02-gateway-rutas.md)
-  - [6.2.4 Configuración en Java DSL: lógica OR, ModifyResponseBody](./06-02-gateway-rutas.md)
-  - [6.2.5 Orden de evaluación y campo `order`](./06-02-gateway-rutas.md)
-  - [6.2.6 Canary deployment con `Weight`](./06-02-gateway-rutas.md)
-  - [6.2.7 Rutas `forward:` — fallbacks internos al Gateway](./06-02-gateway-rutas.md)
+- 6.2 Rutas: Predicates y Configuración (agrupa 5 hojas — modelo de datos, catálogo de predicates, dos estilos de configuración y casos especiales de ruta son sub-dominios distintos)
+  - [6.2.1 Modelo de Route: id, uri, order, predicates, filters y orden de evaluación](./06-08-gateway-route-modelo.md)
+  - [6.2.2 Catálogo de Predicates: Path, Method, Header, Query, Host, After/Before/Between, Cookie, RemoteAddr, XForwardedRemoteAddr](./06-09-gateway-predicates.md)
+  - [6.2.3 Configuración en YAML: ejemplos completos con casos reales](./06-10-gateway-rutas-yaml.md)
+  - [6.2.4 Configuración en Java DSL: lógica OR y casos complejos](./06-11-gateway-rutas-dsl.md)
+  - [6.2.5 Canary deployment con `Weight` y rutas `forward:`](./06-12-gateway-canary-forward.md)
 
-- 6.3 Filtros Predefinidos
-  - [6.3.1 Mapa de filtros por categoría](./06-03-gateway-filtros-predefinidos.md)
-  - [6.3.2 Transformación de path: StripPrefix, PrefixPath, RewritePath, SetPath](./06-03-gateway-filtros-predefinidos.md)
-  - [6.3.3 Headers de petición: AddRequestHeader, SetRequestHeader, AddRequestHeadersIfNotPresent, MapRequestHeader, RemoveRequestHeader](./06-03-gateway-filtros-predefinidos.md)
-  - [6.3.4 Headers de respuesta: AddResponseHeader, SetResponseHeader, RemoveResponseHeader, RewriteResponseHeader, RewriteLocationResponseHeader, DedupeResponseHeader](./06-03-gateway-filtros-predefinidos.md)
-  - [6.3.5 Control de flujo: CircuitBreaker, Retry, RedirectTo](./06-03-gateway-filtros-predefinidos.md)
-  - [6.3.6 Protección: RequestSize, SecureHeaders](./06-03-gateway-filtros-predefinidos.md)
-  - [6.3.7 Utilidades: TokenRelay, CacheRequestBody, SaveSession](./06-03-gateway-filtros-predefinidos.md)
+- 6.3 Filtros Predefinidos (agrupa 5 hojas — cada grupo opera sobre una parte distinta de la petición/respuesta: path, headers de entrada, headers de salida, flujo y protección)
+  - [6.3.1 Transformación de path: StripPrefix, PrefixPath, RewritePath, SetPath](./06-13-gateway-filtros-path.md)
+  - [6.3.2 Headers de petición: AddRequestHeader, SetRequestHeader, AddRequestHeadersIfNotPresent, MapRequestHeader, RemoveRequestHeader](./06-14-gateway-filtros-headers-request.md)
+  - [6.3.3 Headers de respuesta: AddResponseHeader, SetResponseHeader, RemoveResponseHeader, RewriteResponseHeader, RewriteLocationResponseHeader, DedupeResponseHeader](./06-15-gateway-filtros-headers-response.md)
+  - [6.3.4 Control de flujo: CircuitBreaker, Retry, RedirectTo](./06-16-gateway-filtros-flujo.md)
+  - [6.3.5 Protección y utilidades: RequestSize, SecureHeaders, CacheRequestBody, SaveSession](./06-17-gateway-filtros-proteccion.md)
 
-- 6.4 Filtros Personalizados: GatewayFilter y GlobalFilter
-  - [6.4.1 Diagrama de orden de ejecución pre/post](./06-04-gateway-filtros-custom.md)
-  - [6.4.2 `AbstractGatewayFilterFactory`: filtro por ruta con parámetros YAML](./06-04-gateway-filtros-custom.md)
-  - [6.4.3 `GlobalFilter` + `Ordered`: filtro para todas las rutas](./06-04-gateway-filtros-custom.md)
-  - [6.4.4 Exclusión de rutas públicas en GlobalFilter](./06-04-gateway-filtros-custom.md)
-  - [6.4.5 Filtro con acceso a beans de Spring: validación HMAC](./06-04-gateway-filtros-custom.md)
+- 6.4 Filtros Personalizados (agrupa 3 hojas — fábrica por ruta, filtro global y filtro con lógica de negocio son mecanismos de extensión con ciclos de vida distintos)
+  - [6.4.1 `AbstractGatewayFilterFactory`: filtro por ruta con parámetros YAML](./06-18-gateway-filter-factory.md)
+  - [6.4.2 `GlobalFilter` y `Ordered`: filtro global y exclusión de rutas públicas](./06-19-gateway-global-filter.md)
+  - [6.4.3 Filtros con lógica de negocio: validación HMAC](./06-20-gateway-filter-negocio.md)
 
-- 6.5 Rate Limiting con Redis
-  - [6.5.1 Algoritmo Token Bucket: replenishRate y burstCapacity](./06-05-gateway-rate-limiting.md)
-  - [6.5.2 Configuración con `RequestRateLimiter` y Redis reactivo](./06-05-gateway-rate-limiting.md)
-  - [6.5.3 KeyResolver: por IP, usuario, API key, ruta+usuario, plan de suscripción](./06-05-gateway-rate-limiting.md)
-  - [6.5.4 Headers de respuesta `X-RateLimit-*` y back-pressure](./06-05-gateway-rate-limiting.md)
-  - [6.5.5 Comportamiento en clúster de Gateway con Redis compartido](./06-05-gateway-rate-limiting.md)
-  - [6.5.6 Variante in-memory sin Redis (instancia única, desarrollo)](./06-05-gateway-rate-limiting.md)
+- 6.5 Rate Limiting (agrupa 3 hojas — algoritmo y config, estrategias de clave y variantes de despliegue son aspectos independientes del mismo mecanismo)
+  - [6.5.1 Token Bucket, `RequestRateLimiter` y configuración con Redis](./06-21-gateway-rate-limiter-config.md)
+  - [6.5.2 `KeyResolver`: estrategias por IP, usuario, API key y plan de suscripción](./06-22-gateway-key-resolver.md)
+  - [6.5.3 Clúster con Redis compartido y variante in-memory para desarrollo](./06-23-gateway-rate-limiter-variantes.md)
 
-- 6.6 Seguridad: JWT y Spring Security OAuth2
-  - [6.6.1 Flujo de validación JWT centralizada y propagación de identidad](./06-06-gateway-seguridad.md)
-  - [6.6.2 JwtAuthFilter con JJWT (clave simétrica HS256)](./06-06-gateway-seguridad.md)
-  - [6.6.3 Propagación de identidad: `X-User-Id`, `X-User-Roles`](./06-06-gateway-seguridad.md)
-  - [6.6.4 Spring Security OAuth2 Resource Server con `issuer-uri` y JWKS](./06-06-gateway-seguridad.md)
-  - [6.6.5 `TokenRelay`: propagación automática del Bearer token al microservicio](./06-06-gateway-seguridad.md)
+- 6.6 Seguridad: JWT y OAuth2 (agrupa 4 hojas — flujo conceptual, implementación JWT manual, integración OAuth2 y relay de tokens son mecanismos de seguridad con responsabilidades distintas)
+  - [6.6.1 Flujo de validación JWT centralizada y arquitectura de seguridad](./06-24-gateway-seguridad-flujo.md)
+  - [6.6.2 `JwtAuthFilter` con JJWT y propagación de identidad: `X-User-Id`, `X-User-Roles`](./06-25-gateway-jwt-filter.md)
+  - [6.6.3 Spring Security OAuth2 Resource Server con `issuer-uri` y JWKS](./06-26-gateway-oauth2.md)
+  - [6.6.4 `TokenRelay`: propagación del Bearer token al microservicio](./06-27-gateway-token-relay.md)
 
-- 6.7 Testing del Gateway
-  - [6.7.1 Pirámide de tests y estrategia de aislamiento de dependencias](./06-07-gateway-testing.md)
-  - [6.7.2 Estrategia 1: `@WebFluxTest` + `RouteLocator` (test de configuración de rutas)](./06-07-gateway-testing.md)
-  - [6.7.3 Estrategia 2: `@SpringBootTest` + WireMock (filtros de seguridad y headers)](./06-07-gateway-testing.md)
-  - [6.7.4 Estrategia 3: `@SpringBootTest` + Testcontainers Redis (rate limiting)](./06-07-gateway-testing.md)
-  - [6.7.5 Estrategia 4: test del Circuit Breaker con WireMock y errores configurados](./06-07-gateway-testing.md)
-  - [6.7.6 `application-test.yml`: deshabilitar Redis, Eureka y Resilience4j en tests](./06-07-gateway-testing.md)
+- 6.7 Testing del Gateway (agrupa 5 hojas — estrategia general y cada estrategia cubre una capa de aislamiento distinta: rutas, filtros, rate limiting y circuit breaker)
+  - [6.7.1 Estrategia de testing: pirámide y configuración `application-test.yml`](./06-28-gateway-testing-estrategia.md)
+  - [6.7.2 Tests de rutas: `@WebFluxTest` + `RouteLocator`](./06-29-gateway-testing-rutas.md)
+  - [6.7.3 Tests de filtros y seguridad: `@SpringBootTest` + WireMock](./06-30-gateway-testing-filtros.md)
+  - [6.7.4 Tests de rate limiting: Testcontainers Redis](./06-31-gateway-testing-rate-limiting.md)
+  - [6.7.5 Tests de Circuit Breaker con WireMock](./06-32-gateway-testing-circuit-breaker.md)
 
-- 6.8 Extensión Avanzada: RouteLocator y Filtros Programáticos
-  - [6.8.1 `RouteDefinitionLocator`: rutas dinámicas desde base de datos con caché reactivo](./06-08-gateway-extension.md)
-  - [6.8.2 `RouteDefinitionWriter`: CRUD de rutas en runtime sin reiniciar](./06-08-gateway-extension.md)
-  - [6.8.3 `GlobalFilter` con acceso a repositorio reactivo (lógica de negocio por petición)](./06-08-gateway-extension.md)
-  - [6.8.4 Migración Zuul [LEGACY] → Gateway: equivalencias de extensión](./06-08-gateway-extension.md)
-  - [6.8.5 Antipatrones](./06-08-gateway-extension.md)
+- 6.8 Extensión Avanzada: Gateway Programático (agrupa 5 hojas — cada mecanismo opera sobre una capa distinta del Gateway: localización de rutas, escritura, filtrado reactivo, migración y antipatrones)
+  - [6.8.1 `RouteDefinitionLocator`: rutas dinámicas desde base de datos con caché reactivo](./06-33-gateway-route-locator.md)
+  - [6.8.2 `RouteDefinitionWriter`: CRUD de rutas en runtime sin reiniciar](./06-34-gateway-route-writer.md)
+  - [6.8.3 `GlobalFilter` con repositorio reactivo y lógica de negocio por petición](./06-35-gateway-filter-reactivo.md)
+  - [6.8.4 Migración Zuul [LEGACY] → Gateway: equivalencias de extensión](./06-36-gateway-migracion-zuul.md)
+  - [6.8.5 Antipatrones](./06-37-gateway-antipatrones.md)
 
 ---
 
@@ -414,13 +402,42 @@
 | [08-comunicacion.md](./08-comunicacion.md) | Bloque 5 | Completo |
 | [07-circuit-breaker.md](./07-circuit-breaker.md) | Bloque 6 | Completo |
 | [06-01-gateway-concepto.md](./06-01-gateway-concepto.md) | Bloque 7 | Completo |
-| [06-02-gateway-rutas.md](./06-02-gateway-rutas.md) | Bloque 7 | Completo |
-| [06-03-gateway-filtros-predefinidos.md](./06-03-gateway-filtros-predefinidos.md) | Bloque 7 | Completo |
-| [06-04-gateway-filtros-custom.md](./06-04-gateway-filtros-custom.md) | Bloque 7 | Completo |
-| [06-05-gateway-rate-limiting.md](./06-05-gateway-rate-limiting.md) | Bloque 7 | Completo |
-| [06-06-gateway-seguridad.md](./06-06-gateway-seguridad.md) | Bloque 7 | Completo |
-| [06-07-gateway-testing.md](./06-07-gateway-testing.md) | Bloque 7 | Completo |
-| [06-08-gateway-extension.md](./06-08-gateway-extension.md) | Bloque 7 | Completo |
+| [06-02-gateway-arquitectura.md](./06-02-gateway-arquitectura.md) | Bloque 7 | Completo |
+| [06-03-gateway-vs-zuul.md](./06-03-gateway-vs-zuul.md) | Bloque 7 | Completo |
+| [06-04-gateway-propiedades-globales.md](./06-04-gateway-propiedades-globales.md) | Bloque 7 | Completo |
+| [06-05-gateway-ssl.md](./06-05-gateway-ssl.md) | Bloque 7 | Completo |
+| [06-06-gateway-websocket.md](./06-06-gateway-websocket.md) | Bloque 7 | Completo |
+| [06-07-gateway-discovery-actuator.md](./06-07-gateway-discovery-actuator.md) | Bloque 7 | Completo |
+| [06-08-gateway-route-modelo.md](./06-08-gateway-route-modelo.md) | Bloque 7 | Completo |
+| [06-09-gateway-predicates.md](./06-09-gateway-predicates.md) | Bloque 7 | Completo |
+| [06-10-gateway-rutas-yaml.md](./06-10-gateway-rutas-yaml.md) | Bloque 7 | Completo |
+| [06-11-gateway-rutas-dsl.md](./06-11-gateway-rutas-dsl.md) | Bloque 7 | Completo |
+| [06-12-gateway-canary-forward.md](./06-12-gateway-canary-forward.md) | Bloque 7 | Completo |
+| [06-13-gateway-filtros-path.md](./06-13-gateway-filtros-path.md) | Bloque 7 | Completo |
+| [06-14-gateway-filtros-headers-request.md](./06-14-gateway-filtros-headers-request.md) | Bloque 7 | Completo |
+| [06-15-gateway-filtros-headers-response.md](./06-15-gateway-filtros-headers-response.md) | Bloque 7 | Completo |
+| [06-16-gateway-filtros-flujo.md](./06-16-gateway-filtros-flujo.md) | Bloque 7 | Completo |
+| [06-17-gateway-filtros-proteccion.md](./06-17-gateway-filtros-proteccion.md) | Bloque 7 | Completo |
+| [06-18-gateway-filter-factory.md](./06-18-gateway-filter-factory.md) | Bloque 7 | Completo |
+| [06-19-gateway-global-filter.md](./06-19-gateway-global-filter.md) | Bloque 7 | Completo |
+| [06-20-gateway-filter-negocio.md](./06-20-gateway-filter-negocio.md) | Bloque 7 | Completo |
+| [06-21-gateway-rate-limiter-config.md](./06-21-gateway-rate-limiter-config.md) | Bloque 7 | Completo |
+| [06-22-gateway-key-resolver.md](./06-22-gateway-key-resolver.md) | Bloque 7 | Completo |
+| [06-23-gateway-rate-limiter-variantes.md](./06-23-gateway-rate-limiter-variantes.md) | Bloque 7 | Completo |
+| [06-24-gateway-seguridad-flujo.md](./06-24-gateway-seguridad-flujo.md) | Bloque 7 | Completo |
+| [06-25-gateway-jwt-filter.md](./06-25-gateway-jwt-filter.md) | Bloque 7 | Completo |
+| [06-26-gateway-oauth2.md](./06-26-gateway-oauth2.md) | Bloque 7 | Completo |
+| [06-27-gateway-token-relay.md](./06-27-gateway-token-relay.md) | Bloque 7 | Completo |
+| [06-28-gateway-testing-estrategia.md](./06-28-gateway-testing-estrategia.md) | Bloque 7 | Completo |
+| [06-29-gateway-testing-rutas.md](./06-29-gateway-testing-rutas.md) | Bloque 7 | Completo |
+| [06-30-gateway-testing-filtros.md](./06-30-gateway-testing-filtros.md) | Bloque 7 | Completo |
+| [06-31-gateway-testing-rate-limiting.md](./06-31-gateway-testing-rate-limiting.md) | Bloque 7 | Completo |
+| [06-32-gateway-testing-circuit-breaker.md](./06-32-gateway-testing-circuit-breaker.md) | Bloque 7 | Completo |
+| [06-33-gateway-route-locator.md](./06-33-gateway-route-locator.md) | Bloque 7 | Completo |
+| [06-34-gateway-route-writer.md](./06-34-gateway-route-writer.md) | Bloque 7 | Completo |
+| [06-35-gateway-filter-reactivo.md](./06-35-gateway-filter-reactivo.md) | Bloque 7 | Completo |
+| [06-36-gateway-migracion-zuul.md](./06-36-gateway-migracion-zuul.md) | Bloque 7 | Completo |
+| [06-37-gateway-antipatrones.md](./06-37-gateway-antipatrones.md) | Bloque 7 | Completo |
 | [09-observabilidad.md](./09-observabilidad.md) | Bloque 8 | Completo |
 | [10-seguridad.md](./10-seguridad.md) | Bloque 9 | Completo |
 | [11-kubernetes.md](./11-kubernetes.md) | Bloque 10 | Completo |

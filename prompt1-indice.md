@@ -15,14 +15,27 @@ INSTRUCCIONES
 
 1. Determina la estructura automáticamente
 
-A partir del TEMA, tú decides:
-- Cuántos temas principales hay (numerados 1, 2, 3...)
+No asumas ninguna estructura previa. A partir únicamente del TEMA, tú decides:
+- Cuántos temas principales hay
 - Cuántos subtemas tiene cada tema principal
 - La profundidad del árbol en cada rama
 
-La profundidad es variable y determinada por el contenido, no por una plantilla fija.
-Una rama puede tener 2 niveles (tema > subtema), otra puede tener 3 (tema > bloque > subtema).
-No apliques la misma profundidad a todas las ramas: cada rama tiene la profundidad que necesita.
+La profundidad emerge del contenido, no de una plantilla. Evalúa cada rama de forma
+independiente usando estas dos reglas:
+
+Cuándo añadir un nivel de agrupación (más profundidad):
+- Un nodo tendría más de 7–8 hijos directos Y esos hijos pertenecen a sub-dominios
+  claramente distintos → introduce un nivel intermedio que los agrupe por dominio
+- Sin ese agrupador, el índice de esa rama sería difícil de navegar
+
+Cuándo NO añadir profundidad:
+- Los hijos son homogéneos en tipo y nivel → mantén el nivel actual, sin agrupadores
+- Añadir un nivel intermedio no aportaría contexto real de navegación → no lo añadas
+
+Esto significa que distintas ramas del mismo tema pueden tener distinta profundidad.
+Un tema simple (ej: "Python básico") puede resolverse en 2 niveles. Uno complejo
+(ej: "Kubernetes CKA") puede necesitar 3 o incluso 4 en alguna rama concreta.
+No hay profundidad mínima ni máxima: solo la que el contenido justifique.
 
 
 2. Regla de granularidad y fichero único — la más importante
@@ -30,9 +43,11 @@ No apliques la misma profundidad a todas las ramas: cada rama tiene la profundid
 Cada nodo hoja recibe exactamente un fichero .md propio y exclusivo.
 Ningún fichero es compartido por dos nodos. Esta es una regla sin excepciones.
 
-El tamaño objetivo de cada fichero es 300–700 líneas desarrollando el contenido completo
+Para decidir si un tema merece fichero propio, estima cuántas líneas ocuparía desarrollado
 con la estructura de prompt2 (introducción, diagrama, ejemplo funcional, tabla de parámetros,
-buenas/malas prácticas, comparación). Esta estimación determina cuándo dividir y cuándo fusionar:
+buenas/malas prácticas, comparación). Esa estimación es solo una heurística de diseño del
+índice: la longitud real del fichero la determinará el contenido, no este número.
+El rango de referencia para la estimación es 300–700 líneas:
 
 Cuándo dividir un nodo en hijos:
 - Un concepto con más de 2 variantes de configuración → subtemas separados
@@ -127,7 +142,8 @@ REGLAS ADICIONALES
   dos nodos compartirían fichero, es señal de que la jerarquía está mal definida: revísala
 - Si el tema es una certificación (ej: CKA, AZ-900), alinea los temas con el temario oficial
 - Si el tema es un lenguaje o framework, alinea con el flujo natural de aprendizaje
-- Indica explícitamente cuando una rama tiene más de 2 niveles de profundidad y por qué
+- Cuando introduces un nodo intermedio de agrupación, indica entre paréntesis el motivo:
+  cuántos hijos agrupa y por qué son un sub-dominio distinto
 
 ---
 

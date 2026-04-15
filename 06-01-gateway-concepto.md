@@ -1,79 +1,152 @@
-# 6.1 Concepto y Arquitectura Reactiva
+# 6.1.1 Qué es un API Gateway: responsabilidades y casos de uso
 
-← [5 — Load Balancing](./05-load-balancing.md) | [Índice](./README.md) | [6.2 Rutas y Predicates →](./06-02-gateway-rutas.md)
-
----
-
-Sin Gateway, los clientes externos tienen que conocer la URL de cada microservicio: puerto, ruta base, versión de la API. Cualquier cambio en esa estructura (mover un servicio, cambiar un prefijo de ruta, escalar horizontalmente) rompe a los clientes. **Spring Cloud Gateway** es el punto de entrada único que oculta toda esa complejidad: los clientes solo conocen una URL pública y el Gateway se encarga del enrutamiento, seguridad, rate limiting, transformación de peticiones y observabilidad de forma centralizada.
-
-> [PREREQUISITO] El proyecto Gateway debe excluir `spring-boot-starter-web`. El stack es WebFlux (reactivo); incluir ambos hace que la aplicación falle al arrancar.
+← [5 — Balanceo de Carga](./05-load-balancing.md) | [Índice](./README.md) | [6.1.2 Arquitectura reactiva →](./06-02-gateway-arquitectura.md)
 
 ---
 
-## 6.1.1 Qué es un API Gateway y sus responsabilidades
+Sin Gateway, cada cliente externo necesita conocer la URL, el puerto y la interfaz de cada microservicio que quiere llamar. Cuando el sistema crece de 3 a 30 servicios, cualquier refactorización interna —renombrar un servicio, moverlo de puerto, escalar horizontalmente— se convierte en un cambio coordinado con todos los clientes. Además, responsabilidades transversales como autenticación, control de tasa o logging se duplican en cada servicio o simplemente se omiten. El **API Gateway** resuelve ambos problemas a la vez: ofrece un único punto de entrada estable hacia la arquitectura de microservicios, y centraliza las responsabilidades transversales que no pertenecen a la lógica de negocio de ningún servicio concreto.
+
+> [PREREQUISITO] El módulo Gateway requiere `spring-cloud-starter-gateway`, que trae WebFlux (reactivo, no bloqueante). Si el proyecto incluye también `spring-boot-starter-web` (Servlet), la aplicación fallará al arrancar. Los dos stacks son incompatibles en el mismo módulo.
+
+---
+
+## Responsabilidades del Gateway
+
+El Gateway actúa como fachada de toda la arquitectura. No contiene lógica de negocio: su trabajo es recibir peticiones externas, aplicar políticas transversales y enrutarlas al microservicio correcto.
+
+| Responsabilidad | Qué hace | Sin Gateway |
+|---|---|---|
+| **Enrutamiento** | Reenvía al servicio correcto según path, método u headers | El cliente conoce cada URL interna |
+| **Autenticación** | Valida el token JWT antes de dejar pasar la petición | Cada servicio valida su propio token |
+| **Rate Limiting** | Limita peticiones por IP, usuario o plan de suscripción | Cada servicio implementa su propio límite |
+| **SSL Termination** | Gestiona HTTPS; los servicios internos usan HTTP plano | Cada servicio gestiona sus propios certificados |
+| **CORS** | Centraliza las políticas Cross-Origin | Cada servicio configura sus propios headers CORS |
+| **Transformación** | Modifica headers, paths o body antes de reenviar | Transformaciones duplicadas en cada servicio |
+| **Logging / Trazabilidad** | Registra todas las peticiones y propaga Trace ID | Logging inconsistente entre servicios |
+| **Circuit Breaker** | Protege los servicios de sobrecarga desde el perímetro | Cada servicio gestiona su propio CB |
+| **Load Balancing** | Distribuye carga entre instancias del mismo servicio | El cliente necesita conocer todas las instancias |
+
+> [CONCEPTO] El Gateway no reemplaza la lógica de negocio: la delega en los microservicios. Todo lo que es política de acceso, transformación de protocolo o control de tráfico pertenece al Gateway. Todo lo que es regla de negocio pertenece al servicio.
+
+Estas responsabilidades no son arbitrarias: responden a la necesidad de que la lógica transversal tenga un único lugar donde vivir, evolucionar y auditarse. Si la autenticación está en 12 servicios distintos, actualizar el algoritmo de validación de tokens requiere 12 despliegues coordinados. Si está en el Gateway, requiere uno.
+
+### Qué NO hace el Gateway
+
+Es igual de importante conocer los límites. El Gateway no debe:
+
+- **Tomar decisiones de negocio**: si un pedido puede realizarse, si un usuario tiene saldo suficiente, si un producto está disponible. Eso pertenece al microservicio correspondiente.
+- **Mantener estado de sesión de usuario**: las sesiones de negocio (carrito, wizard de compra) pertenecen al servicio o a una caché compartida, no al Gateway.
+- **Orquestar flujos entre servicios**: llamar a A, luego a B, luego a C y combinar resultados. Eso es responsabilidad de un servicio orquestador o del patrón BFF.
+- **Acceder directamente a bases de datos de dominio**: en raras excepciones un filtro puede consultar una caché Redis para validar una API key, pero nunca una base de datos de negocio.
+
+---
+
+## Topología: sin Gateway vs con Gateway
+
+El diagrama muestra cómo cambia la topología visible para un cliente externo al introducir un Gateway.
 
 ```
-Cliente HTTP/HTTPS
-        │
-        ▼
-┌─────────────────────────────────────────────────────┐
-│                Spring Cloud Gateway                  │
-│                                                      │
-│  ① Evaluación de Predicates                          │
-│     Path, Method, Header, Query, Host, RemoteAddr…  │
-│     → si ninguna ruta coincide: 404                  │
-│                                                      │
-│  ② GlobalFilters  (pre, orden ascendente)            │
-│     JwtAuthFilter (orden -200)                       │
-│     LoggingFilter (orden -100)                       │
-│     → 401/403 si falla autenticación                 │
-│                                                      │
-│  ③ GatewayFilters de la ruta (pre)                   │
-│     RateLimiter → 429 si excede límite               │
-│     CircuitBreaker → fallback si CB abierto          │
-│     StripPrefix, RewritePath, AddHeader…             │
-└──────────────────────────┬──────────────────────────┘
-                           │ petición transformada
-                           ▼
-              Microservicio destino
-              lb://pedidos-service
-              (instancia seleccionada por LB)
-                           │ respuesta
-                           ▼
-┌─────────────────────────────────────────────────────┐
-│                Spring Cloud Gateway                  │
-│                                                      │
-│  ④ GatewayFilters de la ruta (post)                  │
-│     AddResponseHeader, SetStatus…                    │
-│                                                      │
-│  ⑤ GlobalFilters (post, orden descendente)           │
-│     LoggingFilter (loguea respuesta + latencia)      │
-└──────────────────────────┬──────────────────────────┘
-                           │ respuesta transformada
-                           ▼
-                  Cliente (respuesta final)
-```
+SIN GATEWAY
 
-> [CONCEPTO] Los pasos ② y ③ son **pre-filters** (antes del microservicio). Los pasos ④ y ⑤ son **post-filters** (tras recibir la respuesta). Un mismo bean puede actuar en ambas fases usando `.then(Mono.fromRunnable(...))`.
+  Cliente móvil ──────────────────► productos-service  :8081
+  Cliente móvil ──────────────────► pedidos-service    :8082
+  Cliente móvil ──────────────────► usuarios-service   :8083
+  Cliente web   ──────────────────► productos-service  :8081
+  Cliente web   ──────────────────► pedidos-service    :8082
+  Cliente web   ──────────────────► usuarios-service   :8083
+
+  Cada cliente conoce 3 URLs internas y 3 puertos.
+  Un cambio de puerto o nombre de servicio rompe todos los clientes.
+  Auth, rate limiting y CORS se implementan (o no) en cada servicio.
+  No hay punto único de logging ni de propagación de trazas.
+
+
+CON GATEWAY
+
+  Cliente móvil ─┐
+                 ├──► Gateway :443 ──► productos-service  :8081
+  Cliente web   ─┘        │   └──────► pedidos-service    :8082
+                           └─────────► usuarios-service   :8083
+
+  Los clientes solo conocen https://api.miempresa.com.
+  La topología interna es invisible y modificable sin impacto en clientes.
+  Auth, rate limiting y CORS se aplican una sola vez, en el Gateway.
+  Un único punto de logging y de propagación de Trace ID.
+```
 
 ---
 
-## 6.1.2 Arquitectura reactiva: ciclo completo de una petición
+## Setup mínimo funcional
+
+Un Gateway operativo necesita tres elementos: la dependencia correcta, al menos una ruta configurada y acceso a un service registry si se usa balanceo de carga. El siguiente ejemplo enruta tres servicios y añade un header de respuesta global.
 
 ```xml
-<dependency>
-    <groupId>org.springframework.cloud</groupId>
-    <artifactId>spring-cloud-starter-gateway</artifactId>
-</dependency>
+<!-- pom.xml -->
+<dependencies>
+    <dependency>
+        <groupId>org.springframework.cloud</groupId>
+        <artifactId>spring-cloud-starter-gateway</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.cloud</groupId>
+        <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+    </dependency>
+    <!-- NO incluir spring-boot-starter-web: incompatible con WebFlux -->
+</dependencies>
 
-<!--
-  NO incluir spring-boot-starter-web junto con gateway.
-  Gateway usa WebFlux; los dos stacks son incompatibles.
--->
+<dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-dependencies</artifactId>
+            <version>2023.0.3</version>
+            <type>pom</type>
+            <scope>import</scope>
+        </dependency>
+    </dependencies>
+</dependencyManagement>
+```
+
+```yaml
+# application.yml
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      routes:
+        - id: productos-route
+          uri: lb://productos-service     # lb:// → resuelve instancia vía Eureka + LoadBalancer
+          predicates:
+            - Path=/api/productos/**
+          filters:
+            - StripPrefix=1               # elimina /api antes de reenviar al servicio
+
+        - id: pedidos-route
+          uri: lb://pedidos-service
+          predicates:
+            - Path=/api/pedidos/**
+          filters:
+            - StripPrefix=1
+
+        - id: usuarios-route
+          uri: lb://usuarios-service
+          predicates:
+            - Path=/api/usuarios/**
+          filters:
+            - StripPrefix=1
+
+      default-filters:
+        - AddResponseHeader=X-Gateway, spring-cloud-gateway   # aplica a todas las rutas
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka
 ```
 
 ```java
-// No requiere ninguna anotación especial en la clase principal
+// GatewayApplication.java — no necesita ninguna anotación adicional
 @SpringBootApplication
 public class GatewayApplication {
     public static void main(String[] args) {
@@ -82,211 +155,125 @@ public class GatewayApplication {
 }
 ```
 
+Con esta configuración, una petición `GET /api/productos/123` llega al Gateway, que elimina el prefijo `/api` mediante `StripPrefix=1` y reenvía `GET /productos/123` a una instancia de `productos-service` seleccionada por el load balancer desde Eureka. La respuesta vuelve al cliente con el header `X-Gateway: spring-cloud-gateway` añadido por el filtro global.
+
+> [EXAMEN] `lb://` indica al Gateway que resuelva la URI a través del load balancer integrado (Spring Cloud LoadBalancer + Eureka). Sin `lb://`, el Gateway usa la URL literal y no distribuye carga entre instancias. Es uno de los errores más frecuentes al configurar rutas por primera vez.
+
 ---
 
-## 6.1.3 Spring Cloud Gateway vs Zuul
+## Cuándo se necesita un API Gateway
 
-| Aspecto | Zuul 1.x | Spring Cloud Gateway |
+No toda arquitectura necesita un Gateway desde el primer día. Añadirlo antes de tiempo introduce una capa de infraestructura que hay que mantener sin que aporte valor real. Estos son los criterios que justifican introducirlo:
+
+| Situación | ¿Necesita Gateway? |
+|---|---|
+| 1 único servicio expuesto directamente | No — añade complejidad sin beneficio real |
+| 2–3 servicios con clientes externos distintos | Sí — centraliza CORS, auth y logging |
+| Auth o rate limiting comunes a varios servicios | Sí — evita duplicación en cada servicio |
+| SSL Termination centralizada | Sí — simplifica gestión de certificados |
+| Rutas que cambian con frecuencia | Sí — los clientes quedan aislados de cambios internos |
+| Solo comunicación interna entre servicios | No — para tráfico este-oeste se usa service mesh |
+| Necesidad de canary deployment o A/B testing | Sí — el Gateway distribuye tráfico por porcentaje con el predicate `Weight` |
+| Múltiples equipos con APIs heterogéneas | Sí — el Gateway unifica la interfaz externa sin imponer cambios internos |
+
+El criterio de ruptura más claro es este: en el momento en que dos servicios distintos comparten alguna política transversal (misma lógica de auth, mismo esquema de rate limiting, mismo CORS), el Gateway deja de ser una mejora opcional y pasa a ser la alternativa correcta frente a la duplicación.
+
+---
+
+## Buenas y malas prácticas
+
+Hacer:
+- **Centralizar en el Gateway todo lo que es política transversal**: autenticación, rate limiting, CORS, logging. Cada servicio se simplifica al no tener que implementarlo y el equipo que mantiene el Gateway tiene visibilidad completa sobre todas las políticas de acceso del sistema.
+- **Usar `lb://nombre-servicio`** para que el load balancer seleccione la instancia automáticamente. El Gateway no necesita saber cuántas instancias hay ni sus IPs; Eureka las gestiona. Esto hace el Gateway resiliente a reinicios, escalados y movimientos de servicios.
+- **Mantener el Gateway sin estado**. No guardar sesiones ni datos de negocio en él. Un Gateway con estado no puede escalarse horizontalmente sin sincronización entre réplicas, lo que convierte en un cuello de botella el elemento que debería ser el más escalable de la arquitectura.
+- **Desplegarlo con al menos 2 réplicas** detrás de un balanceador externo (NGINX, AWS ALB, GCP Load Balancer). Es el único punto de entrada de toda la arquitectura externa; un Gateway con una sola instancia es un SPOF (Single Point of Failure) que anula la alta disponibilidad del resto del sistema.
+- **Versionar las rutas públicas** desde el inicio (`/api/v1/...`). Cambiar la URL pública de una ruta en el futuro obliga a coordinar con todos los clientes; un prefijo de versión permite introducir `/api/v2/...` en paralelo sin romper los clientes existentes.
+
+Evitar:
+- **Incluir lógica de negocio en los filtros del Gateway**. La validación de reglas de dominio, el cálculo de precios o las consultas a bases de datos de negocio no pertenecen al Gateway. Cuando ocurre, el Gateway se convierte en un monolito de infraestructura donde los cambios de dominio requieren tocar la capa de enrutamiento.
+- **Añadir `spring-boot-starter-web`** junto a `spring-cloud-starter-gateway`. Spring Boot detecta ambos stacks y falla al arrancar con un error de contexto ambiguo. Si se migra desde un proyecto Servlet, hay que eliminar explícitamente la dependencia web antes de añadir Gateway.
+- **Usar URLs internas directas** (`http://localhost:8081`) en lugar de `lb://`. Pierde el load balancing, acopla la configuración a IPs y puertos concretos, y rompe inmediatamente en entornos con múltiples instancias o en Kubernetes donde las IPs son efímeras.
+- **Omitir `StripPrefix`** cuando el servicio de destino no incluye el prefijo de la ruta pública. Si el Gateway expone `/api/productos/**` pero el servicio espera `/productos/**`, sin `StripPrefix=1` el servicio recibe `/api/productos/...` y devuelve 404. Es el error de configuración más frecuente en primeras integraciones.
+
+---
+
+## El Gateway en el ecosistema Spring Cloud
+
+El Gateway no opera en aislamiento: colabora con varios componentes del ecosistema Spring Cloud para cumplir sus responsabilidades.
+
+```
+                         ┌─────────────────────────────────┐
+                         │        Spring Cloud Config       │
+                         │  (configuración de rutas y       │
+                         │   propiedades del Gateway)       │
+                         └────────────────┬────────────────┘
+                                          │ spring.config.import
+                                          ▼
+Cliente ──► HTTPS ──► ┌────────────────────────────────┐
+                       │        API Gateway              │
+                       │                                 │
+                       │  ① Eureka Client               │◄── Service Registry
+                       │     descubre instancias         │    (Eureka Server)
+                       │                                 │
+                       │  ② Spring Cloud LoadBalancer   │
+                       │     selecciona instancia        │
+                       │                                 │
+                       │  ③ Resilience4j CircuitBreaker │
+                       │     protege llamadas salientes  │
+                       │                                 │
+                       │  ④ Micrometer Tracing          │
+                       │     propaga Trace ID            │
+                       └────────────────┬───────────────┘
+                                        │ lb://servicio
+                                        ▼
+                              Microservicio destino
+```
+
+Cada componente resuelve una responsabilidad distinta:
+- **Config Server**: externaliza la configuración de rutas. Permite modificar rutas sin redesplegar el Gateway.
+- **Eureka**: el Gateway se registra como cliente y consulta las instancias disponibles de cada servicio antes de enrutar.
+- **LoadBalancer**: integrado en el Gateway, selecciona la instancia cuando se usa `lb://`. No requiere configuración adicional.
+- **Resilience4j**: se integra como filtro predefinido `CircuitBreaker` para abrir el circuito si un servicio downstream falla repetidamente.
+- **Micrometer Tracing**: el Gateway añade el `Trace ID` a las peticiones salientes, permitiendo rastrear el flujo completo en Zipkin o Grafana Tempo.
+
+---
+
+## API Gateway vs Backend for Frontend (BFF)
+
+El BFF es un patrón relacionado pero con un propósito distinto. Ambos pueden coexistir: el Gateway como perímetro de seguridad y enrutamiento, los BFF como microservicios internos a los que el Gateway enruta según el tipo de cliente.
+
+```
+                        ┌──────────────────────────────┐
+  Cliente móvil ────────► Gateway  (:443)               │
+  Cliente web   ────────►          │                    │
+                        └──────────┼───────────────────┘
+                                   │
+                    ┌──────────────┼──────────────┐
+                    ▼              ▼              ▼
+              BFF Móvil       BFF Web       BFF TV
+              (agrega         (agrega       (agrega
+               datos para      datos para    datos para
+               app móvil)      web app)      smart TV)
+                    │              │              │
+                    └──────────────┼──────────────┘
+                                   │
+                    ┌──────────────┼──────────────┐
+                    ▼              ▼              ▼
+             productos-svc   pedidos-svc   usuarios-svc
+```
+
+El Gateway aplica auth y rate limiting una sola vez. Cada BFF agrega y adapta los datos al formato que necesita su cliente específico, sin que los microservicios de dominio necesiten conocer a quién sirven.
+
+| Aspecto | API Gateway | BFF |
 |---|---|---|
-| **Modelo de E/S** | Bloqueante — un hilo por conexión | No-bloqueante — Reactor/WebFlux |
-| **Framework base** | Spring MVC (Servlet) | Spring WebFlux |
-| **Estado oficial** | Deprecado | Activo y mantenido |
-| **Rendimiento bajo carga** | Limitado por pool de hilos | Excelente, miles de conexiones concurrentes |
-| **Filtros** | `ZuulFilter` | `GatewayFilter` / `GlobalFilter` |
-| **WebSocket** | Soporte limitado (módulo separado) | Soporte nativo |
-| **Predicates** | No existe el concepto | Potentes y extensibles |
+| **Propósito** | Enrutar y aplicar políticas transversales | Adaptar la API a las necesidades de un cliente específico |
+| **Instancias** | Una (o clúster) para todos los clientes | Una por tipo de cliente (móvil, web, TV…) |
+| **Lógica** | Sin lógica de negocio | Puede agregar llamadas y transformar datos entre servicios |
+| **Mantenimiento** | Equipo de plataforma / infraestructura | Equipo del cliente que consume el BFF |
+| **Cuándo usarlo** | Siempre que haya más de un servicio expuesto | Cuando los clientes tienen requisitos de datos muy distintos |
 
-> [EXAMEN] Pregunta frecuente: *¿por qué no se puede usar `spring-boot-starter-web` en un Gateway?* Porque Gateway depende de `spring-webflux` y el starter web registra un `DispatcherServlet` (Servlet API), lo que genera un conflicto de contexto en el arranque con un mensaje de error poco descriptivo.
+> [ADVERTENCIA] No confundir API Gateway con Service Mesh (Istio, Linkerd). El Gateway gestiona tráfico norte-sur: cliente externo hacia el interior del sistema. El Service Mesh gestiona tráfico este-oeste: comunicación entre servicios internos. Son complementarios, no alternativos. Usar un Service Mesh no elimina la necesidad de un API Gateway si hay clientes externos.
 
 ---
 
-## 6.1.4 Propiedades globales
-
-Las propiedades globales resuelven tres problemas recurrentes cuando el Gateway crece: CORS declarado en cada ruta de forma inconsistente, timeouts del cliente HTTP con valores por defecto inadecuados para producción, y filtros que deberían aplicarse a todas las rutas pero se olvidan en alguna.
-
-```yaml
-spring:
-  cloud:
-    gateway:
-
-      # Filtros aplicados a TODAS las rutas sin necesidad de declararlos en cada una
-      default-filters:
-        - AddResponseHeader=X-Gateway, spring-cloud-gateway
-        - DedupeResponseHeader=Access-Control-Allow-Origin
-
-      # Cliente HTTP reactivo (Reactor Netty)
-      httpclient:
-        connect-timeout: 2000           # ms para establecer conexión TCP
-        response-timeout: 10s           # tiempo máximo para recibir la respuesta completa
-        pool:
-          max-connections: 500          # máximo de conexiones en el pool
-          acquire-timeout: 5000         # ms esperando una conexión libre del pool
-
-      # CORS centralizado para todas las rutas
-      globalcors:
-        cors-configurations:
-          '[/**]':
-            allowed-origins: "https://miapp.com"
-            allowed-methods: GET,POST,PUT,DELETE
-            allowed-headers: "*"
-            allow-credentials: true
-            max-age: 3600
-
-      # Métricas por ruta para Micrometer/Prometheus
-      metrics:
-        enabled: true    # defecto: false
-                         # añade tags: routeId, routeUri, outcome (SUCCESSFUL/CLIENT_ERROR/SERVER_ERROR)
-```
-
-```yaml
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health, gateway, prometheus
-# Endpoints útiles:
-# GET  /actuator/gateway/routes           → lista todas las rutas configuradas
-# GET  /actuator/gateway/routes/{id}      → detalle de una ruta
-# POST /actuator/gateway/refresh          → recarga rutas dinámicas sin reiniciar
-```
-
-### Parámetros del cliente HTTP
-
-| Parámetro | Tipo | Valor por defecto | Descripción |
-|---|---|---|---|
-| `httpclient.connect-timeout` | int (ms) | 45000 | Tiempo máximo para establecer conexión TCP |
-| `httpclient.response-timeout` | Duration | 30s | Tiempo máximo esperando respuesta completa |
-| `httpclient.pool.max-connections` | int | 500 | Máximo de conexiones en el pool de Netty |
-| `httpclient.pool.acquire-timeout` | long (ms) | 45000 | Tiempo esperando una conexión libre del pool |
-| `metrics.enabled` | boolean | false | Activa métricas Micrometer por ruta |
-| `discovery.locator.enabled` | boolean | false | Crea rutas automáticas desde el registro de servicios |
-| `discovery.locator.lower-case-service-id` | boolean | false | Convierte el serviceId a minúsculas en la URL |
-
----
-
-## 6.1.5 SSL Termination — HTTPS en el Gateway
-
-El Gateway gestiona HTTPS con los clientes externos; los microservicios internos siguen usando HTTP plano.
-
-```bash
-# Generar keystore PKCS12 para desarrollo
-keytool -genkeypair -alias gateway -keyalg RSA -keysize 2048 \
-  -storetype PKCS12 -keystore gateway-keystore.p12 -validity 365
-```
-
-```yaml
-server:
-  port: 443
-  ssl:
-    enabled: true
-    key-store: classpath:gateway-keystore.p12
-    key-store-password: ${SSL_KEYSTORE_PASSWORD}
-    key-store-type: PKCS12
-    key-alias: gateway
-    # Para mTLS (el cliente también presenta certificado):
-    # client-auth: need
-    # trust-store: classpath:trusted-clients.p12
-    # trust-store-password: ${TRUST_STORE_PASSWORD}
-```
-
-```yaml
-# Los microservicios internos siguen usando HTTP
-spring:
-  cloud:
-    gateway:
-      routes:
-        - id: pedidos-route
-          uri: http://pedidos-service:8080   # HTTP interno, no HTTPS
-          predicates:
-            - Path=/api/pedidos/**
-```
-
-> [ADVERTENCIA] Los certificados autofirmados funcionan en desarrollo pero los navegadores los rechazan. En producción usar Let's Encrypt (`certbot`) o un certificado firmado por la CA corporativa.
-
----
-
-## 6.1.6 WebSocket proxying
-
-Spring Cloud Gateway soporta proxying de WebSocket de forma nativa usando `ws://` o `wss://` como esquema:
-
-```yaml
-spring:
-  cloud:
-    gateway:
-      routes:
-        - id: ws-chat
-          uri: ws://chat-service:8080
-          predicates:
-            - Path=/ws/chat/**
-
-        - id: wss-notificaciones
-          uri: wss://notif-service:8443
-          predicates:
-            - Path=/ws/notificaciones/**
-```
-
-El Gateway eleva automáticamente la conexión HTTP a WebSocket cuando el cliente envía `Upgrade: websocket`. No requiere configuración adicional ni dependencias extra.
-
----
-
-## 6.1.7 Discovery Locator — rutas automáticas desde Eureka/Consul
-
-En lugar de declarar cada ruta manualmente, el Discovery Locator crea rutas automáticas para cada servicio registrado:
-
-```yaml
-spring:
-  cloud:
-    gateway:
-      discovery:
-        locator:
-          enabled: true                  # defecto: false
-          lower-case-service-id: true    # /PEDIDOS-SERVICE/** → /pedidos-service/**
-```
-
-Con esto activo, si `pedidos-service` está en Eureka, el Gateway crea automáticamente:
-```
-GET /pedidos-service/**  →  lb://pedidos-service/**
-```
-
-**Ventaja:** sin configuración de rutas en YAML para cada servicio nuevo.
-**Inconveniente:** las rutas generadas no tienen filtros personalizados. Para producción: Discovery Locator para servicios nuevos + rutas explícitas para los que necesitan filtros específicos.
-
----
-
-## 6.1.8 Actuator — gestión del Gateway en runtime
-
-El Gateway expone endpoints de Actuator específicos para inspeccionar y administrar rutas sin reiniciar el proceso:
-
-| Endpoint | Método | Descripción |
-|---|---|---|
-| `/actuator/gateway/routes` | GET | Lista todas las rutas activas con sus predicates y filtros |
-| `/actuator/gateway/routes/{id}` | GET | Detalle de una ruta concreta por su ID |
-| `/actuator/gateway/refresh` | POST | Recarga las rutas dinámicas (p. ej. desde `RouteDefinitionLocator`) |
-| `/actuator/gateway/globalfilters` | GET | Lista todos los `GlobalFilter` activos y su orden |
-| `/actuator/gateway/routefilters` | GET | Lista todos los `GatewayFilterFactory` disponibles |
-
-```yaml
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health, gateway, prometheus
-  endpoint:
-    gateway:
-      enabled: true
-```
-
-```bash
-# Inspeccionar todas las rutas en producción sin reiniciar
-curl http://localhost:8080/actuator/gateway/routes | jq .
-
-# Forzar recarga de rutas dinámicas (después de un cambio en BD o Config Server)
-curl -X POST http://localhost:8080/actuator/gateway/refresh
-```
-
-> [ADVERTENCIA] El endpoint `POST /actuator/gateway/refresh` recarga las rutas definidas por `RouteDefinitionLocator` pero **no** las rutas declaradas en YAML. Las rutas YAML solo cambian con un reinicio del proceso (o a través de Spring Cloud Config Bus si se usa `@RefreshScope`).
-
----
-
-
-← [5 — Load Balancing](./05-load-balancing.md) | [Índice](./README.md) | [6.2 Rutas y Predicates →](./06-02-gateway-rutas.md)
+← [5 — Balanceo de Carga](./05-load-balancing.md) | [Índice](./README.md) | [6.1.2 Arquitectura reactiva →](./06-02-gateway-arquitectura.md)

@@ -139,7 +139,9 @@ R3. Los diagramas representan relaciones o flujos reales, no listas con formato 
 R4. Los marcadores van siempre en blockquote (>), excepto [LEGACY] que va en el texto.
 R5. La navegación aparece exactamente dos veces: tras el título y al final del fichero.
 R6. No hay índice interno. El README.md es la única tabla de contenidos del proyecto.
-R7. El fichero tiene entre 300 y 700 líneas.
+R7. La longitud la determina el contenido, no un número.
+    Escribe todo lo que el tema necesita y detente cuando esté completo.
+    No añadas secciones, ejemplos ni explicaciones para alcanzar un mínimo de líneas.
     Si el desarrollo natural superaría 700 líneas, avisa antes de escribir
     y propón cómo dividirlo en dos subtemas separados.
 
