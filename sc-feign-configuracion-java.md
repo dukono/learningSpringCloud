@@ -1,102 +1,111 @@
-# 4.3 Configuración por clase Java — @Configuration local, global y FeignClientsConfiguration
+# 3.2.1 Configuración por clase Java (FeignClientConfiguration)
 
-<- [4.2 Declaración de @FeignClient](sc-feign-cliente-declarativo.md) | [Índice](README.md) | [4.4 Configuración por propiedades YAML](sc-feign-configuracion-propiedades.md) ->
+← [3.1 Cliente declarativo básico con OpenFeign](sc-feign-cliente-declarativo.md) | [Índice](README.md) | [3.2.2 Configuración por propiedades](sc-feign-configuracion-propiedades.md) →
 
 ---
 
 ## Introducción
 
-Feign crea un child `ApplicationContext` independiente por cada cliente declarado. Ese contexto contiene los beans de infraestructura del cliente: `Encoder`, `Decoder`, `Logger`, `Retryer`, `Contract`, `RequestInterceptor` y otros. La clase `FeignClientsConfiguration` define los beans por defecto; para sobreescribir cualquiera de ellos basta con declarar un bean del mismo tipo en una clase `@Configuration` local.
+Spring Cloud OpenFeign crea un sub-contexto (ApplicationContext hijo) independiente por cada cliente `@FeignClient`. La configuración Java por cliente permite registrar beans específicos — `Encoder`, `Decoder`, `Contract`, `Logger`, `ErrorDecoder`, `Retryer`, `RequestInterceptor` — que afectan únicamente a ese cliente, sin modificar el comportamiento global de otros clientes de la aplicación. Este mecanismo es necesario cuando distintos microservicios remotos requieren configuraciones diferentes: por ejemplo, uno necesita autenticación Bearer y otro Basic Auth, o uno usa JSON y otro XML.
 
-Este mecanismo permite que dos clientes Feign en la misma aplicación tengan codecs completamente distintos — por ejemplo, uno que serializa con Jackson y otro que usa Protobuf — sin interferirse entre sí. La configuración local afecta solo al cliente que la declara; la configuración global (via `defaultConfiguration`) afecta a todos los clientes del módulo.
+> [PREREQUISITO] Conocer el patrón de sub-contexto de Feign: cada `@FeignClient` tiene su propio `ApplicationContext` hijo. Los beans registrados en la clase de configuración por cliente viven en ese contexto hijo, no en el padre.
 
-> [ADVERTENCIA] La clase `@Configuration` usada como configuración local de un cliente Feign **no debe** ser detectada por el `@ComponentScan` de la aplicación. Si Spring la registra en el contexto padre, los beans que define se aplican a todos los clientes, anulando el aislamiento por cliente y pudiendo causar comportamientos inesperados difíciles de diagnosticar.
+## Diagrama de contextos
 
----
-
-## Diagrama: jerarquía de contextos en Feign
-
-El siguiente diagrama muestra cómo se relacionan el contexto de aplicación principal, el contexto padre de Feign y los child contexts por cliente.
+Feign sigue un modelo de herencia de contextos de Spring donde cada cliente tiene su propio contenedor de beans. Esto es lo que hace posible la configuración independiente por cliente.
 
 ```
- ApplicationContext (Spring Boot)
- └── FeignContext  (padre compartido de todos los clientes)
-      │  beans de FeignClientsConfiguration (defaults)
-      │  beans de defaultConfiguration (si se declaró en @EnableFeignClients)
-      │
-      ├── child context: "catalogRead"
-      │    └── beans de FeignReadOnlyConfig  ← sobreescriben los defaults solo aquí
-      │
-      ├── child context: "catalogWrite"
-      │    └── beans de FeignAuthConfig      ← sobreescriben los defaults solo aquí
-      │
-      └── child context: "paymentFeign"
-           └── sin @Configuration local → hereda todos los defaults
+ApplicationContext raíz (Spring Boot)
+│
+├── sub-contexto: inventory-service
+│   ├── Encoder (personalizado)
+│   ├── ErrorDecoder (personalizado)
+│   └── RequestInterceptor (solo para este cliente)
+│
+├── sub-contexto: payment-service
+│   ├── Encoder (por defecto)
+│   └── RequestInterceptor (diferente)
+│
+└── sub-contexto: notification-service
+    └── (usa todos los defaults)
 ```
-
----
 
 ## Ejemplo central
 
-El siguiente ejemplo muestra tres escenarios: configuración local por cliente, configuración global y la sobreescritura de un bean de `FeignClientsConfiguration`.
-
-**Configuración local — solo afecta al cliente que la referencia:**
+El ejemplo muestra la configuración de dos clientes Feign con configuraciones Java independientes. El primero usa un `RequestInterceptor` para añadir JWT Bearer token; el segundo usa un `ErrorDecoder` personalizado. La clase de configuración NO lleva `@Configuration` a nivel de component scan para evitar que los beans sean compartidos con todos los clientes.
 
 ```java
-package com.example.orderservice.config;
+// Configuración para inventory-service — SIN @Configuration a nivel de componente scan
+package com.example.orders.feign.config;
 
-// IMPORTANTE: sin @Configuration a nivel de clase si está dentro del @ComponentScan
-// La clase es reconocida por Feign porque se pasa en el atributo `configuration`
-// de @FeignClient; Spring no la escanea de forma independiente.
-public class FeignAuthConfig {
+import feign.Logger;
+import feign.RequestInterceptor;
+import feign.RequestTemplate;
+import feign.codec.ErrorDecoder;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
 
-    /**
-     * Sobreescribe el Retryer por defecto (Retryer.NEVER_RETRY).
-     * Solo afecta al cliente que declara configuration = FeignAuthConfig.class.
-     */
+// NOTA: NO se anota con @Configuration aquí para evitar que Spring la detecte en el
+// component scan raíz y convierta sus @Beans en globales para todos los clientes Feign.
+public class InventoryFeignConfig {
+
+    @Value("${services.inventory.api-key:default-key}")
+    private String apiKey;
+
     @Bean
-    public Retryer feignRetryer() {
+    public RequestInterceptor apiKeyInterceptor() {
+        return (RequestTemplate template) ->
+            template.header("X-API-Key", apiKey);
+    }
+
+    @Bean
+    public Logger.Level feignLoggerLevel() {
+        return Logger.Level.FULL;
+    }
+
+    @Bean
+    public ErrorDecoder inventoryErrorDecoder() {
+        return (methodKey, response) -> {
+            if (response.status() == 404) {
+                return new InventoryItemNotFoundException(
+                    "Item not found — method: " + methodKey
+                );
+            }
+            return new feign.codec.ErrorDecoder.Default().decode(methodKey, response);
+        };
+    }
+}
+```
+
+```java
+// Excepción de dominio para inventario
+package com.example.orders.feign.config;
+
+public class InventoryItemNotFoundException extends RuntimeException {
+    public InventoryItemNotFoundException(String message) {
+        super(message);
+    }
+}
+```
+
+```java
+// Configuración para payment-service — también SIN @Configuration
+package com.example.orders.feign.config;
+
+import feign.Logger;
+import feign.RequestInterceptor;
+import feign.RequestTemplate;
+import feign.Retryer;
+import org.springframework.context.annotation.Bean;
+
+public class PaymentFeignConfig {
+
+    @Bean
+    public Retryer paymentRetryer() {
         // period=100ms, maxPeriod=1000ms, maxAttempts=3
         return new Retryer.Default(100, 1000, 3);
     }
 
-    /**
-     * RequestInterceptor que añade el token Bearer a todas las peticiones
-     * del cliente que usa esta configuración.
-     */
-    @Bean
-    public RequestInterceptor authInterceptor(TokenProvider tokenProvider) {
-        return requestTemplate ->
-            requestTemplate.header("Authorization", "Bearer " + tokenProvider.getToken());
-    }
-}
-```
-
-```java
-@FeignClient(
-    name          = "catalog-service",
-    contextId     = "catalogWrite",
-    configuration = FeignAuthConfig.class   // solo este cliente usa FeignAuthConfig
-)
-public interface CatalogWriteClient {
-    @PostMapping("/api/products/reserve")
-    void reserve(@RequestBody ReservationRequest request);
-}
-```
-
-**Configuración global — se aplica a todos los clientes del módulo:**
-
-```java
-package com.example.orderservice.config;
-
-// Tampoco lleva @Configuration si está dentro del package escaneado
-public class GlobalFeignConfig {
-
-    /**
-     * Logger.Level global: BASIC en todos los clientes.
-     * Se puede sobreescribir a nivel local declarando otro Logger.Level bean
-     * en la configuración del cliente específico.
-     */
     @Bean
     public Logger.Level feignLoggerLevel() {
         return Logger.Level.BASIC;
@@ -105,95 +114,130 @@ public class GlobalFeignConfig {
 ```
 
 ```java
-@SpringBootApplication
-@EnableFeignClients(
-    basePackages      = "com.example.orderservice.client",
-    defaultConfiguration = GlobalFeignConfig.class   // aplicado a todos los clientes
+// Clientes Feign que referencian sus configuraciones
+package com.example.orders.clients;
+
+import com.example.orders.dto.InventoryResponse;
+import com.example.orders.dto.PaymentRequest;
+import com.example.orders.dto.PaymentResponse;
+import com.example.orders.feign.config.InventoryFeignConfig;
+import com.example.orders.feign.config.PaymentFeignConfig;
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+
+@FeignClient(
+    name = "inventory-service",
+    path = "/api/v1",
+    configuration = InventoryFeignConfig.class   // ← configuración específica
 )
-public class OrderServiceApplication {
-    public static void main(String[] args) {
-        SpringApplication.run(OrderServiceApplication.class, args);
-    }
+public interface InventoryClient {
+
+    @GetMapping("/items/{id}")
+    InventoryResponse getItem(@PathVariable("id") Long id);
+}
+
+@FeignClient(
+    name = "payment-service",
+    path = "/api/v1",
+    configuration = PaymentFeignConfig.class     // ← configuración específica
+)
+public interface PaymentClient {
+
+    @PostMapping("/payments")
+    PaymentResponse processPayment(@RequestBody PaymentRequest request);
 }
 ```
-
-**Sobreescritura segura de FeignClientsConfiguration — beans disponibles para sobreescribir:**
 
 ```java
-package com.example.orderservice.config;
+// Configuración de arranque con defaultConfiguration para aplicar a TODOS los clientes
+package com.example.orders;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import feign.codec.Decoder;
-import feign.codec.Encoder;
-import feign.form.spring.SpringFormEncoder;
-import org.springframework.beans.factory.ObjectFactory;
-import org.springframework.boot.autoconfigure.http.HttpMessageConverters;
-import org.springframework.cloud.openfeign.support.SpringDecoder;
-import org.springframework.cloud.openfeign.support.SpringEncoder;
+import com.example.orders.feign.config.GlobalFeignConfig;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cloud.openfeign.EnableFeignClients;
 
-public class FeignFormConfig {
-
-    /**
-     * Sobreescribe el Encoder por defecto para soportar multipart/form-data.
-     * SpringFormEncoder delega en SpringEncoder para los tipos no-form.
-     */
-    @Bean
-    public Encoder feignEncoder(ObjectFactory<HttpMessageConverters> messageConverters) {
-        return new SpringFormEncoder(new SpringEncoder(messageConverters));
+@SpringBootApplication
+@EnableFeignClients(
+    basePackages = "com.example.orders.clients",
+    defaultConfiguration = GlobalFeignConfig.class  // ← aplica a todos los clientes
+)
+public class OrdersApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(OrdersApplication.class, args);
     }
 }
 ```
 
-> [CONCEPTO] `FeignClientsConfiguration` define los beans que Feign usa por defecto: `SpringEncoder`, `SpringDecoder`, `SpringMvcContract`, `Retryer.NEVER_RETRY`, `Logger.NoOpLogger` y otros. Para sobreescribir uno, basta con declarar un `@Bean` del mismo tipo en la clase de configuración local. Los beans no sobreescritos se heredan del contexto padre.
+```java
+// Configuración global (defaultConfiguration) — PUEDE llevar @Configuration porque
+// se registra explícitamente como defaultConfiguration, no se auto-detecta por scan
+package com.example.orders.feign.config;
 
----
+import feign.Logger;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 
-## Tabla de elementos clave
+@Configuration
+public class GlobalFeignConfig {
 
-Los beans de `FeignClientsConfiguration` que pueden sobreescribirse mediante configuración local o global.
+    @Bean
+    public Logger.Level defaultFeignLoggerLevel() {
+        return Logger.Level.BASIC;
+    }
+}
+```
 
-| Bean / Tipo | Implementación por defecto | Para qué se sobreescribe |
+## Tabla de beans configurables
+
+La clase de configuración Java puede registrar los siguientes beans para personalizar el comportamiento del cliente:
+
+| Bean | Interfaz/Clase | Efecto |
 |---|---|---|
-| `Encoder` | `SpringEncoder` | Soportar multipart, Protobuf, formato no-JSON |
-| `Decoder` | `SpringDecoder` | Deserialización personalizada, tipos genéricos complejos |
-| `ErrorDecoder` | `ErrorDecoder.Default` | Convertir códigos HTTP de error a excepciones de dominio |
-| `Retryer` | `Retryer.NEVER_RETRY` | Habilitar reintentos nativos de Feign |
-| `Logger` | `Logger.NoOpLogger` | Activar logging a SLF4J (`Slf4jLogger`) |
-| `Logger.Level` | `Logger.Level.NONE` | Controlar verbosidad del log HTTP |
-| `Contract` | `SpringMvcContract` | Usar anotaciones Feign nativas en lugar de Spring MVC |
-| `RequestInterceptor` | ninguno | Propagación de cabeceras, auth, tracing |
-| `feign.Client` | `LoadBalancerFeignClient` | Cambiar transporte HTTP (HC5, OkHttp, reactivo) |
+| `Encoder` | `feign.codec.Encoder` | Serializa el cuerpo de la petición |
+| `Decoder` | `feign.codec.Decoder` | Deserializa el cuerpo de la respuesta |
+| `Contract` | `feign.Contract` | Define qué anotaciones de mapeo se reconocen |
+| `Logger` | `feign.Logger` | Destino de los logs de Feign |
+| `Logger.Level` | `feign.Logger.Level` | Verbosidad del logging (NONE/BASIC/HEADERS/FULL) |
+| `ErrorDecoder` | `feign.codec.ErrorDecoder` | Transforma respuestas de error en excepciones |
+| `Retryer` | `feign.Retryer` | Política de reintentos ante fallos |
+| `RequestInterceptor` | `feign.RequestInterceptor` | Modifica `RequestTemplate` antes de enviar |
+| `Client` | `feign.Client` | Cliente HTTP subyacente |
 
----
+## El problema crítico de @Configuration
+
+El problema más importante de la configuración Java de Feign es la visibilidad de la clase. Si la clase de configuración de un cliente específico lleva `@Configuration` y está en un paquete que el component scan raíz detecta, sus `@Bean` se registran en el contexto padre y quedan disponibles para **todos** los clientes Feign, eliminando el efecto de configuración por cliente.
+
+La solución oficial es no anotar la clase con `@Configuration` cuando sea configuración por cliente. Si se necesita inyectar valores con `@Value` o usar `@Autowired`, eso funciona igual sin `@Configuration` porque Feign invoca los métodos `@Bean` de la clase instanciándola directamente en el sub-contexto.
+
+> [ADVERTENCIA] Si la clase de configuración específica de un cliente tiene `@Configuration` Y está dentro del basePackage del component scan, sus beans se volverán globales para todos los clientes Feign. Este es uno de los errores más frecuentes en la certificación Spring Professional.
 
 ## Buenas y malas prácticas
 
-**Hacer:**
-- Colocar las clases de configuración local de Feign en un subpaquete que esté **fuera** del `basePackages` del `@ComponentScan` de la aplicación (p. ej. `config.feign` y excluirlo explícitamente), o bien no anotar la clase con `@Configuration` para que Spring no la registre de forma autónoma.
-- Usar `defaultConfiguration` en `@EnableFeignClients` para los beans transversales (Logger, RequestInterceptor de correlación) en lugar de repetirlos en cada configuración de cliente. Reduce la duplicación y garantiza coherencia en el comportamiento observable de todos los clientes.
-- Documentar explícitamente en el Javadoc de cada clase de configuración si es local (un cliente) o global (todos los clientes), porque el código no lo expresa visualmente.
+**Buenas prácticas:**
+- Colocar las clases de configuración por cliente en un subpaquete separado del basePackages de `@EnableFeignClients` para evitar que sean detectadas por el scan.
+- Usar `defaultConfiguration` en `@EnableFeignClients` para comportamiento común a todos los clientes.
+- Nombrar las clases claramente: `InventoryFeignConfig`, `PaymentFeignConfig`, no `FeignConfig`.
 
-**Evitar:**
-- Anotar la clase de configuración local con `@Configuration` **y** dejarla dentro del paquete escaneado. Es el error de configuración más frecuente en Feign. El síntoma: un `RequestInterceptor` "local" que aparece en todos los clientes del módulo.
-- Definir el mismo tipo de bean en la configuración local y en `defaultConfiguration` sin entender el orden de precedencia. La configuración local tiene precedencia sobre la global, pero si ambas están activas, el bean local del child context gana. Si el bean local declara dependencias no disponibles en ese child context, el arranque falla con `NoSuchBeanDefinitionException`.
-- Inyectar beans del contexto padre (p. ej. `@Autowired SecurityContext`) directamente en la clase de configuración local de Feign. El child context tiene visibilidad del padre, pero la inicialización del child puede ocurrir antes de que ciertos beans del padre estén listos, causando dependencias circulares sutiles.
+**Malas prácticas:**
+- Añadir `@Configuration` a una clase de configuración específica de cliente si está dentro del basePackage de scan.
+- Registrar un `RequestInterceptor` en la configuración global cuando solo aplica a un cliente.
 
----
+## Verificación y práctica
 
-## Comparación: configuración Java vs configuración por propiedades YAML
+> [EXAMEN] **1.** ¿Por qué la clase de configuración específica de un cliente Feign NO debe llevar `@Configuration` si está dentro del paquete escaneado por Spring?
 
-La configuración por clase Java y la configuración por propiedades son complementarias pero tienen semánticas distintas. El siguiente fichero (4.4) profundiza en la configuración YAML.
+> [EXAMEN] **2.** ¿Cómo se aplica una configuración por defecto a todos los clientes Feign registrados con `@EnableFeignClients`?
 
-| Aspecto | `@Configuration` Java | `feign.client.config.*` YAML |
-|---|---|---|
-| Alcance | Local (un cliente) o global (`defaultConfiguration`) | Por cliente (`[clientName]`) o global (`default`) |
-| Precedencia (SC 2021+) | Menor si `feign.client.default-to-properties=true` (default) | Mayor por defecto |
-| Qué se puede configurar | Cualquier bean de Feign (Encoder, Decoder, Interceptor…) | Timeouts, Logger.Level, ErrorDecoder, RequestInterceptor |
-| Recompilación necesaria | Sí | No (cambio de propiedad en ConfigMap o Config Server) |
-| Legibilidad para Ops | Baja | Alta |
+> [EXAMEN] **3.** Un `Retryer` registrado en `InventoryFeignConfig` (configuración de `inventory-service`), ¿afectará también al `PaymentClient`? Justifica la respuesta.
 
-> [EXAMEN] Pregunta frecuente: "Tengo un `Logger.Level.FULL` en la clase `@Configuration` del cliente y `NONE` en `application.yml`. ¿Cuál gana?" Respuesta: el YAML gana porque `feign.client.default-to-properties=true` por defecto en Spring Cloud 2021+. Para invertir la precedencia, establecer `feign.client.default-to-properties=false`.
+> [EXAMEN] **4.** Enumera al menos 5 tipos de beans que se pueden registrar en una clase de configuración Java de Feign y describe el efecto de cada uno.
+
+> [EXAMEN] **5.** ¿Qué ocurre si tanto la `defaultConfiguration` de `@EnableFeignClients` como la `configuration` específica del cliente definen un bean del mismo tipo (por ejemplo, `Logger.Level`)? ¿Cuál tiene precedencia?
 
 ---
 
-<- [4.2 Declaración de @FeignClient](sc-feign-cliente-declarativo.md) | [Índice](README.md) | [4.4 Configuración por propiedades YAML](sc-feign-configuracion-propiedades.md) ->
+← [3.1 Cliente declarativo básico con OpenFeign](sc-feign-cliente-declarativo.md) | [Índice](README.md) | [3.2.2 Configuración por propiedades](sc-feign-configuracion-propiedades.md) →

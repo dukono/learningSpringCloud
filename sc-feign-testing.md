@@ -1,28 +1,121 @@
-# 4.13 Testing — verificación del cliente Feign con @MockBean, WireMock y Stub Runner
+# 3.10 Testing / Verificación de OpenFeign
 
-<- [4.12 Herencia de interfaz y @SpringQueryMap](sc-feign-herencia.md) | [Índice](README.md) | [5.1 Circuit Breaker: estados, transiciones y modelo de evaluación](sc-circuitbreaker-estados.md) ->
+← [3.9.2 Compresión de peticiones y respuestas](sc-feign-compresion.md) | [Índice](README.md) | [4.1 Circuit Breaker — Estados y Transiciones](sc-circuitbreaker-estados.md) →
 
 ---
 
 ## Introducción
 
-Un cliente Feign tiene tres capas verificables: la interfaz en sí (¿declara correctamente el contrato HTTP?), el comportamiento del consumidor (¿gestiona bien las respuestas del cliente Feign?) y la integración real contra un servidor HTTP (¿serializa correctamente la petición? ¿mapea bien la respuesta?). Cada capa requiere una estrategia de test distinta.
+Testear clientes Feign requiere estrategias distintas según el objetivo del test. Hay tres niveles de testing claramente diferenciados: tests unitarios del servicio que usa el cliente Feign (donde el cliente se reemplaza con un mock), tests de integración del cliente Feign contra un servidor HTTP stub (donde se verifica que la serialización y el mapeo HTTP son correctos), y tests end-to-end con Spring Cloud Contract (donde se verifica el contrato completo productor-consumidor). Cada estrategia usa herramientas diferentes — `@MockBean`, WireMock con `@AutoConfigureWireMock`, o Spring Cloud Contract Stub Runner — y tiene su propio alcance de verificación.
 
-El test de unidad del consumidor aísla el cliente Feign con `@MockBean` y verifica que el servicio de negocio reacciona correctamente a los distintos resultados del cliente. El test de integración del cliente en sí arranca un servidor HTTP embebido (WireMock) y verifica que el proxy generado por Feign produce la petición correcta y deserializa la respuesta esperada. Spring Cloud Contract Stub Runner añade una tercera opción: usar los stubs generados a partir de los contratos del proveedor, garantizando que el consumidor no solo compila contra la interfaz correcta sino que también se comporta correctamente ante las respuestas reales del proveedor.
+## Pirámide de testing para Feign
 
----
+La elección de la estrategia depende de qué se quiere verificar. Los tres niveles son complementarios, no excluyentes.
 
-## Estrategia 1: test de unidad del consumidor con @MockBean
+```
+                    ┌───────────────────────┐
+                    │  Contract Testing     │  ← Verifica contrato E2E con el productor
+                    │  (Stub Runner)        │    (más lento, más cobertura)
+                    └───────────┬───────────┘
+                    ┌───────────┴───────────┐
+                    │  Integration Test     │  ← Verifica serialización HTTP real
+                    │  (WireMock)           │    (verifica que el cliente envía lo correcto)
+                    └───────────┬───────────┘
+                    ┌───────────┴───────────┐
+                    │  Unit Test            │  ← Verifica lógica del servicio
+                    │  (@MockBean Feign)    │    (rápido, sin red)
+                    └───────────────────────┘
+```
 
-Esta estrategia verifica que el servicio de negocio (consumidor del cliente Feign) maneja correctamente los distintos resultados del cliente: éxito, excepción, resultado vacío. El cliente Feign se reemplaza por un mock.
+## Ejemplo central
+
+El siguiente ejemplo muestra las tres estrategias de testing de forma completa y ejecutable. Incluye un servicio real, su cliente Feign, y los tres tipos de test.
 
 ```java
-package com.example.orderservice.service;
+// El cliente Feign a testear
+package com.example.orders.clients;
 
-import com.example.orderservice.client.CatalogClient;
-import com.example.orderservice.dto.ProductDto;
-import com.example.orderservice.exception.ProductNotFoundException;
-import feign.FeignException;
+import com.example.orders.dto.InventoryResponse;
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestParam;
+
+@FeignClient(name = "inventory-service", path = "/api/v1")
+public interface InventoryClient {
+
+    @GetMapping("/items/{id}")
+    InventoryResponse getItem(@PathVariable("id") Long id);
+
+    @GetMapping("/items/availability")
+    boolean checkAvailability(
+        @RequestParam("sku") String sku,
+        @RequestParam("qty") int quantity
+    );
+}
+```
+
+```java
+// El servicio que usa el cliente Feign (la unidad a testear)
+package com.example.orders.service;
+
+import com.example.orders.clients.InventoryClient;
+import com.example.orders.dto.InventoryResponse;
+import com.example.orders.exception.InsufficientStockException;
+import org.springframework.stereotype.Service;
+
+@Service
+public class OrderService {
+
+    private final InventoryClient inventoryClient;
+
+    public OrderService(InventoryClient inventoryClient) {
+        this.inventoryClient = inventoryClient;
+    }
+
+    public InventoryResponse getItemOrThrow(Long id) {
+        InventoryResponse item = inventoryClient.getItem(id);
+        if (item == null) {
+            throw new IllegalArgumentException("Ítem no encontrado: " + id);
+        }
+        return item;
+    }
+
+    public void validateStock(String sku, int requiredQty) {
+        boolean available = inventoryClient.checkAvailability(sku, requiredQty);
+        if (!available) {
+            throw new InsufficientStockException(sku, requiredQty);
+        }
+    }
+}
+```
+
+```java
+// DTOs
+package com.example.orders.dto;
+
+public record InventoryResponse(Long id, String name, int stock) {}
+```
+
+```java
+package com.example.orders.exception;
+
+public class InsufficientStockException extends RuntimeException {
+    public InsufficientStockException(String sku, int qty) {
+        super("Stock insuficiente para SKU " + sku + ": se requieren " + qty);
+    }
+}
+```
+
+```java
+// ESTRATEGIA 1: Test unitario del servicio con @MockBean
+// Objetivo: verificar la lógica de negocio en OrderService
+// No se ejecuta ninguna petición HTTP real
+package com.example.orders.service;
+
+import com.example.orders.clients.InventoryClient;
+import com.example.orders.dto.InventoryResponse;
+import com.example.orders.exception.InsufficientStockException;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -30,200 +123,141 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.BDDMockito.given;
-import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
-/**
- * Test de unidad de OrderService: verifica el comportamiento del servicio
- * ante distintos resultados del CatalogClient (mock).
- *
- * No carga el contexto completo de Spring Cloud Feign ni LoadBalancer.
- * Rápido y aislado.
- */
-@SpringBootTest(classes = {OrderService.class})  // contexto mínimo
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
 class OrderServiceUnitTest {
 
-    @MockBean
-    CatalogClient catalogClient;           // Feign client reemplazado por mock
-
     @Autowired
-    OrderService orderService;
+    private OrderService orderService;
+
+    // @MockBean reemplaza el bean real de InventoryClient con un mock de Mockito
+    // El proxy Feign no se crea en este contexto — se usa directamente el mock
+    @MockBean
+    private InventoryClient inventoryClient;
 
     @Test
-    void createOrder_whenProductAvailable_shouldSucceed() {
-        // given
-        ProductDto product = new ProductDto("P001", "Widget", 9.99, true);
-        given(catalogClient.getProduct("P001")).willReturn(product);
+    void getItemOrThrow_returnsItem_whenClientReturnsValidResponse() {
+        InventoryResponse expected = new InventoryResponse(1L, "Widget Pro", 50);
+        when(inventoryClient.getItem(1L)).thenReturn(expected);
 
-        // when
-        OrderDto order = orderService.createOrder("P001", 2);
+        InventoryResponse result = orderService.getItemOrThrow(1L);
 
-        // then
-        assertThat(order.totalAmount()).isEqualTo(19.98);
-        verify(catalogClient).getProduct("P001");
+        assertThat(result).isEqualTo(expected);
+        assertThat(result.stock()).isEqualTo(50);
     }
 
     @Test
-    void createOrder_whenProductNotFound_shouldThrowDomainException() {
-        // given
-        given(catalogClient.getProduct("MISSING"))
-                .willThrow(new ProductNotFoundException("MISSING"));
+    void getItemOrThrow_throwsException_whenClientReturnsNull() {
+        when(inventoryClient.getItem(99L)).thenReturn(null);
 
-        // then
-        assertThatThrownBy(() -> orderService.createOrder("MISSING", 1))
-                .isInstanceOf(ProductNotFoundException.class)
-                .hasMessageContaining("MISSING");
+        assertThatThrownBy(() -> orderService.getItemOrThrow(99L))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("99");
     }
 
     @Test
-    void createOrder_whenCatalogUnavailable_shouldActivateFallback() {
-        // given: simular que el servicio remoto está caído
-        given(catalogClient.getProduct("P002"))
-                .willThrow(FeignException.ServiceUnavailable.class);
+    void validateStock_throwsException_whenStockInsufficient() {
+        when(inventoryClient.checkAvailability("SKU-001", 10)).thenReturn(false);
 
-        // then: el servicio debe devolver respuesta degradada, no propagar la excepción
-        OrderDto degradedOrder = orderService.createOrder("P002", 1);
-        assertThat(degradedOrder.status()).isEqualTo("PENDING_AVAILABILITY_CHECK");
+        assertThatThrownBy(() -> orderService.validateStock("SKU-001", 10))
+            .isInstanceOf(InsufficientStockException.class)
+            .hasMessageContaining("SKU-001");
     }
 }
 ```
 
----
-
-## Estrategia 2: test de integración del cliente Feign con WireMock
-
-Esta estrategia arranca el cliente Feign real (con su Encoder, Decoder, Interceptores) contra un servidor HTTP embebido. Verifica que la petición HTTP generada es correcta y que la respuesta se deserializa como se espera.
-
-**Dependencia para WireMock con Spring Boot:**
-
-```xml
-<dependency>
-    <groupId>org.wiremock.integrations</groupId>
-    <artifactId>wiremock-spring-boot</artifactId>
-    <version>3.1.0</version>
-    <scope>test</scope>
-</dependency>
-```
-
 ```java
-package com.example.orderservice.client;
+// ESTRATEGIA 2: Test de integración del cliente Feign con WireMock
+// Objetivo: verificar que el cliente Feign serializa/deserializa correctamente
+// y que los headers, paths y query params se envían como se espera
+package com.example.orders.clients;
 
-import com.example.orderservice.dto.ProductDto;
-import com.github.tomakehurst.wiremock.client.WireMock;
+import com.example.orders.dto.InventoryResponse;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.wiremock.spring.EnableWireMock;
+import org.springframework.cloud.contract.wiremock.AutoConfigureWireMock;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/**
- * Test de integración: carga el cliente Feign real y lo dirige contra WireMock.
- * Verifica que el proxy Feign genera la petición HTTP correcta y
- * deserializa la respuesta en el tipo Java esperado.
- *
- * @EnableWireMock: arranca WireMock en puerto aleatorio e inyecta
- * la propiedad ${wiremock.server.baseUrl} que se usa en el YAML de test.
- */
-@SpringBootTest
-@EnableWireMock
-class CatalogClientIntegrationTest {
+// @AutoConfigureWireMock(port = 0) inicia un servidor WireMock en puerto aleatorio
+// y configura la propiedad wiremock.server.port automáticamente
+@SpringBootTest(
+    webEnvironment = SpringBootTest.WebEnvironment.NONE,
+    properties = {
+        // Apuntar el cliente Feign al servidor WireMock en lugar de Eureka
+        "spring.cloud.openfeign.client.config.inventory-service.url=http://localhost:${wiremock.server.port}",
+        // Deshabilitar Eureka para este test
+        "eureka.client.enabled=false",
+        "spring.cloud.discovery.enabled=false"
+    }
+)
+@AutoConfigureWireMock(port = 0)
+class InventoryClientIntegrationTest {
 
     @Autowired
-    CatalogClient catalogClient;
+    private InventoryClient inventoryClient;
 
     @Test
-    void getProduct_whenServerReturns200_shouldDeserializeProductDto() {
-        // given: stub WireMock para responder 200 con JSON
-        stubFor(get(urlEqualTo("/api/products/P001"))
-                .willReturn(aResponse()
-                        .withStatus(200)
-                        .withHeader("Content-Type", "application/json")
-                        .withBody("""
-                            {
-                              "productId": "P001",
-                              "name": "Widget Pro",
-                              "price": 29.99,
-                              "inStock": true
-                            }
-                            """)));
+    void getItem_deserializesResponseCorrectly() {
+        stubFor(get(urlEqualTo("/api/v1/items/42"))
+            .willReturn(aResponse()
+                .withStatus(200)
+                .withHeader("Content-Type", "application/json")
+                .withBody("""
+                    {"id": 42, "name": "Widget Pro", "stock": 100}
+                    """)));
 
-        // when
-        ProductDto product = catalogClient.getProduct("P001");
+        InventoryResponse result = inventoryClient.getItem(42L);
 
-        // then
-        assertThat(product.productId()).isEqualTo("P001");
-        assertThat(product.price()).isEqualTo(29.99);
-
-        // verificar que la petición tenía las cabeceras correctas (si hay interceptores)
-        verify(getRequestedFor(urlEqualTo("/api/products/P001"))
-                .withHeader("Accept", containing("application/json")));
+        assertThat(result.id()).isEqualTo(42L);
+        assertThat(result.name()).isEqualTo("Widget Pro");
+        assertThat(result.stock()).isEqualTo(100);
     }
 
     @Test
-    void getProduct_whenServerReturns404_shouldThrowProductNotFoundException() {
-        // given
-        stubFor(get(urlEqualTo("/api/products/MISSING"))
-                .willReturn(aResponse()
-                        .withStatus(404)
-                        .withBody("{\"error\": \"Product not found\"}")));
+    void checkAvailability_sendsCorrectQueryParams() {
+        stubFor(get(urlPathEqualTo("/api/v1/items/availability"))
+            .withQueryParam("sku", equalTo("SKU-001"))
+            .withQueryParam("qty", equalTo("5"))
+            .willReturn(aResponse()
+                .withStatus(200)
+                .withHeader("Content-Type", "application/json")
+                .withBody("true")));
 
-        // then: el ErrorDecoder debe convertir el 404 en ProductNotFoundException
-        assertThatThrownBy(() -> catalogClient.getProduct("MISSING"))
-                .isInstanceOf(com.example.orderservice.exception.ProductNotFoundException.class);
+        boolean result = inventoryClient.checkAvailability("SKU-001", 5);
+
+        assertThat(result).isTrue();
     }
 
     @Test
-    void getProduct_whenServerReturns503_shouldThrowRetryableException() {
-        // given: servidor temporalmente no disponible
-        stubFor(get(urlEqualTo("/api/products/P002"))
-                .willReturn(aResponse()
-                        .withStatus(503)
-                        .withHeader("Retry-After", "2")));
+    void getItem_propagatesErrorDecoder_on404() {
+        stubFor(get(urlEqualTo("/api/v1/items/999"))
+            .willReturn(aResponse()
+                .withStatus(404)
+                .withHeader("Content-Type", "application/json")
+                .withBody("""
+                    {"error": "Item not found", "itemId": 999}
+                    """)));
 
-        // then
-        assertThatThrownBy(() -> catalogClient.getProduct("P002"))
-                .isInstanceOf(feign.RetryableException.class);
+        // Con ErrorDecoder personalizado, se espera excepción de dominio
+        // Sin ErrorDecoder personalizado, se espera FeignException.NotFound
+        assertThatThrownBy(() -> inventoryClient.getItem(999L))
+            .isInstanceOf(Exception.class);
     }
 }
 ```
 
-**application-test.yml — apuntar el cliente Feign a WireMock:**
-
-```yaml
-# Usado durante los tests de integración de cliente Feign
-feign:
-  client:
-    config:
-      catalogInherited:
-        url: ${wiremock.server.baseUrl}   # inyectado por @EnableWireMock
-
-# Desactivar Eureka en tests
-eureka:
-  client:
-    enabled: false
-```
-
----
-
-## Estrategia 3: Spring Cloud Contract Stub Runner
-
-Esta estrategia usa los stubs generados a partir de los contratos CDC del proveedor. Garantiza que el consumidor se comporta correctamente ante las respuestas reales que el proveedor se comprometió a producir.
-
-```xml
-<dependency>
-    <groupId>org.springframework.cloud</groupId>
-    <artifactId>spring-cloud-starter-contract-stub-runner</artifactId>
-    <scope>test</scope>
-</dependency>
-```
-
 ```java
-package com.example.orderservice.client;
+// ESTRATEGIA 3: Test con Spring Cloud Contract Stub Runner (contract testing)
+// Objetivo: verificar el contrato entre el consumidor y el productor
+// usando stubs generados por el productor
+package com.example.orders.clients;
 
-import com.example.orderservice.dto.ProductDto;
+import com.example.orders.dto.InventoryResponse;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -232,78 +266,69 @@ import org.springframework.cloud.contract.stubrunner.spring.StubRunnerProperties
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Test con Stub Runner: descarga los stubs publicados por catalog-service
- * y los usa como servidor WireMock embebido.
- *
- * Los stubs se generan a partir de los contratos de catalog-service
- * (Spring Cloud Contract); el stub JAR se publica en Nexus/Artifactory.
- *
- * ids format: "groupId:artifactId:version:classifier:port"
- *   - version "+" = última disponible
- *   - port 0 = puerto aleatorio
- */
-@SpringBootTest
-@AutoConfigureStubRunner(
-        ids              = "com.example:catalog-service:+:stubs:0",
-        stubsMode        = StubRunnerProperties.StubsMode.REMOTE,
-        repositoryRoot   = "https://nexus.example.com/repository/maven-public/"
+@SpringBootTest(
+    webEnvironment = SpringBootTest.WebEnvironment.NONE,
+    properties = {
+        "spring.cloud.openfeign.client.config.inventory-service.url=http://localhost:${stubrunner.runningstubs.com.example.inventory-service.port}"
+    }
 )
-class CatalogClientContractTest {
+@AutoConfigureStubRunner(
+    ids = "com.example:inventory-service:+:stubs:8081",
+    stubsMode = StubRunnerProperties.StubsMode.LOCAL   // buscar stubs en ~/.m2 local
+    // Para stubs remotos: StubRunnerProperties.StubsMode.REMOTE con repositoryRoot
+)
+class InventoryClientContractTest {
 
     @Autowired
-    CatalogClient catalogClient;
+    private InventoryClient inventoryClient;
 
     @Test
-    void getProduct_usingContractStub_shouldReturnProductMatchingContract() {
-        // El stub responderá con los datos definidos en el contrato de catalog-service
-        // La respuesta es la misma que el proveedor garantiza en sus tests de contrato
-        ProductDto product = catalogClient.getProduct("contract-product-id");
+    void getItem_matchesProducerContract() {
+        // El stub fue generado por el productor y garantiza que
+        // /api/v1/items/1 devuelve el JSON acordado en el contrato
+        InventoryResponse result = inventoryClient.getItem(1L);
 
-        assertThat(product).isNotNull();
-        assertThat(product.productId()).isEqualTo("contract-product-id");
+        assertThat(result).isNotNull();
+        assertThat(result.id()).isEqualTo(1L);
+        // Los campos adicionales dependen del contrato definido en el productor
     }
 }
 ```
 
----
+## Tabla comparativa de estrategias
 
-## Tabla resumen: estrategia de test recomendada por situación
+| Estrategia | Herramienta | Lo que verifica | Velocidad | Cuándo usar |
+|---|---|---|---|---|
+| Test unitario | `@MockBean` | Lógica del servicio que consume Feign | Muy rápida | Siempre para tests de servicio |
+| Test integración | WireMock + `@AutoConfigureWireMock` | Serialización HTTP, headers, paths | Media | Al desarrollar o modificar el cliente |
+| Contract test | Spring Cloud Contract Stub Runner | Contrato productor-consumidor | Lenta | Antes de cada release / CI |
 
-| Situación | Estrategia recomendada |
-|---|---|
-| Verificar lógica de negocio del consumidor ante errores del cliente Feign | `@MockBean` del cliente Feign (unidad) |
-| Verificar que el Encoder produce la petición HTTP correcta | WireMock con `verify(requestedFor(...))` |
-| Verificar que el Decoder deserializa la respuesta correctamente | WireMock con `stubFor` + assert en el resultado |
-| Verificar que el ErrorDecoder convierte correctamente los errores HTTP | WireMock con respuestas 4xx/5xx stubbed |
-| Verificar que los interceptores añaden las cabeceras esperadas | WireMock con `withHeader(...)` en el `verify` |
-| Verificar compatibilidad con la API real del proveedor | Spring Cloud Contract Stub Runner |
-| Verificar rendimiento y comportamiento bajo carga | Test de carga (ICaRUS) con instancia real |
+## Buenas y malas prácticas
 
----
+**Buenas prácticas:**
+- Usar `@MockBean` para tests unitarios del servicio: es la forma correcta de aislar la lógica de negocio de la infraestructura HTTP.
+- Usar WireMock para tests de integración del cliente: verifica que el JSON generado por `SpringEncoder` y parseado por `SpringDecoder` es correcto.
+- Deshabilitar Eureka en los tests de integración: `eureka.client.enabled=false` evita intentos de registro durante el test.
+- Usar `url` en las propiedades del test para apuntar al WireMock: es más limpio que sobreescribir la URL del servicio vía discovery.
 
-## Preguntas de entrevista — nivel senior
+**Malas prácticas:**
+- Testear `@MockBean(InventoryClient.class)` en un test donde quieres verificar la serialización HTTP: el mock no envía ninguna petición real.
+- Omitir `@AutoConfigureWireMock` y escribir el servidor stub manualmente: más frágil y verboso.
 
-**P1:** ¿Por qué usar `@MockBean` para el cliente Feign en lugar de `@Mock` de Mockito?
+> [EXAMEN] La diferencia clave entre `@MockBean` y WireMock para testing de Feign está en el examen: `@MockBean` no verifica que el cliente Feign genera la petición HTTP correcta (no hay red), WireMock sí verifica el HTTP real.
 
-Respuesta: `@MockBean` registra el mock en el `ApplicationContext` de Spring Test, reemplazando el bean Feign real. `@Mock` crea un mock de Mockito fuera del contexto Spring; para que el servicio bajo test lo use, hay que inyectarlo manualmente o usar `@InjectMocks`. Con `@SpringBootTest`, `@MockBean` es la forma correcta porque garantiza que el mock es el mismo bean que Spring inyecta en el servicio.
+## Verificación y práctica
 
-**P2:** ¿Qué diferencia hay entre un test con WireMock y un test con Spring Cloud Contract Stub Runner?
+> [EXAMEN] **1.** ¿Por qué se usa `@MockBean` en lugar de `@Autowired` de la implementación real al testear un servicio que usa un `FeignClient`?
 
-Respuesta: WireMock con stubs manuales verifica que el cliente Feign genera la petición correcta y procesa la respuesta, pero los stubs son locales y pueden quedar desincronizados de lo que el proveedor realmente produce. Stub Runner usa stubs generados directamente de los contratos del proveedor: si el proveedor cambia su API y actualiza sus contratos, los stubs del consumidor fallan en el siguiente build, detectando la incompatibilidad antes de llegar a producción.
+> [EXAMEN] **2.** ¿Qué ventaja tiene WireMock frente a `@MockBean` cuando se quiere verificar que el cliente Feign serializa correctamente la petición HTTP?
 
-**P3:** ¿Qué pasa si el bean `CatalogClient` (Feign) falla en arranque porque Eureka no está disponible durante los tests?
+> [EXAMEN] **3.** En un test con `@AutoConfigureWireMock(port = 0)`, ¿cómo se configura el cliente Feign para que apunte al servidor WireMock en lugar de Eureka?
 
-Respuesta: hay que desactivar Eureka en el perfil de test con `eureka.client.enabled=false` en `application-test.yml`. Además, apuntar el cliente Feign a una URL fija (WireMock o localhost) mediante `feign.client.config.[clientName].url=http://localhost:PORT` para que el cliente no intente resolver el nombre por service discovery.
+> [EXAMEN] **4.** ¿Cuándo usarías Spring Cloud Contract Stub Runner en lugar de WireMock para testear un cliente Feign?
 
-**P4:** ¿Cómo verificar que un `RequestInterceptor` añade correctamente la cabecera `Authorization` en todos los tests de integración del cliente?
-
-Respuesta: en el test WireMock, tras la llamada al método del cliente, usar `verify(getRequestedFor(anyUrl()).withHeader("Authorization", matching("Bearer .*")))`. Para un test de unidad, mockear el `TokenProvider` que el interceptor usa y verificar que el bean mock fue invocado.
-
-**P5:** ¿Cómo testear el comportamiento del `ErrorDecoder` ante un 503 con cabecera `Retry-After`?
-
-Respuesta: en WireMock, stubbear la ruta con `aResponse().withStatus(503).withHeader("Retry-After", "2")`. Luego verificar que el cliente lanza `RetryableException` y que el campo `retryAfter` de la excepción apunta a una fecha aproximadamente 2 segundos en el futuro. Alternativamente, testear `CatalogErrorDecoder.decode()` en unidad pura sin Feign, pasando un `Response` construido manualmente con `Response.builder()`.
+> [EXAMEN] **5.** Si en un test de integración con WireMock el `ErrorDecoder` personalizado lanza `InventoryNotFoundException` para HTTP 404, ¿cómo verificarías en el test que se lanza la excepción correcta?
 
 ---
 
-<- [4.12 Herencia de interfaz y @SpringQueryMap](sc-feign-herencia.md) | [Índice](README.md) | [5.1 Circuit Breaker: estados, transiciones y modelo de evaluación](sc-circuitbreaker-estados.md) ->
+← [3.9.2 Compresión de peticiones y respuestas](sc-feign-compresion.md) | [Índice](README.md) | [4.1 Circuit Breaker — Estados y Transiciones](sc-circuitbreaker-estados.md) →

@@ -1,297 +1,308 @@
-# 5.14 Testing del Circuit Breaker, Retry y Bulkhead
+# 4.13 Testing con Resilience4j
 
-← [5.13 Integración con OpenFeign, RestClient y WebClient](sc-circuitbreaker-feign.md) | [Índice (README.md)](README.md) | [6.1 Modelo de programación funcional](sc-stream-modelo-funcional.md) →
+← [4.12 Métricas avanzadas y Health Indicators](sc-circuitbreaker-metricas.md) | [Índice](README.md) | [5.1 Arquitectura y ciclo de vida de Spring Cloud Gateway](sc-gateway-arquitectura.md) →
 
 ---
 
-Los patrones de resiliencia de Resilience4j son difíciles de testear porque su comportamiento correcto depende del estado interno del circuito (CLOSED/OPEN/HALF_OPEN), de contadores que se acumulan con el tiempo, y de decisiones que solo se toman después de varios fallos consecutivos. Un test unitario que llama una sola vez a un método anotado con `@CircuitBreaker` siempre pasa —el circuito está cerrado en el test porque nadie lo ha abierto— y da una cobertura falsa. El testing real requiere: forzar el estado del circuito o simular los fallos que lo llevan a ese estado, verificar los contadores de Retry con métricas, y estresear el Bulkhead con llamadas concurrentes. Existen tres niveles de test progresivamente más fieles.
+## Introducción
 
-> [PREREQUISITO] Requiere `spring-cloud-starter-circuitbreaker-resilience4j` y, para tests de integración, `wiremock-spring-boot` o `org.wiremock.integrations:wiremock-spring-boot`. Los tests de Bulkhead concurrente requieren `awaitility` para assertions asíncronos.
+Los patrones de resiliencia solo aportan valor si están correctamente probados. Sin tests, un CircuitBreaker mal configurado puede estar en estado OPEN permanente, o nunca abrir cuando debería, y ninguna métrica en producción lo detectará hasta que haya un incidente. Resilience4j facilita el testing porque expone API programática para forzar estados (`transitionToOpenState()`), los umbrales se pueden bajar a valores mínimos para tests, y la integración con WireMock permite simular fallos de downstream de forma determinista.
 
-## Estrategias de testing de tolerancia a fallos
+> [EXAMEN] La capacidad de forzar programáticamente un CircuitBreaker al estado OPEN en un test de integración es una pregunta directa del examen VMware Spring Professional.
 
-La elección de estrategia depende de qué aspecto se verifica: la lógica del fallback, la transición de estados, o el comportamiento bajo carga real.
+## Estrategias de testing
 
-| Estrategia | Contexto Spring | Velocidad | Fidelidad | Qué verifica |
-|---|---|---|---|---|
-| 1 — Test unitario con CircuitBreakerRegistry | Sin Spring | Muy rápida | Media | Lógica sin AOP, transiciones de estado directas |
-| 2 — Test de integración con @SpringBootTest | Con Spring | Media | Alta | AOP, fallback, contadores de Retry, Bulkhead |
-| 3 — Test con WireMock | Con Spring + HTTP | Lenta | Máxima | Fallos reales de red, timeouts, cascading failures |
+Existen tres estrategias de testing para Resilience4j, cada una con su alcance y propósito:
 
-## Estrategia 1: Test unitario con `CircuitBreakerRegistry.ofDefaults()`
+La primera estrategia es el test de integración con `@SpringBootTest` y `CircuitBreakerRegistry`. Se usa para verificar el comportamiento completo del CB incluyendo el fallback. Se fuerza el estado OPEN programáticamente para evitar tener que producir suficientes fallos reales.
 
-Instanciar `CircuitBreakerRegistry` directamente evita cargar el contexto de Spring y permite verificar transiciones de estado manipulando el circuito programáticamente. Es el test más rápido y el más adecuado para verificar la lógica de negocio del fallback.
+La segunda estrategia es el test con WireMock para simular fallos de downstream. Se usa para probar las transiciones de estado naturales: se configura WireMock para devolver 500 N veces y se verifica que el CB abre tras superar `failureRateThreshold`.
 
-```xml
-<!-- pom.xml -->
-<dependency>
-    <groupId>io.github.resilience4j</groupId>
-    <artifactId>resilience4j-spring-boot3</artifactId>
-</dependency>
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-test</artifactId>
-    <scope>test</scope>
-</dependency>
-```
+La tercera estrategia es el test unitario de concurrencia con múltiples threads para Bulkhead. Se usa para verificar que `BulkheadFullException` se lanza correctamente cuando se supera `maxConcurrentCalls`.
+
+## Ejemplo central
+
+El ejemplo cubre las tres estrategias con tests completos, incluyendo uso de Awaitility para condiciones asíncronas:
 
 ```java
-package com.example.resilience;
-
-import io.github.resilience4j.circuitbreaker.CircuitBreaker;
-import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
-import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
-import io.github.resilience4j.retry.Retry;
-import io.github.resilience4j.retry.RetryConfig;
-import io.github.resilience4j.retry.RetryRegistry;
-import org.junit.jupiter.api.Test;
-
-import java.time.Duration;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Supplier;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
-class CircuitBreakerUnitTest {
-
-    @Test
-    void whenCircuitForcedOpen_thenCallRejectedImmediately() {
-        CircuitBreakerConfig config = CircuitBreakerConfig.custom()
-            .slidingWindowSize(5)
-            .failureRateThreshold(50)
-            .build();
-
-        CircuitBreakerRegistry registry = CircuitBreakerRegistry.of(config);
-        CircuitBreaker cb = registry.circuitBreaker("test");
-
-        // Forzar estado OPEN directamente sin esperar fallos reales
-        cb.transitionToOpenState();
-
-        assertThat(cb.getState()).isEqualTo(CircuitBreaker.State.OPEN);
-
-        // Decorar una llamada que debería rechazarse
-        Supplier<String> supplier = CircuitBreaker.decorateSupplier(cb, () -> "ok");
-        assertThatThrownBy(supplier::get)
-            .isInstanceOf(io.github.resilience4j.circuitbreaker.CallNotPermittedException.class);
-    }
-
-    @Test
-    void retryExecutesMaxAttemptsOnFailure() {
-        AtomicInteger callCount = new AtomicInteger(0);
-
-        RetryConfig config = RetryConfig.custom()
-            .maxAttempts(3)
-            .waitDuration(Duration.ofMillis(10))
-            .build();
-
-        Retry retry = RetryRegistry.of(config).retry("test");
-
-        assertThatThrownBy(() ->
-            Retry.decorateCheckedSupplier(retry, () -> {
-                callCount.incrementAndGet();
-                throw new RuntimeException("simulated failure");
-            }).get()
-        ).isInstanceOf(RuntimeException.class);
-
-        // 3 intentos: 1 inicial + 2 reintentos
-        assertThat(callCount.get()).isEqualTo(3);
-    }
-}
-```
-
-> [CONCEPTO] `transitionToOpenState()` es el mecanismo de test más directo para verificar el comportamiento de un circuito abierto sin necesidad de generar los fallos reales que lo abren. También existe `transitionToHalfOpenState()` y `transitionToClosedState()`.
-
-## Estrategia 2: Test de integración con `@SpringBootTest` y estado forzado
-
-Este nivel verifica que el AOP de Spring aplica los decoradores correctamente, que el fallback se invoca cuando el circuito está abierto, y que los contadores de Retry son visibles a través de Micrometer.
-
-```java
-package com.example.resilience;
+package com.example.test;
 
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
-import io.github.resilience4j.bulkhead.Bulkhead;
-import io.github.resilience4j.bulkhead.BulkheadRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicInteger;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
-import static java.util.concurrent.TimeUnit.SECONDS;
+import org.springframework.test.web.servlet.MockMvc;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @SpringBootTest
-class ResilienceIntegrationTest {
+@AutoConfigureMockMvc
+class CircuitBreakerIntegrationTest {
+
+    @Autowired
+    private MockMvc mockMvc;
 
     @Autowired
     private CircuitBreakerRegistry circuitBreakerRegistry;
 
-    @Autowired
-    private BulkheadRegistry bulkheadRegistry;
-
-    @Autowired
-    private OrderService orderService; // bean decorado con @CircuitBreaker
-
     @BeforeEach
-    void resetState() {
-        // Asegurar estado limpio antes de cada test
-        circuitBreakerRegistry.circuitBreaker("orders")
-            .transitionToClosedState();
+    void resetCircuitBreaker() {
+        // Resetear el CB a estado CLOSED antes de cada test
+        CircuitBreaker cb = circuitBreakerRegistry.circuitBreaker("paymentService");
+        cb.transitionToClosedState();
     }
 
     @Test
-    void whenCircuitOpen_thenFallbackInvoked() {
-        CircuitBreaker cb = circuitBreakerRegistry.circuitBreaker("orders");
+    void whenCircuitBreakerOpen_thenFallbackIsReturned() throws Exception {
+        // Forzar el estado OPEN programáticamente
+        CircuitBreaker cb = circuitBreakerRegistry.circuitBreaker("paymentService");
         cb.transitionToOpenState();
 
-        // orderService.getOrder() tiene @CircuitBreaker(name="orders", fallbackMethod="fallback")
-        String result = orderService.getOrder("123");
-
-        assertThat(result).isEqualTo("fallback-response");
-        assertThat(cb.getState()).isEqualTo(CircuitBreaker.State.OPEN);
+        // Verificar que el endpoint devuelve la respuesta de fallback
+        mockMvc.perform(get("/payments/1"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("FALLBACK"))
+            .andExpect(jsonPath("$.message").value("Payment service temporarily unavailable"));
     }
 
     @Test
-    void bulkheadRejectsConcurrentCallsAboveLimit() throws InterruptedException {
-        Bulkhead bulkhead = bulkheadRegistry.bulkhead("orders");
-        int maxConcurrent = bulkhead.getBulkheadConfig().getMaxConcurrentCalls();
-        int extraCalls = maxConcurrent + 5;
+    void whenCircuitBreakerClosed_thenNormalResponseIsReturned() throws Exception {
+        // El CB está en CLOSED (reseteado en @BeforeEach)
+        mockMvc.perform(get("/payments/1"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("SUCCESS"));
+    }
 
-        AtomicInteger rejected = new AtomicInteger(0);
-        CountDownLatch latch = new CountDownLatch(extraCalls);
-        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+    @Test
+    void whenCircuitBreakerInHalfOpen_thenProbeCallsAreAllowed() throws Exception {
+        CircuitBreaker cb = circuitBreakerRegistry.circuitBreaker("paymentService");
+        cb.transitionToHalfOpenState();
 
-        for (int i = 0; i < extraCalls; i++) {
+        // En HALF_OPEN, las llamadas de prueba deben pasar
+        mockMvc.perform(get("/payments/1"))
+            .andExpect(status().isOk());
+
+        // Verificar estado después de una llamada exitosa
+        // (si minimumCalls en HALF_OPEN=1, debería transicionar a CLOSED)
+    }
+}
+```
+
+Test con WireMock para probar transiciones naturales de estado:
+
+```java
+package com.example.test;
+
+import com.github.tomakehurst.wiremock.client.WireMock;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.cloud.contract.wiremock.AutoConfigureWireMock;
+import java.time.Duration;
+import static com.github.tomakehurst.wiremock.client.WireMock.*;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+    properties = {
+        // Bajar umbrales para que el CB abra rápido en tests
+        "resilience4j.circuitbreaker.instances.paymentService.minimum-number-of-calls=3",
+        "resilience4j.circuitbreaker.instances.paymentService.failure-rate-threshold=50",
+        "resilience4j.circuitbreaker.instances.paymentService.sliding-window-size=4",
+        "resilience4j.circuitbreaker.instances.paymentService.wait-duration-in-open-state=2s",
+        "resilience4j.circuitbreaker.instances.paymentService.permitted-number-of-calls-in-half-open-state=1"
+    })
+@AutoConfigureWireMock(port = 0)  // WireMock en puerto aleatorio
+class CircuitBreakerWireMockTest {
+
+    @Autowired
+    private PaymentService paymentService;
+
+    @Autowired
+    private CircuitBreakerRegistry circuitBreakerRegistry;
+
+    @Test
+    void whenDownstreamFails_thenCircuitBreakerOpens() {
+        // Configurar WireMock para devolver 500 en todas las llamadas
+        stubFor(post(urlEqualTo("/payments"))
+            .willReturn(aResponse()
+                .withStatus(500)
+                .withBody("{\"error\":\"Internal Server Error\"}")));
+
+        // Ejecutar suficientes llamadas para superar minimumNumberOfCalls
+        for (int i = 0; i < 4; i++) {
+            try {
+                paymentService.processPayment(new PaymentRequest());
+            } catch (Exception ignored) {
+                // Se espera excepción hasta que actúe el fallback
+            }
+        }
+
+        // Verificar que el CB está ahora en OPEN
+        CircuitBreaker cb = circuitBreakerRegistry.circuitBreaker("paymentService");
+        assert cb.getState() == CircuitBreaker.State.OPEN;
+    }
+
+    @Test
+    void whenCircuitOpensAndWaits_thenTransitionsToHalfOpen() throws Exception {
+        CircuitBreaker cb = circuitBreakerRegistry.circuitBreaker("paymentService");
+        cb.transitionToOpenState();
+
+        // Esperar a que el waitDurationInOpenState expire (configurado a 2s en test)
+        // y el CB transicione automáticamente a HALF_OPEN
+        // Requiere automaticTransitionFromOpenToHalfOpenEnabled=true
+        Awaitility.await()
+            .atMost(Duration.ofSeconds(5))
+            .pollInterval(Duration.ofMillis(200))
+            .until(() -> cb.getState() == CircuitBreaker.State.HALF_OPEN);
+    }
+
+    @Test
+    void countRetryAttempts_withWireMock() {
+        // WireMock devuelve 503 las primeras 2 veces, 200 la tercera
+        stubFor(post(urlEqualTo("/payments"))
+            .inScenario("retry-scenario")
+            .whenScenarioStateIs("Started")
+            .willReturn(aResponse().withStatus(503))
+            .willSetStateTo("first-fail"));
+
+        stubFor(post(urlEqualTo("/payments"))
+            .inScenario("retry-scenario")
+            .whenScenarioStateIs("first-fail")
+            .willReturn(aResponse().withStatus(503))
+            .willSetStateTo("second-fail"));
+
+        stubFor(post(urlEqualTo("/payments"))
+            .inScenario("retry-scenario")
+            .whenScenarioStateIs("second-fail")
+            .willReturn(aResponse()
+                .withStatus(200)
+                .withBody("{\"status\":\"SUCCESS\"}")));
+
+        // Con Retry maxAttempts=3, debe tener éxito en el tercer intento
+        PaymentResult result = paymentService.processPayment(new PaymentRequest());
+        assert result.isSuccess();
+
+        // Verificar que WireMock recibió exactamente 3 llamadas
+        verify(3, postRequestedFor(urlEqualTo("/payments")));
+    }
+}
+```
+
+Test de concurrencia para Bulkhead:
+
+```java
+package com.example.test;
+
+import io.github.resilience4j.bulkhead.BulkheadFullException;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+
+@SpringBootTest(properties = {
+    "resilience4j.bulkhead.instances.inventoryService.max-concurrent-calls=2",
+    "resilience4j.bulkhead.instances.inventoryService.max-wait-duration=0"
+})
+class BulkheadTest {
+
+    @Autowired
+    private InventoryService inventoryService;
+
+    @Test
+    void whenMaxConcurrencyExceeded_thenBulkheadFullException() throws Exception {
+        int threads = 5;
+        CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch doneLatch = new CountDownLatch(threads);
+        AtomicInteger rejections = new AtomicInteger(0);
+        AtomicInteger successes = new AtomicInteger(0);
+
+        ExecutorService executor = Executors.newFixedThreadPool(threads);
+
+        for (int i = 0; i < threads; i++) {
             executor.submit(() -> {
                 try {
-                    orderService.getOrder("concurrent");
-                } catch (io.github.resilience4j.bulkhead.BulkheadFullException e) {
-                    rejected.incrementAndGet();
+                    startLatch.await(); // Esperar señal para empezar todos a la vez
+                    inventoryService.checkInventory(1L);
+                    successes.incrementAndGet();
+                } catch (BulkheadFullException e) {
+                    rejections.incrementAndGet();
+                } catch (InterruptedException ignored) {
                 } finally {
-                    latch.countDown();
+                    doneLatch.countDown();
                 }
             });
         }
 
-        latch.await(5, SECONDS);
-        assertThat(rejected.get()).isGreaterThan(0);
+        startLatch.countDown(); // Lanzar todos a la vez
+        doneLatch.await(5, TimeUnit.SECONDS);
+        executor.shutdown();
+
+        // Con maxConcurrentCalls=2 y maxWaitDuration=0, exactamente 3 deben ser rechazados
+        assert rejections.get() >= 3;
+        assert successes.get() <= 2;
     }
 }
 ```
 
-> [ADVERTENCIA] El estado del `CircuitBreaker` persiste entre tests del mismo contexto de Spring Boot (`@SpringBootTest` reutiliza el contexto). Siempre restablecer el estado en `@BeforeEach` con `transitionToClosedState()` para evitar dependencias entre tests.
+## Tabla de métodos de transición programática
 
-## Estrategia 3: Test con WireMock para simular fallos de red
+Los métodos disponibles en `CircuitBreaker` para forzar estados en tests:
 
-WireMock simula el servicio downstream con respuestas de error reales (5xx, timeout, connection refused). Es el único test que verifica que el umbral de fallos configura el circuito correctamente en condiciones reales de red.
+| Método | Estado resultante | Uso en test |
+|--------|------------------|-------------|
+| `transitionToClosedState()` | CLOSED | Reset en `@BeforeEach` |
+| `transitionToOpenState()` | OPEN | Probar fallback sin ejecutar fallos reales |
+| `transitionToHalfOpenState()` | HALF_OPEN | Probar lógica de llamadas de prueba |
+| `transitionToDisabledState()` | DISABLED | Desactivar el CB en tests de integración |
+| `transitionToForcedOpenState()` | FORCED_OPEN | Probar que el sistema funciona con CB siempre abierto |
 
-```xml
-<dependency>
-    <groupId>org.wiremock.integrations</groupId>
-    <artifactId>wiremock-spring-boot</artifactId>
-    <version>3.2.0</version>
-    <scope>test</scope>
-</dependency>
+> [EXAMEN] `transitionToOpenState()` requiere que el CB haya acumulado al menos `minimumNumberOfCalls` en su sliding window O que use la transición directa del API. En la práctica, para tests siempre se usa `transitionToOpenState()` directamente sin necesitar producir fallos reales.
+
+## Configuración de test recomendada
+
+Para que los CBs se comporten de forma predecible en tests, siempre sobrescribir las propiedades críticas:
+
+```properties
+# Valores recomendados para tests
+resilience4j.circuitbreaker.instances.myService.minimum-number-of-calls=3
+resilience4j.circuitbreaker.instances.myService.sliding-window-size=4
+resilience4j.circuitbreaker.instances.myService.failure-rate-threshold=50
+resilience4j.circuitbreaker.instances.myService.wait-duration-in-open-state=2s
+resilience4j.circuitbreaker.instances.myService.permitted-number-of-calls-in-half-open-state=1
+resilience4j.circuitbreaker.instances.myService.automatic-transition-from-open-to-half-open-enabled=true
 ```
-
-```java
-package com.example.resilience;
-
-import com.github.tomakehurst.wiremock.client.WireMock;
-import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.wiremock.spring.EnableWireMock;
-import io.github.resilience4j.circuitbreaker.CircuitBreaker;
-import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
-
-import static com.github.tomakehurst.wiremock.client.WireMock.*;
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
-import static java.util.concurrent.TimeUnit.SECONDS;
-
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@EnableWireMock
-class CircuitBreakerWireMockTest {
-
-    @Autowired
-    private CircuitBreakerRegistry circuitBreakerRegistry;
-
-    @Autowired
-    private OrderServiceClient orderServiceClient; // Feign o RestClient
-
-    @Test
-    void whenDownstreamReturns500Repeatedly_thenCircuitOpens() {
-        // Configurar WireMock para devolver 500 en todas las peticiones
-        stubFor(get(urlPathEqualTo("/orders/123"))
-            .willReturn(serverError()));
-
-        CircuitBreaker cb = circuitBreakerRegistry.circuitBreaker("orders");
-        // slidingWindowSize = 5, failureRateThreshold = 50% → necesitamos 5 llamadas
-        for (int i = 0; i < 5; i++) {
-            try {
-                orderServiceClient.getOrder("123");
-            } catch (Exception ignored) {
-                // Se espera excepción
-            }
-        }
-
-        // Tras 5 fallos (100% > 50%), el circuito debe abrirse
-        await()
-            .atMost(2, SECONDS)
-            .untilAsserted(() ->
-                assertThat(cb.getState()).isEqualTo(CircuitBreaker.State.OPEN)
-            );
-    }
-}
-```
-
-### Tabla resumen: cuándo usar cada estrategia
-
-| Situación | Estrategia recomendada |
-|---|---|
-| Verificar lógica del fallback sin Spring | 1 — CircuitBreakerRegistry.ofDefaults() |
-| Verificar transición de estado forzada con AOP | 2 — @SpringBootTest + transitionToOpenState() |
-| Verificar contadores de Retry con Micrometer | 2 — @SpringBootTest con MeterRegistry |
-| Verificar Bulkhead con carga concurrente real | 2 — @SpringBootTest con ExecutorService |
-| Verificar que el circuito se abre con fallos reales | 3 — WireMock |
-| Verificar comportamiento ante timeouts de red | 3 — WireMock con `fixedDelay` |
-
-## Tabla de elementos clave
-
-Los componentes y métodos que un desarrollador senior debe conocer para testear tolerancia a fallos:
-
-| Componente / Método | Descripción |
-|---|---|
-| `CircuitBreakerRegistry.ofDefaults()` | Crea un registry en memoria sin Spring para tests unitarios |
-| `cb.transitionToOpenState()` | Fuerza el estado OPEN directamente; también: `transitionToClosedState()`, `transitionToHalfOpenState()` |
-| `cb.getMetrics().getNumberOfFailedCalls()` | Acceso programático a contadores de fallos para assertions en tests |
-| `Retry.decorateCheckedSupplier(retry, supplier)` | Decora un lambda con Retry sin AOP para tests unitarios |
-| `BulkheadFullException` | Excepción lanzada cuando el Bulkhead rechaza una llamada; verificar en assertions |
-| `@EnableWireMock` | Anotación de wiremock-spring-boot para iniciar WireMock en tests de integración |
-| `MeterRegistry` | Inyectable en tests para verificar contadores de Retry: `meterRegistry.counter("resilience4j.retry.calls", "name", "orders", "kind", "successful_with_retry")` |
 
 ## Buenas y malas prácticas
 
-**Hacer:**
-- Restablecer el estado del circuito en `@BeforeEach` cuando los tests comparten contexto de Spring; el estado persiste entre tests dentro del mismo contexto y puede causar dependencias no intencionales.
-- Usar `transitionToOpenState()` en lugar de forzar fallos reales para tests de fallback: es instantáneo y determina con precisión cuándo el circuito está abierto.
-- Verificar los contadores de Retry con `MeterRegistry` en lugar de contar llamadas manualmente: los contadores de Micrometer reflejan el comportamiento real del decorador.
-- Usar virtual threads (`Executors.newVirtualThreadPerTaskExecutor()`) en tests de Bulkhead concurrente para simular alta concurrencia sin sobrecargar el test runner.
+**Buenas prácticas:**
+- Siempre hacer reset del CB en `@BeforeEach` para evitar interferencias entre tests.
+- Usar `@SpringBootTest(properties = {...})` para sobrescribir umbrales directamente en la anotación del test.
+- Usar Awaitility para condiciones asíncronas (transiciones de estado) en lugar de `Thread.sleep()`.
+- Usar WireMock scenarios para tests de Retry deterministas que verifican el número exacto de llamadas.
 
-**Evitar:**
-- Testear solo el "camino feliz" (servicio disponible, circuito cerrado): no detecta problemas de configuración del umbral ni del fallback.
-- Usar `Thread.sleep()` en tests de resiliencia para esperar transiciones de estado: es frágil y lento; usar `Awaitility.await()` con timeout explícito.
-- Compartir la misma instancia de `CircuitBreaker` entre tests paralelos sin aislar el estado: los contadores de una suite pueden contaminar a otra.
-- Configurar `waitDuration` con valores reales (segundos) en tests de Retry: hace los tests innecesariamente lentos; usar `Duration.ofMillis(10)` en configuración de test.
+**Malas prácticas:**
+- No hacer reset del CB entre tests: un test que deja el CB en OPEN hace fallar todos los tests siguientes.
+- Usar `Thread.sleep()` fijo para esperar transiciones de estado: fragiliza los tests ante variaciones de carga del CI.
+- Confiar solo en tests de `@CircuitBreaker` vía AOP sin probar el fallback directamente: el CB puede estar activo pero el fallback puede tener un bug silencioso.
+
+## Verificación y práctica
+
+> [EXAMEN] 1. ¿Qué método del `CircuitBreaker` se usa para forzar el estado OPEN en un test de integración?
+
+> [EXAMEN] 2. ¿Por qué es necesario hacer reset del CB (`transitionToClosedState()`) en `@BeforeEach` en los tests?
+
+> [EXAMEN] 3. ¿Cómo se verifican con WireMock exactamente 3 llamadas al downstream cuando Retry tiene `max-attempts=3`?
+
+> [EXAMEN] 4. ¿Qué librería se recomienda para esperar condiciones asíncronas (como transiciones de estado) en tests de Resilience4j?
+
+> [EXAMEN] 5. En un test de Bulkhead SEMAPHORE con `max-wait-duration=0` y `max-concurrent-calls=2`, si se lanzan 5 threads simultáneos, ¿cuántos `BulkheadFullException` se esperan como mínimo?
 
 ---
 
-← [5.13 Integración con OpenFeign, RestClient y WebClient](sc-circuitbreaker-feign.md) | [Índice (README.md)](README.md) | [6.1 Modelo de programación funcional](sc-stream-modelo-funcional.md) →
+← [4.12 Métricas avanzadas y Health Indicators](sc-circuitbreaker-metricas.md) | [Índice](README.md) | [5.1 Arquitectura y ciclo de vida de Spring Cloud Gateway](sc-gateway-arquitectura.md) →

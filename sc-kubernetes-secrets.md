@@ -1,213 +1,173 @@
-# 9.4 Secrets PropertySource
+# 9.3 Spring Cloud Kubernetes — Secrets como PropertySource
 
-← [9.3 ConfigMap PropertySource — recarga dinámica](sc-kubernetes-configmap-reload.md) | [Índice (README.md)](README.md) | [9.5 Namespace awareness y RBAC](sc-kubernetes-namespace-rbac.md) →
+← [9.2 ConfigMap como PropertySource](sc-kubernetes-configmap.md) | [Índice](README.md) | [9.4 Service Discovery](sc-kubernetes-discovery.md) →
 
 ---
 
 ## Introducción
 
-Kubernetes `Secret` es el objeto destinado a almacenar datos sensibles: contraseñas, tokens, certificados y claves API. A diferencia del `ConfigMap`, Kubernetes aplica controles adicionales sobre los Secrets (almacenamiento cifrado en etcd con `EncryptionConfiguration`, acceso restringido por RBAC por defecto, omisión en logs del cluster). Spring Cloud Kubernetes puede transformar un `Secret` en un `PropertySource` de la misma forma que lo hace con un `ConfigMap`, pero esta funcionalidad está **desactivada por defecto** precisamente porque requiere que el ServiceAccount de la aplicación tenga permisos de lectura sobre el recurso `secrets`, lo que amplía la superficie de ataque. Este nodo explica cómo activar y configurar el Secrets PropertySource de forma segura, incluyendo la lectura desde volumen montado como alternativa más segura, y la rotación de credenciales en caliente.
+Kubernetes Secrets almacena datos sensibles —contraseñas, tokens, claves API— en formato base64 en el cluster. Spring Cloud Kubernetes puede exponer esos Secrets como propiedades del `Environment` de Spring de dos maneras: leyéndolos mediante la API de Kubernetes (`secrets.enabled=true`) o consumiendo el contenido de un Secret montado como volumen o variable de entorno en el pod. Elegir la estrategia correcta tiene implicaciones de seguridad significativas que el examen evalúa directamente.
 
-> **[PREREQUISITO]** Comprender el RBAC de SCK descrito en [9.5 Namespace awareness y RBAC](sc-kubernetes-namespace-rbac.md) antes de activar este PropertySource. El verbo `get`/`list`/`watch` sobre `secrets` debe añadirse explícitamente al Role del ServiceAccount.
+## Comparación: API vs Volumen
 
-> **[ADVERTENCIA]** Activar `spring.cloud.kubernetes.secrets.enabled=true` hace que la aplicación lea Secrets de Kubernetes vía la API. Si el ServiceAccount tiene permisos excesivos, un atacante que comprometa el pod puede listar todos los Secrets del namespace. La alternativa más segura es montar el Secret como volumen y usar `secrets.paths`.
+La siguiente tabla resume las diferencias entre ambos enfoques de acceso a Secrets, que es el punto de evaluación más frecuente en el examen VMware Spring Professional.
 
-## Representación visual
+| Aspecto | API de Kubernetes (`secrets.enabled=true`) | Volumen / Env Var |
+|---|---|---|
+| Configuración Spring | `spring.cloud.kubernetes.secrets.enabled=true` | Solo Spring Boot estándar (`${SECRET_VAR}`) |
+| RBAC necesario | `get` (o `list`) sobre `secrets` en el namespace | Ninguno adicional (K8s monta automáticamente) |
+| Riesgo de seguridad | Alto: si el pod se compromete, puede listar otros Secrets con el token SA | Bajo: el pod solo ve el contenido del volumen montado |
+| Compatibilidad con rotación de secretos | Requiere reload de configuración (sc-kubernetes-reload.md) | Actualización automática del volumen (en K8s 1.21+) |
+| Recomendación | Evitar en producción si hay alternativa con volumen | Preferida por el principio de mínimo privilegio |
 
-Existen dos formas de exponer un Kubernetes Secret como `PropertySource` en Spring. La elección determina el riesgo de seguridad y la complejidad del RBAC necesario.
+> [CONCEPTO] La lectura de Secrets mediante la API de Kubernetes requiere que el ServiceAccount tenga el verbo `get` sobre `secrets`. Esto es más restrictivo que `configmaps` porque los Secrets contienen credenciales. Muchos equipos de seguridad prohíben dar este permiso y exigen el enfoque de volumen.
 
-```
-Opción A — API PropertySource (secrets.enabled=true)
-┌─────────────────────────────────────────────────────┐
-│  Pod (ServiceAccount con get/list/watch secrets)    │
-│           │                                         │
-│           ▼                                         │
-│  SecretsPropertySourceLocator ──► Kubernetes API    │
-│           │         Lee Secret por nombre/labels    │
-│           ▼                                         │
-│  Spring PropertySource (claves en memoria)          │
-└─────────────────────────────────────────────────────┘
+> [CONCEPTO] Cuando un Secret se monta como volumen en el pod, Kubernetes escribe cada clave del Secret como un fichero independiente en el directorio de montaje. Spring Cloud Kubernetes puede leer esos ficheros usando `spring.cloud.kubernetes.secrets.paths`.
 
-Opción B — Volumen montado (más segura, recomendada)
-┌─────────────────────────────────────────────────────┐
-│  Kubernetes monta el Secret como volumen            │
-│  en /etc/secrets/mi-app                             │
-│           │                                         │
-│           ▼                                         │
-│  spring.cloud.kubernetes.secrets.paths              │
-│           │                                         │
-│           ▼                                         │
-│  Spring PropertySource (lee ficheros del volumen)   │
-│  ← No requiere acceso API al recurso secrets        │
-└─────────────────────────────────────────────────────┘
-```
-
-> **[CONCEPTO]** Con la opción de volumen montado (`secrets.paths`), el pod no necesita permiso `get`/`list`/`watch` sobre `secrets` en el RBAC. Kubernetes inyecta los valores del Secret en el sistema de ficheros del contenedor, y SCK los lee como ficheros de propiedades. Además, si el Secret se actualiza, Kubernetes actualiza el volumen montado automáticamente (con latencia de hasta 2 minutos).
+> [ADVERTENCIA] Activar `spring.cloud.kubernetes.secrets.enabled=true` con un ClusterRole que permite `list` sobre Secrets en todos los namespaces es un riesgo crítico de seguridad. Un pod comprometido podría exfiltrar todos los Secrets del clúster.
 
 ## Ejemplo central
 
-El siguiente ejemplo muestra las dos estrategias: lectura directa via API con filtrado por etiquetas, y lectura desde volumen montado, que es la opción recomendada en producción.
-
-**pom.xml** (igual al de 9.1, con `spring-cloud-starter-kubernetes-fabric8-all`):
-
-```xml
-<dependency>
-  <groupId>org.springframework.cloud</groupId>
-  <artifactId>spring-cloud-starter-kubernetes-fabric8-all</artifactId>
-</dependency>
-```
-
-**application.yml — Opción A (via API)**:
+El siguiente ejemplo muestra ambos enfoques: acceso vía API y montado como volumen, con la configuración RBAC mínima para cada caso.
 
 ```yaml
-spring:
-  application:
-    name: pagos-service
-  config:
-    import: "kubernetes:secret/pagos-credentials"
-
-spring:
-  cloud:
-    kubernetes:
-      secrets:
-        enabled: true
-        name: pagos-credentials
-        namespace: produccion
-        labels:
-          app: pagos-service
-          tier: backend
-```
-
-**application.yml — Opción B (via volumen montado, recomendada)**:
-
-```yaml
-spring:
-  application:
-    name: pagos-service
-
-spring:
-  cloud:
-    kubernetes:
-      secrets:
-        enabled: true
-        paths:
-          - /etc/secrets/pagos
-```
-
-**Secret de Kubernetes** (manifiesto con valores en base64):
-
-```yaml
+# kubernetes/secret.yaml — Secret con credenciales de base de datos
 apiVersion: v1
 kind: Secret
 metadata:
-  name: pagos-credentials
-  namespace: produccion
+  name: my-service-db-credentials
+  namespace: default
   labels:
-    app: pagos-service
-    tier: backend
+    app: my-service
 type: Opaque
 data:
-  # echo -n "mi-password-seguro" | base64
-  db.password: bWktcGFzc3dvcmQtc2VndXJv
-  # echo -n "sk-live-xxxx" | base64
-  stripe.api-key: c2stbGl2ZS14eHh4
+  db.username: bXl1c2Vy          # base64("myuser")
+  db.password: c2VjcmV0cGFzcw==  # base64("secretpass")
 ```
 
-**Deployment con volumen montado (Opción B)**:
-
 ```yaml
+# kubernetes/deployment-volume.yaml — Montado como volumen (RECOMENDADO)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: pagos-service
+  name: my-service
 spec:
   template:
     spec:
-      serviceAccountName: pagos-sa
-      volumes:
-        - name: pagos-secrets-vol
-          secret:
-            secretName: pagos-credentials
+      serviceAccountName: my-service-sa
       containers:
-        - name: pagos-service
-          image: mi-empresa/pagos-service:latest
+        - name: my-service
+          image: my-service:1.0.0
           volumeMounts:
-            - name: pagos-secrets-vol
-              mountPath: /etc/secrets/pagos
+            - name: db-credentials
+              mountPath: /etc/secrets/db
               readOnly: true
+      volumes:
+        - name: db-credentials
+          secret:
+            secretName: my-service-db-credentials
 ```
 
-**Uso en código Java**:
+```yaml
+# src/main/resources/application.yml — Enfoque volumen
+spring:
+  application:
+    name: my-service
+  cloud:
+    kubernetes:
+      secrets:
+        enabled: false          # no se usa la API de Secrets
+        paths:
+          - /etc/secrets/db     # Spring Cloud K8s lee los ficheros del volumen
+```
+
+```yaml
+# src/main/resources/application-api.yml — Enfoque API (solo si es necesario)
+spring:
+  cloud:
+    kubernetes:
+      secrets:
+        enabled: true
+        name: my-service-db-credentials
+        namespace: default
+        # Filtrar por label en lugar de por nombre (alternativa)
+        labels:
+          app: my-service
+```
 
 ```java
-package com.ejemplo.pagos.config;
+// src/main/java/com/example/DataSourceConfig.java
+package com.example;
 
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Component;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import javax.sql.DataSource;
+import org.springframework.boot.jdbc.DataSourceBuilder;
 
-@Component
-public class PagosCredentials {
+@Configuration
+public class DataSourceConfig {
 
-    // SCK expone las claves del Secret como propiedades Spring normales
+    // Spring lee db.username del fichero /etc/secrets/db/db.username
+    // o de la propiedad inyectada por el PropertySource de Secrets
+    @Value("${db.username}")
+    private String username;
+
     @Value("${db.password}")
-    private String dbPassword;
+    private String password;
 
-    @Value("${stripe.api-key}")
-    private String stripeApiKey;
-
-    public String getDbPassword() {
-        return dbPassword;
-    }
-
-    public String getStripeApiKey() {
-        return stripeApiKey;
+    @Bean
+    public DataSource dataSource() {
+        return DataSourceBuilder.create()
+                .url("jdbc:postgresql://postgres:5432/mydb")
+                .username(username)
+                .password(password)
+                .build();
     }
 }
 ```
 
-**Recarga de Secrets en caliente** (rotación de credenciales):
+## Tabla de propiedades de Secrets
 
-```yaml
-spring:
-  cloud:
-    kubernetes:
-      reload:
-        enabled: true
-        strategy: RESTART_CONTEXT   # Secrets normalmente requieren reinicio
-        monitoring-secrets: true    # Activar explícitamente
-        mode: polling
-        period: 60000               # Cada 60 segundos para secrets
-```
+La siguiente tabla cubre las propiedades más relevantes para configurar el PropertySource de Secrets en Spring Cloud Kubernetes.
 
-> **[EXAMEN]** Pregunta frecuente: "¿Por qué `spring.cloud.kubernetes.secrets.enabled` está en `false` por defecto cuando `config.enabled` está en `true`?" Porque los Secrets almacenan datos sensibles y conceder acceso API a todos los Secrets del namespace a cualquier ServiceAccount viola el principio de mínimo privilegio. Los ConfigMaps son no-sensibles por diseño; los Secrets requieren una decisión explícita del operador.
-
-## Tabla de elementos clave
-
-| Propiedad | Tipo | Default | Descripción |
-|---|---|---|---|
-| `spring.cloud.kubernetes.secrets.enabled` | boolean | `false` | Activa el Secrets PropertySource (desactivado por seguridad) |
-| `spring.cloud.kubernetes.secrets.name` | String | `${spring.application.name}` | Nombre del Secret a leer |
-| `spring.cloud.kubernetes.secrets.namespace` | String | namespace del pod | Namespace donde buscar el Secret |
-| `spring.cloud.kubernetes.secrets.labels` | Map | — | Filtrado de Secrets por etiquetas (lee todos los que coincidan) |
-| `spring.cloud.kubernetes.secrets.paths` | List\<String\> | — | Rutas de volumen montado con el Secret (alternativa más segura) |
-| `spring.cloud.kubernetes.secrets.use-name-as-prefix` | boolean | `false` | Prefija las claves con el nombre del Secret para evitar colisiones |
-| `spring.cloud.kubernetes.reload.monitoring-secrets` | boolean | `false` | Activa la detección de cambios en Secrets para recarga |
+| Propiedad | Valor por defecto | Descripción |
+|---|---|---|
+| `spring.cloud.kubernetes.secrets.enabled` | `false` | Activa la lectura de Secrets vía API de Kubernetes |
+| `spring.cloud.kubernetes.secrets.name` | `${spring.application.name}` | Nombre del Secret a cargar |
+| `spring.cloud.kubernetes.secrets.namespace` | namespace del pod | Namespace donde buscar el Secret |
+| `spring.cloud.kubernetes.secrets.labels` | — | Mapa de etiquetas para filtrar Secrets por label selector |
+| `spring.cloud.kubernetes.secrets.paths` | — | Lista de rutas de volúmenes montados con Secrets |
+| `spring.cloud.kubernetes.secrets.use-name-as-prefix` | `false` | Prefija propiedades con el nombre del Secret |
+| `spring.cloud.kubernetes.secrets.fail-fast` | `false` | Falla si el Secret no existe al arrancar |
 
 ## Buenas y malas prácticas
 
-**Hacer:**
+**Buenas prácticas:**
+- Preferir siempre el montado como volumen o variables de entorno sobre `secrets.enabled=true` para reducir la superficie de ataque RBAC.
+- Si se usa el enfoque de volumen con `secrets.paths`, activar el modo de lectura de ficheros y no conceder ningún permiso adicional sobre `secrets` al ServiceAccount.
+- Usar `secrets.labels` para agrupar múltiples Secrets relacionados bajo un selector de etiquetas, en lugar de listar nombres individuales.
+- Cifrar los Secrets en reposo con el mecanismo de encryption at rest de Kubernetes (etcd encryption) o usar Vault como backend.
 
-- Preferir la opción de volumen montado (`secrets.paths`) sobre la lectura directa via API: el RBAC del ServiceAccount no necesita acceso a `secrets`, reduciendo la superficie de ataque.
-- Usar `secrets.labels` para filtrar Secrets específicos de la aplicación cuando hay múltiples Secrets en el namespace: evita que la aplicación lea Secrets de otros servicios accidentalmente.
-- Activar el cifrado en reposo de etcd (`EncryptionConfiguration` en el cluster) para que los Secrets no se almacenen en texto plano en el backend de Kubernetes.
-- Para la rotación de credenciales, usar `RESTART_CONTEXT` en lugar de `REFRESH`: los beans de conexión a base de datos o clientes HTTP no son `@RefreshScope` por defecto, y un `REFRESH` no propagaría la nueva contraseña al connection pool.
+**Malas prácticas:**
+- Activar `secrets.enabled=true` y asignar un ClusterRole con `list` sobre `secrets` en todos los namespaces: es un riesgo crítico.
+- Almacenar en un ConfigMap (no Secret) valores que son credenciales por considerarlos "menos importantes".
+- Usar `secrets.use-name-as-prefix=false` cuando se cargan múltiples Secrets con propiedades de igual nombre: las propiedades se sobreescribirán silenciosamente.
 
-**Evitar:**
+> [EXAMEN] La distinción entre el enfoque API (`secrets.enabled=true`) y el montado como volumen es una pregunta recurrente en el examen VMware Spring Professional. El punto clave es el riesgo de seguridad: el enfoque API requiere permisos RBAC adicionales que amplían la superficie de ataque.
 
-- Loguear propiedades que provengan de Secrets: Spring Boot puede loguear propiedades en modo DEBUG durante el arranque; desactivar `logging.level.org.springframework.boot.context.config=DEBUG` en producción.
-- Activar `secrets.enabled=true` sin RBAC explícito y auditado: el error 403 en runtime indica que el ServiceAccount no tiene permisos, pero si el cluster tiene RBAC mal configurado, el pod podría leer Secrets de otros servicios.
-- Usar Secrets de Kubernetes para claves de cifrado de alto valor (HSM keys, claves de firma JWT) sin rotación automatizada: considerar Vault u otros gestores de secretos especializados para ese nivel de sensibilidad.
+## Verificación y práctica
+
+> [EXAMEN] 1. ¿Cuál es la diferencia de seguridad principal entre acceder a un Secret de Kubernetes mediante `spring.cloud.kubernetes.secrets.enabled=true` y montarlo como volumen en el pod?
+
+> [EXAMEN] 2. ¿Qué verbo RBAC adicional necesita el ServiceAccount cuando se activa `spring.cloud.kubernetes.secrets.enabled=true` que no se necesita para los ConfigMaps?
+
+> [EXAMEN] 3. ¿Para qué sirve la propiedad `spring.cloud.kubernetes.secrets.paths` y en qué escenario se usa?
+
+> [EXAMEN] 4. Un equipo de seguridad prohíbe dar permisos `get` sobre Secrets al ServiceAccount del pod. ¿Cómo puede la aplicación Spring Boot seguir accediendo a las credenciales almacenadas en un Secret de Kubernetes?
+
+> [EXAMEN] 5. ¿Qué ocurre cuando dos Secrets distintos contienen una propiedad con el mismo nombre y `use-name-as-prefix=false`?
 
 ---
 
-← [9.3 ConfigMap PropertySource — recarga dinámica](sc-kubernetes-configmap-reload.md) | [Índice (README.md)](README.md) | [9.5 Namespace awareness y RBAC](sc-kubernetes-namespace-rbac.md) →
+← [9.2 ConfigMap como PropertySource](sc-kubernetes-configmap.md) | [Índice](README.md) | [9.4 Service Discovery](sc-kubernetes-discovery.md) →

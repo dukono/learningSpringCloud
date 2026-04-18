@@ -1,225 +1,200 @@
-# 9.2 ConfigMap PropertySource — lectura y fuentes
+# 9.2 Spring Cloud Kubernetes — ConfigMap como PropertySource
 
-← [9.1 Setup y starters de Spring Cloud Kubernetes](sc-kubernetes-setup.md) | [Índice (README.md)](README.md) | [9.3 ConfigMap PropertySource — recarga dinámica](sc-kubernetes-configmap-reload.md) →
+← [9.1 Motivación y Arquitectura](sc-kubernetes-arquitectura.md) | [Índice](README.md) | [9.3 Secrets como PropertySource](sc-kubernetes-secrets.md) →
 
 ---
 
 ## Introducción
 
-En Kubernetes, `ConfigMap` es el objeto estándar para externalizar configuración no sensible: URLs de servicios dependientes, parámetros de negocio, timeouts, flags de feature. Sin SCK, una aplicación Spring Boot solo puede acceder al ConfigMap si lo lee directamente vía la Kubernetes API o si el operador lo monta como fichero de volumen o variable de entorno. Spring Cloud Kubernetes transforma automáticamente el contenido de un ConfigMap en un `PropertySource` de Spring, haciéndolo disponible como cualquier propiedad de `application.yml` sin que el código conozca Kubernetes. Este nodo cubre exclusivamente la lectura estática del ConfigMap (qué fuentes se cargan y cómo se resuelven); la recarga dinámica cuando el ConfigMap cambia se trata en [9.3 ConfigMap PropertySource — recarga dinámica](sc-kubernetes-configmap-reload.md).
+Spring Cloud Kubernetes permite usar un ConfigMap de Kubernetes como fuente de propiedades de Spring Boot, de la misma forma que se usaría un fichero `application.yml` o un Config Server. Cuando la aplicación arranca, el framework lee el ConfigMap indicado a través de la API de Kubernetes y lo integra en el `Environment` de Spring, con mayor precedencia que las propiedades locales. Esto elimina la necesidad de un Spring Cloud Config Server para externalizar configuración en entornos K8s nativos.
 
-> **[PREREQUISITO]** Es necesario haber configurado el starter y el RBAC mínimo descritos en [9.1 Setup y starters de Spring Cloud Kubernetes](sc-kubernetes-setup.md). Sin permiso `get`/`list`/`watch` sobre `configmaps` en el namespace, SCK lanza un error 403 en el arranque.
+## Diagrama de flujo de carga
 
-> **[ADVERTENCIA]** Usar `spring.config.import` en `application.yml` en lugar de `bootstrap.yml` (Spring Boot 4.x). Un `bootstrap.yml` sin la dependencia `spring-cloud-starter-bootstrap` no se procesa en Oakwood.
-
-## Representación visual
-
-SCK resuelve el PropertySource de un ConfigMap siguiendo un orden de fuentes definido. El diagrama muestra el flujo desde el arranque de la aplicación hasta la inyección de propiedades.
+El siguiente diagrama muestra cómo Spring Cloud Kubernetes carga el ConfigMap durante el arranque de la aplicación y lo inyecta en el `Environment` de Spring.
 
 ```
-Arranque Spring Boot 4.x
+Arranque Spring Boot
         │
         ▼
-spring.config.import: "kubernetes:configmap/mi-app-config"
+BootstrapContext / ApplicationContext
         │
         ▼
-┌────────────────────────────────────────────────────────┐
-│         ConfigMapPropertySourceLocator (SCK)           │
-│                                                        │
-│  1. Busca ConfigMap por nombre (config.name)           │
-│     en namespace (config.namespace)                    │
-│  2. Si config.sources → lista de múltiples ConfigMaps  │
-│  3. Si config.paths   → lee desde volumen montado      │
-│  4. Aplica perfil activo: busca clave                  │
-│     "application-{profile}.properties" en el ConfigMap │
-└────────────────────────────────────────────────────────┘
+KubernetesConfigDataLoader
+        │ lee spring.cloud.kubernetes.config.*
+        ▼
+API K8s: GET /api/v1/namespaces/{ns}/configmaps/{name}
         │
         ▼
-Spring Environment (PropertySource con prioridad alta)
-        │
+ConfigMapPropertySource
+        │ se añade al Environment con mayor precedencia
         ▼
-@Value / @ConfigurationProperties inyectados
+@Value / @ConfigurationProperties resueltos
 ```
 
-> **[CONCEPTO]** El `ConfigMapPropertySourceLocator` se ejecuta durante la fase de inicialización del `Environment`, antes de que los beans de la aplicación sean instanciados, garantizando que las propiedades del ConfigMap estén disponibles para `@ConfigurationProperties`.
+> [CONCEPTO] El ConfigMap puede contener datos en formato `key=value` (estilo `application.properties`) o como un bloque YAML bajo la clave `application.yml`. Spring Cloud Kubernetes detecta automáticamente el formato y convierte el contenido en propiedades de Spring.
+
+> [CONCEPTO] La propiedad `spring.cloud.kubernetes.config.sources` permite declarar una lista de ConfigMaps (con nombre y namespace opcionales) cuando se necesita cargar más de un ConfigMap. Es la alternativa a `config.name` para escenarios con múltiples fuentes.
+
+> [PREREQUISITO] El ServiceAccount del pod necesita el verbo `get` (y `watch` para reload) sobre el recurso `configmaps` en el namespace correspondiente.
 
 ## Ejemplo central
 
-El siguiente ejemplo muestra una aplicación que lee configuración de dos fuentes: un ConfigMap principal y un ConfigMap adicional de base de datos, con soporte de perfil `prod`.
-
-**pom.xml** (dependencias relevantes):
-
-```xml
-<dependencyManagement>
-  <dependencies>
-    <dependency>
-      <groupId>org.springframework.cloud</groupId>
-      <artifactId>spring-cloud-dependencies</artifactId>
-      <version>2025.1.1</version>
-      <type>pom</type>
-      <scope>import</scope>
-    </dependency>
-  </dependencies>
-</dependencyManagement>
-
-<dependencies>
-  <dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-web</artifactId>
-  </dependency>
-  <dependency>
-    <groupId>org.springframework.cloud</groupId>
-    <artifactId>spring-cloud-starter-kubernetes-fabric8-all</artifactId>
-  </dependency>
-</dependencies>
-```
-
-**application.yml**:
+El siguiente ejemplo cubre el escenario completo: un ConfigMap K8s con datos en formato YAML embebido, la configuración Spring que lo referencia, y una clase que lee las propiedades inyectadas.
 
 ```yaml
+# kubernetes/configmap.yaml — ConfigMap con application.yml embebido
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: my-service
+  namespace: default
+  labels:
+    app: my-service
+data:
+  application.yml: |
+    app:
+      message: "Hello from ConfigMap"
+      max-retries: 3
+    server:
+      port: 8080
+```
+
+```yaml
+# kubernetes/configmap-prod.yaml — ConfigMap de perfil activo
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: my-service-prod
+  namespace: default
+data:
+  application.yml: |
+    app:
+      message: "Hello from ConfigMap PROD"
+      max-retries: 5
+```
+
+```yaml
+# src/main/resources/application.yml
 spring:
   application:
-    name: pedidos-service
-  config:
-    import: "kubernetes:configmap/pedidos-config,kubernetes:configmap/db-config"
+    name: my-service
   profiles:
     active: prod
-
-spring:
   cloud:
     kubernetes:
       config:
         enabled: true
-        name: pedidos-config
-        namespace: produccion
+        name: my-service           # nombre del ConfigMap principal
+        namespace: default         # namespace donde buscar
+        # sources permite múltiples ConfigMaps:
         sources:
-          - name: pedidos-config
-            namespace: produccion
-          - name: db-config
-            namespace: produccion
+          - name: my-service
+            namespace: default
+          - name: shared-config
+            namespace: infrastructure
 ```
-
-**ConfigMap pedidos-config** (manifiesto Kubernetes):
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: pedidos-config
-  namespace: produccion
-data:
-  application.properties: |
-    pedidos.max-por-pagina=50
-    pedidos.timeout-ms=3000
-  application-prod.properties: |
-    pedidos.max-por-pagina=100
-    pedidos.timeout-ms=1500
-```
-
-**ConfigMap db-config** (manifiesto Kubernetes):
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: db-config
-  namespace: produccion
-data:
-  application.properties: |
-    spring.datasource.url=jdbc:postgresql://postgres-svc:5432/pedidos
-    spring.datasource.username=pedidos_user
-```
-
-**Clase de configuración Java**:
 
 ```java
-package com.ejemplo.pedidos.config;
+// src/main/java/com/example/AppProperties.java
+package com.example;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
 @Component
-@ConfigurationProperties(prefix = "pedidos")
-public class PedidosProperties {
+@ConfigurationProperties(prefix = "app")
+public class AppProperties {
 
-    private int maxPorPagina = 20;
-    private long timeoutMs = 5000;
+    private String message;
+    private int maxRetries;
 
-    public int getMaxPorPagina() {
-        return maxPorPagina;
+    public String getMessage() {
+        return message;
     }
 
-    public void setMaxPorPagina(int maxPorPagina) {
-        this.maxPorPagina = maxPorPagina;
+    public void setMessage(String message) {
+        this.message = message;
     }
 
-    public long getTimeoutMs() {
-        return timeoutMs;
+    public int getMaxRetries() {
+        return maxRetries;
     }
 
-    public void setTimeoutMs(long timeoutMs) {
-        this.timeoutMs = timeoutMs;
+    public void setMaxRetries(int maxRetries) {
+        this.maxRetries = maxRetries;
     }
 }
 ```
 
-**Lectura de propiedad desde volumen montado** — alternativa via `paths`:
+```java
+// src/main/java/com/example/ConfigController.java
+package com.example;
 
-```yaml
-# application.yml con paths (el ConfigMap está montado como volumen en /etc/config)
-spring:
-  cloud:
-    kubernetes:
-      config:
-        paths:
-          - /etc/config/pedidos
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+public class ConfigController {
+
+    private final AppProperties props;
+
+    public ConfigController(AppProperties props) {
+        this.props = props;
+    }
+
+    @GetMapping("/config")
+    public String config() {
+        return props.getMessage() + " (retries=" + props.getMaxRetries() + ")";
+    }
+}
 ```
-
-```yaml
-# Deployment con volumen montado
-spec:
-  volumes:
-    - name: config-vol
-      configMap:
-        name: pedidos-config
-  containers:
-    - name: pedidos-service
-      volumeMounts:
-        - name: config-vol
-          mountPath: /etc/config/pedidos
-```
-
-> **[EXAMEN]** Pregunta frecuente: "¿Qué pasa si el ConfigMap tiene una clave `application-prod.properties` y el perfil activo es `prod`?" SCK carga ambas: primero `application.properties` (base) y luego `application-prod.properties` (override de perfil), con la misma semántica de precedencia que los ficheros de `application.yml` por perfil en Spring Boot.
 
 ## Tabla de elementos clave
 
-Las propiedades siguientes controlan qué ConfigMaps se leen y desde qué fuentes. Son las configuradas en el arranque de cualquier aplicación SCK en Kubernetes.
+La siguiente tabla detalla todas las propiedades relevantes para configurar ConfigMap como PropertySource.
 
-| Propiedad | Tipo | Default | Descripción |
-|---|---|---|---|
-| `spring.cloud.kubernetes.config.enabled` | boolean | `true` | Activa el ConfigMap PropertySource |
-| `spring.cloud.kubernetes.config.name` | String | `${spring.application.name}` | Nombre del ConfigMap principal |
-| `spring.cloud.kubernetes.config.namespace` | String | namespace del pod | Namespace donde buscar el ConfigMap |
-| `spring.cloud.kubernetes.config.paths` | List\<String\> | — | Rutas de ficheros de un volumen montado con el ConfigMap |
-| `spring.cloud.kubernetes.config.sources` | List | — | Lista de pares `{name, namespace}` para múltiples ConfigMaps |
-| `spring.cloud.kubernetes.config.use-name-as-prefix` | boolean | `false` | Si `true`, prefija las claves con el nombre del ConfigMap para evitar colisiones |
-| `spring.config.import` | String | — | Declaración explícita de importación en Spring Boot 4.x |
+| Propiedad | Valor por defecto | Descripción |
+|---|---|---|
+| `spring.cloud.kubernetes.config.enabled` | `true` | Activa el PropertySource de ConfigMap |
+| `spring.cloud.kubernetes.config.name` | `${spring.application.name}` | Nombre del ConfigMap a cargar |
+| `spring.cloud.kubernetes.config.namespace` | namespace del pod | Namespace donde buscar el ConfigMap |
+| `spring.cloud.kubernetes.config.sources[]` | — | Lista de fuentes (nombre + namespace) para múltiples ConfigMaps |
+| `spring.cloud.kubernetes.config.fail-fast` | `false` | Lanza excepción si el ConfigMap no existe al arrancar |
+| `spring.cloud.kubernetes.config.use-name-as-prefix` | `false` | Prefija todas las propiedades con el nombre del ConfigMap |
+
+## Soporte de perfiles Spring
+
+Spring Cloud Kubernetes aplica soporte de perfiles al cargar ConfigMaps: además del ConfigMap con el nombre base (`my-service`), también carga automáticamente el ConfigMap `my-service-{profile}` si existe. Las propiedades del ConfigMap de perfil sobrescriben las del ConfigMap base, respetando la misma lógica de precedencia que los perfiles de Spring Boot.
+
+Por ejemplo, con `spring.profiles.active=prod` la aplicación cargará primero `my-service` y luego sobreescribirá con `my-service-prod`. Esto permite tener configuración común en el ConfigMap base y configuración específica de entorno en los ConfigMaps de perfil, sin duplicar propiedades.
 
 ## Buenas y malas prácticas
 
-**Hacer:**
+**Buenas prácticas:**
+- Usar el formato `application.yml` embebido en el ConfigMap para mantener la misma estructura de propiedades que en el fichero local, facilitando la portabilidad entre entornos locales y K8s.
+- Usar `spring.cloud.kubernetes.config.sources` cuando se necesitan múltiples ConfigMaps (p.ej., uno compartido de infraestructura y uno específico del servicio).
+- Activar `fail-fast: true` en producción para detectar errores de RBAC o nombre incorrecto durante el arranque, en lugar de ejecutarse con valores por defecto silenciosamente.
+- Aprovechar el soporte de perfiles (`my-service-prod`) para separar configuración de entorno sin duplicar propiedades.
 
-- Separar la configuración por responsabilidad en varios ConfigMaps (uno por servicio dependiente, uno por parámetros de negocio) y listarlos en `config.sources`: facilita los permisos RBAC granulares y el versionado independiente de cada ConfigMap.
-- Usar `application-{profile}.properties` dentro del ConfigMap para sobrescribir valores por entorno: mantiene un único ConfigMap por aplicación en lugar de un ConfigMap por entorno.
-- Usar `config.paths` cuando la aplicación necesita ficheros de configuración no-propiedades (por ejemplo, un fichero `logback.xml` o un JSON de configuración): el volumen montado soporta cualquier formato.
-- Activar `use-name-as-prefix=true` cuando se leen varios ConfigMaps con claves del mismo nombre: evita que un ConfigMap sobrescriba silenciosamente las propiedades de otro.
+**Malas prácticas:**
+- Almacenar credenciales o secretos en un ConfigMap: los ConfigMaps no están cifrados; las credenciales deben ir en Secrets de Kubernetes.
+- Usar `config.name` y `config.sources` a la vez: la propiedad `sources` tiene precedencia y puede generar confusión sobre qué se carga.
+- Ignorar los permisos RBAC sobre `configmaps`: sin `get` el arranque falla con `403 Forbidden`.
 
-**Evitar:**
+> [ADVERTENCIA] La precedencia de las propiedades del ConfigMap es más alta que `application.properties` local pero más baja que las variables de entorno del sistema. Si una variable de entorno sobreescribe una propiedad del ConfigMap, el comportamiento puede ser inesperado.
 
-- Poner credenciales (contraseñas, tokens API) en ConfigMaps: Kubernetes los almacena en texto plano en etcd. Usar Secrets PropertySource (ver [9.4 Secrets PropertySource](sc-kubernetes-secrets.md)).
-- Depender de que el ConfigMap siempre esté presente en el arranque sin gestión de errores: si el ConfigMap no existe y `config.enabled=true`, la aplicación lanza `IllegalStateException` durante la inicialización del `Environment`. Usar `spring.cloud.kubernetes.config.fail-fast=false` solo en desarrollo.
-- Usar claves con puntos en el nombre del ConfigMap data (ej: `mi.clave.profunda`) sin verificar que el tipo de destino en `@ConfigurationProperties` los resuelva correctamente: SCK los convierte con la misma lógica de relaxed binding de Spring Boot.
+## Verificación y práctica
+
+> [EXAMEN] 1. ¿Cómo se configura Spring Cloud Kubernetes para leer propiedades desde un ConfigMap llamado `shared-config` en el namespace `infrastructure` además del ConfigMap propio del servicio?
+
+> [EXAMEN] 2. ¿Qué nombre de ConfigMap carga automáticamente Spring Cloud Kubernetes cuando `spring.profiles.active=staging` y `spring.application.name=order-service`?
+
+> [EXAMEN] 3. ¿Cuál es la diferencia entre declarar propiedades en un ConfigMap como `application.properties` embebido versus como pares clave-valor directos en `data:`?
+
+> [EXAMEN] 4. ¿Qué ocurre si `spring.cloud.kubernetes.config.fail-fast=false` y el ConfigMap indicado no existe en el namespace?
+
+> [EXAMEN] 5. ¿Qué precedencia tienen las propiedades del ConfigMap respecto a las de `application.yml` local y las variables de entorno?
 
 ---
 
-← [9.1 Setup y starters de Spring Cloud Kubernetes](sc-kubernetes-setup.md) | [Índice (README.md)](README.md) | [9.3 ConfigMap PropertySource — recarga dinámica](sc-kubernetes-configmap-reload.md) →
+← [9.1 Motivación y Arquitectura](sc-kubernetes-arquitectura.md) | [Índice](README.md) | [9.3 Secrets como PropertySource](sc-kubernetes-secrets.md) →

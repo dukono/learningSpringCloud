@@ -1,152 +1,204 @@
-# 4.7 Logging — Logger.Level, diagnóstico de tráfico HTTP y uso seguro en producción
+# 3.4.1 Logger.Level y configuración dual de logging
 
-<- [4.6 Interceptores y observabilidad](sc-feign-interceptores.md) | [Índice](README.md) | [4.8 Manejo de errores HTTP](sc-feign-errores.md) ->
+← [3.3 Codecs — Encoder y Decoder en Feign](sc-feign-codecs.md) | [Índice](README.md) | [3.4.2 ErrorDecoder — manejo de errores HTTP](sc-feign-errores.md) →
 
 ---
 
 ## Introducción
 
-El logging de Feign registra el tráfico HTTP de cada cliente: URL, método, cabeceras y cuerpo de la petición y la respuesta. Es la herramienta de diagnóstico más directa cuando un cliente Feign se comporta de forma inesperada: un timeout silencioso, una cabecera que no llega al servidor o una deserialización fallida se hacen visibles en los logs de Feign antes de que aparezcan como errores de negocio.
+El logging de Feign responde a una necesidad concreta en el desarrollo y diagnóstico de clientes HTTP declarativos: ver exactamente qué petición se está enviando y qué respuesta se está recibiendo, sin necesidad de capturar tráfico de red. Feign tiene su propio sistema de logging con cuatro niveles de verbosidad (`Logger.Level`), pero existe una trampa crítica: configurar `Logger.Level` en Feign no produce ningún output si el logger del framework (SLF4J/Logback) no está configurado a nivel `DEBUG` para el paquete del cliente. Este requisito de **configuración dual** es uno de los conceptos más frecuentes en el examen de certificación Spring Professional.
 
-El control del nivel de log es esencial porque el nivel máximo (`FULL`) loggea el cuerpo completo de todas las peticiones y respuestas. En producción, esto puede exponer tokens de autenticación, datos personales y secretos de negocio en los sistemas de log. La configuración debe ajustarse por entorno: `FULL` en desarrollo y staging, `BASIC` o `NONE` en producción.
+## Arquitectura del logging en Feign
 
----
-
-## Diagrama: niveles de Logger.Level y lo que registran
-
-La siguiente tabla muestra exactamente qué información registra cada nivel.
+Feign delega la emisión de logs en el logger del framework (SLF4J/Logback), pero primero aplica su propio filtro de verbosidad. Son dos capas independientes que deben estar alineadas.
 
 ```
- Logger.Level.NONE    → sin output (default)
-
- Logger.Level.BASIC   → [método] [URL] → [status] [ms]
-   ---> GET http://catalog-service/api/products/123
-   <--- 200 (45ms)
-
- Logger.Level.HEADERS → BASIC + cabeceras de petición y respuesta
-   ---> GET http://catalog-service/api/products/123
-   Accept: application/json
-   X-Correlation-Id: abc-123
-   <--- 200 (45ms)
-   Content-Type: application/json
-   X-Request-Id: srv-456
-
- Logger.Level.FULL    → HEADERS + cuerpo de petición y respuesta
-   ---> GET http://catalog-service/api/products/123
-   Accept: application/json
-   [sin cuerpo en GET]
-   <--- 200 (45ms)
-   Content-Type: application/json
-   {"productId":"123","name":"Widget","price":9.99}
+  Petición/Respuesta HTTP
+          │
+          ▼
+  ┌───────────────────┐
+  │  feign.Logger     │  Capa 1 — Feign decide QUÉ loguear (Logger.Level)
+  │  (Logger.Level)   │  NONE: nada | BASIC: método+URL+status
+  │                   │  HEADERS: + cabeceras | FULL: + cuerpo
+  └────────┬──────────┘
+           │ Si hay algo que loguear...
+           ▼
+  ┌───────────────────┐
+  │  SLF4J / Logback  │  Capa 2 — Framework decide SI lo imprime (nivel DEBUG)
+  │  logging.level    │  Si el nivel del paquete es INFO o superior → silencio
+  │  = DEBUG          │  Solo con DEBUG el mensaje llega a la consola/archivo
+  └───────────────────┘
+           │
+           ▼
+      Output visible
 ```
-
----
 
 ## Ejemplo central
 
-El siguiente ejemplo muestra las dos formas de configurar el nivel de log: mediante propiedades YAML (recomendado para poder cambiarla sin recompilar) y mediante clase `@Configuration` Java (para control programático).
-
-**Configuración por YAML (recomendada en producción):**
-
-```yaml
-# application.yml
-feign:
-  client:
-    config:
-      default:
-        logger-level: BASIC        # Nivel global para todos los clientes
-
-      payment-service:
-        logger-level: HEADERS      # Más detalle en el cliente crítico de pagos
-
-# IMPORTANTE: Feign escribe sus logs a nivel DEBUG del logger de la interfaz.
-# Sin esta configuración del logger SLF4J, los logs de Feign no aparecen
-# aunque logger-level sea FULL.
-logging:
-  level:
-    com.example.orderservice.client: DEBUG   # nivel DEBUG para el paquete de los clientes Feign
-    # O por cliente individual:
-    # com.example.orderservice.client.CatalogReadClient: DEBUG
-```
-
-**Configuración por clase @Configuration Java (para control programático):**
+El siguiente ejemplo muestra la configuración completa del logging de Feign: registro del `Logger.Level` mediante clase Java, registro equivalente por propiedades, y la configuración de SLF4J obligatoria para ver el output.
 
 ```java
-package com.example.orderservice.config;
+// Opción A: configuración por clase Java
+package com.example.demo.feign.config;
 
 import feign.Logger;
 import org.springframework.context.annotation.Bean;
 
-/**
- * Configuración local: aplica solo al cliente que declare
- * configuration = PaymentFeignConfig.class
- */
-public class PaymentFeignConfig {
+// Sin @Configuration para que no contamine el scan global
+public class DebugFeignConfig {
 
     @Bean
     public Logger.Level feignLoggerLevel() {
-        // Leer de propiedades de entorno para poder cambiar sin recompilar
-        // En producción, devolver Logger.Level.BASIC o NONE
-        return Logger.Level.HEADERS;
-    }
-
-    /**
-     * Logger que redirige el output de Feign al sistema de logging SLF4J.
-     * Spring Cloud registra automáticamente Slf4jLogger si SLF4J está en el classpath.
-     * Solo es necesario sobreescribirlo para usar un logger personalizado.
-     */
-    @Bean
-    public Logger feignLogger() {
-        return new feign.slf4j.Slf4jLogger(PaymentFeignConfig.class);
+        // FULL: registra método, URL, headers de petición y respuesta, cuerpo de ambos
+        // Usar solo en desarrollo — en producción puede exponer datos sensibles
+        return Logger.Level.FULL;
     }
 }
 ```
 
-> [ADVERTENCIA] Feign usa el **nombre completo de la interfaz** como nombre del logger SLF4J, no el nombre de la clase de configuración. Para que aparezcan los logs, el nivel DEBUG debe estar activado en el paquete donde vive la interfaz `@FeignClient`, no en el paquete de configuración.
+```java
+// Cliente que usa la configuración de logging de debug
+package com.example.demo.clients;
+
+import com.example.demo.dto.ProductResponse;
+import com.example.demo.feign.config.DebugFeignConfig;
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+
+@FeignClient(
+    name = "product-service",
+    configuration = DebugFeignConfig.class
+)
+public interface ProductClient {
+
+    @GetMapping("/products/{id}")
+    ProductResponse getProduct(@PathVariable("id") Long id);
+}
+```
+
+```yaml
+# application.yml — Opción B: Logger.Level por propiedades (equivalente a la clase Java)
+spring:
+  cloud:
+    openfeign:
+      client:
+        config:
+          product-service:
+            loggerLevel: FULL        # NONE | BASIC | HEADERS | FULL
+
+          # Para todos los clientes:
+          default:
+            loggerLevel: BASIC
+
+# OBLIGATORIO: configuración del nivel del logger del framework
+# Sin esto, Logger.Level=FULL no produce NINGÚN output
+logging:
+  level:
+    # Opción 1: nivel por paquete donde viven los clientes Feign
+    com.example.demo.clients: DEBUG
+
+    # Opción 2: nivel por FQN del cliente específico
+    # com.example.demo.clients.ProductClient: DEBUG
+
+    # Opción 3: todos los loggers de Feign (más verboso, incluye internos)
+    # feign: DEBUG
+```
+
+```yaml
+# Configuración por perfil: diferente verbosidad en dev vs prod
+---
+spring:
+  config:
+    activate:
+      on-profile: dev
+logging:
+  level:
+    com.example.demo.clients: DEBUG
 
 ---
+spring:
+  config:
+    activate:
+      on-profile: prod
+spring:
+  cloud:
+    openfeign:
+      client:
+        config:
+          default:
+            loggerLevel: NONE      # sin logging en producción
+logging:
+  level:
+    com.example.demo.clients: INFO  # incluso si loggerLevel cambia, INFO silencia todo
+```
 
-## Tabla de elementos clave
+```
+# Ejemplo de output de cada nivel Logger.Level
 
-| Elemento | Tipo | Default | Descripción |
+# NONE (defecto): sin output
+
+# BASIC:
+[ProductClient#getProduct] ---> GET http://product-service/products/42 HTTP/1.1
+[ProductClient#getProduct] <--- HTTP/1.1 200 OK (234ms)
+
+# HEADERS:
+[ProductClient#getProduct] ---> GET http://product-service/products/42 HTTP/1.1
+[ProductClient#getProduct] Accept: application/json
+[ProductClient#getProduct] Content-Type: application/json
+[ProductClient#getProduct] ---> END HTTP (0-byte body)
+[ProductClient#getProduct] <--- HTTP/1.1 200 OK (234ms)
+[ProductClient#getProduct] Content-Type: application/json;charset=UTF-8
+[ProductClient#getProduct] <--- END HTTP (156-byte body)
+
+# FULL (incluye cuerpos):
+[ProductClient#getProduct] ---> GET http://product-service/products/42 HTTP/1.1
+[ProductClient#getProduct] Accept: application/json
+[ProductClient#getProduct] ---> END HTTP (0-byte body)
+[ProductClient#getProduct] <--- HTTP/1.1 200 OK (234ms)
+[ProductClient#getProduct] Content-Type: application/json;charset=UTF-8
+[ProductClient#getProduct] {"id":42,"name":"Widget Pro","price":29.99}
+[ProductClient#getProduct] <--- END HTTP (42-byte body)
+```
+
+## Tabla de niveles Logger.Level
+
+La elección del nivel afecta tanto a la visibilidad como al rendimiento, porque la serialización del cuerpo tiene un coste adicional:
+
+| Nivel | Registra | Rendimiento | Uso recomendado |
 |---|---|---|---|
-| `Logger.Level.NONE` | enum | valor por defecto | Sin logging; recomendado en producción salvo diagnóstico activo |
-| `Logger.Level.BASIC` | enum | — | Método HTTP, URL, código de respuesta y tiempo de ejecución |
-| `Logger.Level.HEADERS` | enum | — | BASIC + cabeceras de petición y respuesta |
-| `Logger.Level.FULL` | enum | — | HEADERS + cuerpo completo de petición y respuesta |
-| `feign.client.config.[c].logger-level` | YAML | heredado de `default` | Nivel de log por cliente vía propiedades |
-| `Logger.Level` bean en `@Configuration` | Java | — | Nivel de log por cliente vía clase de configuración |
-| `logging.level.[paquete]` | YAML | INFO | Nivel SLF4J del paquete; **debe ser DEBUG** para que Feign emita logs |
-| `feign.slf4j.Slf4jLogger` | clase | activo por defecto | Logger que redirige output de Feign a SLF4J |
-
----
+| `NONE` | Nada | Sin impacto | Producción por defecto |
+| `BASIC` | Método HTTP, URL, código de estado, tiempo de respuesta | Mínimo | Producción (monitorización) |
+| `HEADERS` | Todo lo de BASIC + headers de petición y respuesta | Bajo | Pre-producción, debugging de autenticación |
+| `FULL` | Todo lo de HEADERS + cuerpo de petición y respuesta | Moderado | Desarrollo, debugging local |
 
 ## Buenas y malas prácticas
 
-**Hacer:**
-- Mantener `logger-level: BASIC` en producción como nivel mínimo visible. El nivel `BASIC` solo registra método, URL, status y tiempo, suficiente para detectar errores HTTP sin exponer datos sensibles. El coste en rendimiento es despreciable.
-- Activar `FULL` solo en entornos no productivos o bajo demanda mediante un Config Server o propiedad de entorno. Con Spring Cloud Config, se puede cambiar el nivel en caliente sin reiniciar la aplicación si el cliente tiene `@RefreshScope`.
-- Verificar siempre que el nivel SLF4J del paquete de los clientes Feign está en `DEBUG`. Sin ese ajuste, la configuración de `logger-level` no produce ningún output, lo que lleva a la falsa conclusión de que el logging de Feign "no funciona".
+**Buenas prácticas:**
+- Usar `Logger.Level.NONE` (defecto) en producción para evitar exposición de datos sensibles y reducir I/O de logging.
+- Configurar `Logger.Level.BASIC` en producción si se quiere medir latencias de llamadas Feign sin exponer payloads.
+- Verificar siempre que `logging.level.<paquete>: DEBUG` esté activo en el perfil donde se activa `HEADERS` o `FULL`.
+- Activar `FULL` solo para el cliente específico bajo diagnóstico, no globalmente.
 
-**Evitar:**
-- Usar `Logger.Level.FULL` en servicios que manejan datos personales o tokens OAuth2. El cuerpo de la respuesta puede contener PII o credenciales que quedarán permanentemente en los sistemas de log y pueden violar GDPR/PCI-DSS.
-- Confiar en el logging de Feign como única estrategia de diagnóstico en producción. Los logs de nivel `FULL` tienen un coste de serialización no trivial en servicios de alto volumen: cada respuesta se convierte a `String` para el log aunque no haya ningún appender configurado a nivel `DEBUG`. En esos casos, preferir el tracing distribuido (Micrometer) que opera con muestreo.
+**Malas prácticas:**
+- Activar `Logger.Level.FULL` en producción: puede loguear tokens de autorización, datos de usuario, etc.
+- Configurar `loggerLevel: FULL` sin `logging.level: DEBUG` y no entender por qué no aparece nada.
+- Usar `feign: DEBUG` en producción como nivel global: genera volumen masivo de logs internos de Feign.
+
+> [ADVERTENCIA] `Logger.Level.FULL` loguea el cuerpo completo de petición y respuesta. Si los payloads contienen contraseñas, tokens JWT, datos personales (PII) o información sensible, este nivel puede provocar una brecha de seguridad en los logs. Nunca activar `FULL` en producción sin redacción de datos sensibles.
+
+## Verificación y práctica
+
+> [EXAMEN] **1.** Configuras `loggerLevel: FULL` para el cliente `product-service` pero no aparece ningún log de Feign en la consola. ¿Cuál es la causa y qué configuración adicional es necesaria?
+
+> [EXAMEN] **2.** ¿Qué nivel `Logger.Level` registra el tiempo que tarda la respuesta HTTP? ¿Y qué nivel incluye el cuerpo de la respuesta?
+
+> [EXAMEN] **3.** ¿Cuál es el valor por defecto de `Logger.Level` si no se configura explícitamente?
+
+> [EXAMEN] **4.** ¿Es posible tener `Logger.Level.FULL` para `inventory-service` y `Logger.Level.NONE` para `payment-service` simultáneamente? Explica cómo.
+
+> [EXAMEN] **5.** ¿Por qué activar `Logger.Level.FULL` en producción es un riesgo de seguridad?
 
 ---
 
-## Comparación: niveles de Logger.Level por entorno
-
-La siguiente tabla resume la configuración recomendada según el entorno y el tipo de servicio.
-
-| Entorno | Servicio normal | Servicio con datos sensibles | Diagnóstico activo |
-|---|---|---|---|
-| Desarrollo local | `FULL` | `HEADERS` | `FULL` |
-| Staging / Pre-producción | `HEADERS` | `BASIC` | `FULL` temporal |
-| Producción (estado normal) | `BASIC` | `NONE` | — |
-| Producción (diagnóstico puntual) | `HEADERS` temporal | `BASIC` temporal | `HEADERS` temporal |
-
-> [EXAMEN] En entrevista: "Tengo `logger-level: FULL` en `application.yml` pero no veo ningún log de Feign. ¿Qué puede estar pasando?" Respuesta modelo: el nivel SLF4J del paquete de los clientes Feign no está en `DEBUG`. Feign escribe sus logs al nivel `DEBUG` del logger de la interfaz; si el logging framework está configurado en `INFO` o superior para ese paquete, los mensajes se descartan antes de llegar al appender.
-
----
-
-<- [4.6 Interceptores y observabilidad](sc-feign-interceptores.md) | [Índice](README.md) | [4.8 Manejo de errores HTTP](sc-feign-errores.md) ->
+← [3.3 Codecs — Encoder y Decoder en Feign](sc-feign-codecs.md) | [Índice](README.md) | [3.4.2 ErrorDecoder — manejo de errores HTTP](sc-feign-errores.md) →

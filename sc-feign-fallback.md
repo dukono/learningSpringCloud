@@ -1,249 +1,274 @@
-# 4.9 Fallback y Circuit Breaker — fallback estático, FallbackFactory y feign.circuitbreaker.enabled
+# 3.7 Integración con Resilience4j — Fallback y FallbackFactory
 
-<- [4.8 Manejo de errores HTTP](sc-feign-errores.md) | [Índice](README.md) | [4.10 Retryer](sc-feign-retryer.md) ->
+← [3.6 Integración con Eureka y Spring Cloud LoadBalancer](sc-feign-eureka-lb.md) | [Índice](README.md) | [3.8 Timeouts y cliente HTTP subyacente](sc-feign-http-client.md) →
 
 ---
 
 ## Introducción
 
-Un cliente Feign sin fallback propaga cualquier excepción directamente al llamador. Si el servicio remoto está caído o supera el timeout, el error llega hasta el controlador HTTP del consumidor y se convierte en un 500 para el usuario final. En arquitecturas de microservicios, este comportamiento hace que la disponibilidad de un servicio dependa de la disponibilidad de todos sus dependencias: un fallo en cadena que puede derribar el sistema completo.
+La integración de Feign con Resilience4j permite añadir circuit breaker y fallback a los clientes HTTP declarativos sin código de infraestructura en el servicio consumidor. Cuando un servicio remoto falla de forma repetida, el circuit breaker abre y en lugar de propagar la excepción al código de negocio, invoca automáticamente una implementación alternativa (fallback) que devuelve una respuesta por defecto, un valor en caché, o un comportamiento degradado. Este mecanismo protege la disponibilidad del sistema completo ante fallos en cascada. La diferencia entre `fallback` y `FallbackFactory` es que el último permite conocer la causa exacta del fallo (el `Throwable`), lo que habilita distintos comportamientos según el tipo de error.
 
-El fallback de Feign permite declarar una respuesta degradada para cuando el cliente no puede completar la llamada. Feign delegará en la implementación de fallback en lugar de propagar la excepción, devolviendo datos por defecto, caché o un mensaje de error controlado. El fallback no suaviza el problema; lo hace visible y manejable.
+> [PREREQUISITO] Para activar esta integración se requiere `spring.cloud.openfeign.circuitbreaker.enabled=true` en `application.yml`. Sin esta propiedad, los atributos `fallback` y `fallbackFactory` de `@FeignClient` son ignorados aunque estén presentes.
 
-El fallback de Feign requiere que el Circuit Breaker esté activo (`feign.circuitbreaker.enabled=true`). Sin Circuit Breaker, el atributo `fallback` en `@FeignClient` se ignora silenciosamente. La configuración de umbrales del Circuit Breaker (número de fallos, tiempo de espera en estado OPEN) se realiza en el módulo Resilience4j; este fichero solo documenta la configuración del lado Feign.
+## Flujo de integración con circuit breaker
 
-> [ADVERTENCIA] `feign.circuitbreaker.enabled=true` activa la integración con Spring Cloud Circuit Breaker, que delega en Resilience4j si `spring-cloud-starter-circuitbreaker-resilience4j` está en el classpath. Sin esa dependencia, el Circuit Breaker de Feign no tiene implementación y la activación no produce efecto.
-
----
-
-## Diagrama: flujo de llamada con fallback activo
-
-El siguiente diagrama muestra en qué punto del pipeline de Feign se activa el fallback.
+El circuit breaker envuelve cada método del cliente Feign en un `CircuitBreaker` de Resilience4j. Si el método lanza una excepción o supera el timeout, el circuit breaker registra el fallo.
 
 ```
- Llamada al método de la interfaz @FeignClient
-         │
-         ▼
- Spring Cloud Circuit Breaker (Resilience4j)
-         │
-         ├─ Estado CLOSED → permite la llamada
-         │       │
-         │       ▼
-         │   Feign proxy → HTTP → Servicio remoto
-         │       │
-         │       ├─ Éxito → devuelve resultado al llamador
-         │       └─ Fallo (excepción / timeout)
+  Llamada a método de interfaz Feign
+              │
+              ▼
+  ┌─────────────────────────────────┐
+  │  CircuitBreaker Resilience4j    │
+  │  (generado para cada método)    │
+  │                                 │
+  │  Estado CLOSED: ejecuta Feign   │
+  │  Estado OPEN:   salta directo   │
+  │                 al fallback     │
+  └──────────────┬──────────────────┘
+                 │
+         ┌───────┴───────┐
+    Éxito│               │Fallo / Open
          │               │
-         │               ▼
-         │           ¿fallback declarado?
-         │             Sí → FallbackFactory.create(causa).método()
-         │             No → excepción se propaga al llamador
-         │
-         ├─ Estado OPEN → cortocircuito inmediato
-         │               │
-         │               ▼
-         │           FallbackFactory.create(excepción).método()
-         │
-         └─ Estado HALF-OPEN → permite llamadas de prueba
+         ▼               ▼
+  Resultado normal  ┌────────────────┐
+                    │    Fallback     │
+                    │ (implementación │
+                    │  alternativa)   │
+                    └────────────────┘
 ```
-
----
 
 ## Ejemplo central
 
-El siguiente ejemplo muestra los dos mecanismos de fallback: el fallback estático (clase que implementa la interfaz) y el `FallbackFactory` (que recibe la causa del fallo).
+El siguiente ejemplo muestra las dos estrategias de fallback: la simple (clase que implementa la interfaz) y la de fábrica con acceso al `Throwable`. Incluye la configuración necesaria en `application.yml`.
 
-**Interfaz @FeignClient con ambos tipos de fallback declarados (solo uno puede estar activo):**
+```yaml
+# application.yml — habilitar integración Feign + Circuit Breaker
+spring:
+  cloud:
+    openfeign:
+      circuitbreaker:
+        enabled: true            # OBLIGATORIO para que fallback/fallbackFactory funcionen
+        # group: true            # agrupa todos los métodos del cliente en un único circuit breaker
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      # El nombre del circuit breaker por defecto es: NombreCliente#nombreMetodo(TipoParam)
+      # Con group=true el nombre es simplemente el nombre del cliente Feign
+      InventoryClient#getItem(Long):
+        slidingWindowSize: 10
+        failureRateThreshold: 50
+        waitDurationInOpenState: 10s
+        permittedNumberOfCallsInHalfOpenState: 3
+      InventoryClient#searchItems(String):
+        slidingWindowSize: 5
+        failureRateThreshold: 60
+```
 
 ```java
-package com.example.orderservice.client;
+// Interfaz del cliente Feign con fallback simple
+package com.example.orders.clients;
 
-import com.example.orderservice.dto.ProductDto;
-import com.example.orderservice.feign.CatalogClientFallback;
-import com.example.orderservice.feign.CatalogClientFallbackFactory;
+import com.example.orders.dto.InventoryResponse;
+import com.example.orders.feign.fallback.InventoryFallback;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestParam;
 
-import java.util.Collections;
 import java.util.List;
 
-// Opción A: fallback estático
 @FeignClient(
-        name     = "catalog-service",
-        contextId = "catalogWithFallback",
-        fallback = CatalogClientFallback.class
+    name = "inventory-service",
+    path = "/api/v1",
+    fallback = InventoryFallback.class   // clase que implementa esta interfaz
 )
-public interface CatalogClient {
-    @GetMapping("/api/products/{productId}")
-    ProductDto getProduct(@PathVariable("productId") String productId);
+public interface InventoryClient {
 
-    @GetMapping("/api/products")
-    List<ProductDto> listProducts();
+    @GetMapping("/items/{id}")
+    InventoryResponse getItem(@PathVariable("id") Long id);
+
+    @GetMapping("/items")
+    List<InventoryResponse> searchItems(@RequestParam("category") String category);
 }
 ```
 
-**CatalogClientFallback.java — fallback estático:**
-
 ```java
-package com.example.orderservice.feign;
+// Fallback simple: implementa la interfaz del cliente
+// Retorna valores por defecto sin conocer la causa del fallo
+package com.example.orders.feign.fallback;
 
-import com.example.orderservice.client.CatalogClient;
-import com.example.orderservice.dto.ProductDto;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.example.orders.clients.InventoryClient;
+import com.example.orders.dto.InventoryResponse;
 import org.springframework.stereotype.Component;
 
 import java.util.Collections;
 import java.util.List;
 
-/**
- * Fallback estático: no tiene acceso a la causa del fallo.
- * Útil cuando la respuesta degradada es siempre la misma
- * independientemente del tipo de error.
- *
- * @Component es necesario para que Spring lo registre como bean
- * y Feign pueda inyectarlo en el proxy.
- */
-@Component
-public class CatalogClientFallback implements CatalogClient {
-
-    private static final Logger log = LoggerFactory.getLogger(CatalogClientFallback.class);
+@Component  // DEBE ser un bean de Spring para que Feign lo inyecte
+public class InventoryFallback implements InventoryClient {
 
     @Override
-    public ProductDto getProduct(String productId) {
-        log.warn("Fallback activado para getProduct({}): catalog-service no disponible", productId);
-        // Devolver un DTO vacío o de caché en lugar de propagar la excepción
-        return ProductDto.unavailable(productId);
+    public InventoryResponse getItem(Long id) {
+        // Respuesta degradada: ítem vacío con stock 0
+        return new InventoryResponse(id, "UNAVAILABLE", 0);
     }
 
     @Override
-    public List<ProductDto> listProducts() {
-        log.warn("Fallback activado para listProducts(): devolviendo lista vacía");
+    public List<InventoryResponse> searchItems(String category) {
+        // Lista vacía como respuesta degradada
         return Collections.emptyList();
     }
 }
 ```
 
-**CatalogClientFallbackFactory.java — FallbackFactory con acceso a la causa:**
+```java
+// Interfaz del cliente Feign con FallbackFactory (acceso al Throwable)
+package com.example.orders.clients;
+
+import com.example.orders.dto.PaymentRequest;
+import com.example.orders.dto.PaymentResponse;
+import com.example.orders.feign.fallback.PaymentFallbackFactory;
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+
+@FeignClient(
+    name = "payment-service",
+    path = "/api/v1",
+    fallbackFactory = PaymentFallbackFactory.class   // fábrica con acceso al Throwable
+)
+public interface PaymentClient {
+
+    @PostMapping("/payments")
+    PaymentResponse processPayment(@RequestBody PaymentRequest request);
+
+    @PostMapping("/payments/refund")
+    PaymentResponse refund(@RequestBody PaymentRequest request);
+}
+```
 
 ```java
-package com.example.orderservice.feign;
+// FallbackFactory: permite distintos fallbacks según el tipo de error
+package com.example.orders.feign.fallback;
 
-import com.example.orderservice.client.CatalogClient;
-import com.example.orderservice.dto.ProductDto;
+import com.example.orders.clients.PaymentClient;
+import com.example.orders.dto.PaymentRequest;
+import com.example.orders.dto.PaymentResponse;
+import feign.FeignException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cloud.openfeign.FallbackFactory;
 import org.springframework.stereotype.Component;
 
-import java.util.Collections;
-import java.util.List;
+@Component  // DEBE ser un bean de Spring
+public class PaymentFallbackFactory implements FallbackFactory<PaymentClient> {
 
-/**
- * FallbackFactory: recibe la excepción que causó el fallo.
- * Permite diferenciar el comportamiento según el tipo de error:
- * - Si es un 404, el producto genuinamente no existe.
- * - Si es un 503, el servicio está caído.
- * - Si es un timeout, puede valer con datos de caché.
- *
- * Usar FallbackFactory en lugar de fallback estático cuando
- * la respuesta degradada depende de la causa del fallo.
- */
-@Component
-public class CatalogClientFallbackFactory implements FallbackFactory<CatalogClient> {
-
-    private static final Logger log = LoggerFactory.getLogger(CatalogClientFallbackFactory.class);
+    private static final Logger log = LoggerFactory.getLogger(PaymentFallbackFactory.class);
 
     @Override
-    public CatalogClient create(Throwable cause) {
-        // Loggear la causa aquí; el fallback estático no tiene acceso a ella
-        log.error("Fallback activado para CatalogClient. Causa: {}", cause.getMessage());
+    public PaymentClient create(Throwable cause) {
+        // 'cause' es la excepción original que provocó el fallo
+        log.warn("Creando fallback para payment-service. Causa: {}", cause.getMessage());
 
-        return new CatalogClient() {
+        return new PaymentClient() {
+
             @Override
-            public ProductDto getProduct(String productId) {
-                if (cause instanceof feign.FeignException.NotFound) {
-                    // 404 real: el producto no existe; no es un error del servicio
-                    return null;  // o lanzar ProductNotFoundException aquí
+            public PaymentResponse processPayment(PaymentRequest request) {
+                if (cause instanceof FeignException.ServiceUnavailable) {
+                    // 503: el servicio no está disponible temporalmente
+                    log.error("payment-service no disponible. Redirigiendo a cola de reintentos.");
+                    return PaymentResponse.pendingRetry(request.orderId());
                 }
-                // Para cualquier otro error: devolver DTO degradado
-                return ProductDto.unavailable(productId);
+
+                if (cause instanceof FeignException.GatewayTimeout) {
+                    // 504: timeout de gateway
+                    log.error("Timeout en payment-service para orden: {}", request.orderId());
+                    return PaymentResponse.timeout(request.orderId());
+                }
+
+                // Para cualquier otro error: rechazar el pago de forma segura
+                log.error("Error inesperado en payment-service: {}", cause.getMessage(), cause);
+                return PaymentResponse.failed(request.orderId(), "Servicio de pago no disponible");
             }
 
             @Override
-            public List<ProductDto> listProducts() {
-                return Collections.emptyList();
+            public PaymentResponse refund(PaymentRequest request) {
+                // Refund fallback: encolar para procesamiento manual
+                log.warn("Reembolso encolado para procesamiento manual: {}", request.orderId());
+                return PaymentResponse.queued(request.orderId());
             }
         };
     }
 }
 ```
 
-**Interfaz usando FallbackFactory en lugar de fallback estático:**
-
 ```java
-@FeignClient(
-        name            = "catalog-service",
-        contextId       = "catalogWithFactory",
-        fallbackFactory = CatalogClientFallbackFactory.class  // usa factory en lugar de fallback
-)
-public interface CatalogClientWithFactory {
-    @GetMapping("/api/products/{productId}")
-    ProductDto getProduct(@PathVariable("productId") String productId);
+// DTOs necesarios para el ejemplo (simplificados)
+package com.example.orders.dto;
 
-    @GetMapping("/api/products")
-    List<ProductDto> listProducts();
+public record InventoryResponse(Long id, String name, int stock) {}
+
+public record PaymentRequest(String orderId, double amount) {}
+
+public record PaymentResponse(
+    String orderId,
+    String status,
+    String message
+) {
+    public static PaymentResponse pendingRetry(String orderId) {
+        return new PaymentResponse(orderId, "PENDING_RETRY", null);
+    }
+    public static PaymentResponse timeout(String orderId) {
+        return new PaymentResponse(orderId, "TIMEOUT", "Gateway timeout");
+    }
+    public static PaymentResponse failed(String orderId, String reason) {
+        return new PaymentResponse(orderId, "FAILED", reason);
+    }
+    public static PaymentResponse queued(String orderId) {
+        return new PaymentResponse(orderId, "QUEUED", "Procesamiento manual");
+    }
 }
 ```
 
-**application.yml — activación del Circuit Breaker para Feign:**
+## Tabla comparativa: fallback vs FallbackFactory
 
-```yaml
-feign:
-  circuitbreaker:
-    enabled: true   # activa la integración con Spring Cloud Circuit Breaker
-
-# La configuración de umbrales del Circuit Breaker se gestiona en Resilience4j:
-# Ver módulo sc-circuitbreaker para configuración avanzada de estados y transiciones.
-resilience4j:
-  circuitbreaker:
-    instances:
-      catalog-service:          # nombre del circuito = name del @FeignClient
-        sliding-window-size: 10
-        failure-rate-threshold: 50
-        wait-duration-in-open-state: 10s
-```
-
-> [CONCEPTO] Cuando `FallbackFactory` y `fallback` se declaran en el mismo `@FeignClient`, Spring Cloud usa `fallbackFactory` y el `fallback` se ignora. Los dos atributos son mutuamente excluyentes; si se declaran ambos, no hay error en arranque pero el comportamiento puede ser confuso.
-
----
-
-## Tabla de elementos clave
-
-| Elemento | Tipo | Descripción |
+| Característica | `fallback` | `fallbackFactory` |
 |---|---|---|
-| `feign.circuitbreaker.enabled` | `boolean` | `true` para activar CB en todos los clientes Feign |
-| `fallback` | `Class` en `@FeignClient` | Clase que implementa la interfaz; sin acceso a la causa |
-| `fallbackFactory` | `Class` en `@FeignClient` | `FallbackFactory<T>`; recibe `Throwable` causa del fallo |
-| `FallbackFactory<T>` | interfaz | Fábrica que crea una instancia de fallback por cada fallo |
-| `@Component` en fallback | — | Obligatorio para que Spring registre el bean de fallback |
-| Nombre del circuito | `String` | Por defecto: `name` del `@FeignClient`; configurable en Resilience4j |
-
----
+| Atributo en `@FeignClient` | `fallback = Clase.class` | `fallbackFactory = Fabrica.class` |
+| Acceso al `Throwable` | No | Sí — método `create(Throwable)` |
+| Lógica diferenciada por error | No (misma respuesta siempre) | Sí (distinto comportamiento por tipo de error) |
+| Complejidad de implementación | Baja | Media |
+| Casos de uso | Respuestas de caché/default simples | Logging contextual, circuit abierto vs timeout vs 503 |
+| Requerimiento de registro | `@Component` | `@Component` |
 
 ## Buenas y malas prácticas
 
-**Hacer:**
-- Usar `FallbackFactory` en lugar de fallback estático cuando el comportamiento degradado depende del tipo de error. Un 404 semántico ("el producto no existe") debe tratarse diferente a un 503 ("el servicio no está disponible"). El fallback estático no puede distinguirlos.
-- Loggear la causa en `FallbackFactory.create(cause)`, no dentro de los métodos del fallback. El `create` se invoca una vez por fallo; los métodos del fallback pueden invocarse múltiples veces si el llamador reintenta a través de Spring Retry. Loggear en `create` garantiza un único mensaje por evento de fallo.
-- Indicar en los logs del fallback el método afectado y la causa. En producción, el fallback activo es una señal de degradación; los logs son la única evidencia de qué servicio está fallando y con qué error.
+**Buenas prácticas:**
+- Usar `FallbackFactory` siempre que se necesite diferenciar el comportamiento según el tipo de error (timeout vs 503 vs error de red).
+- Siempre registrar los fallbacks como `@Component`: sin registro en el contexto Spring, Feign lanzará `NoSuchBeanDefinitionException` en arranque.
+- Loguear el `cause` en el fallback para mantener visibilidad del error original.
 
-**Evitar:**
-- Absorber todas las excepciones en el fallback sin registrarlas. La práctica de devolver silenciosamente un objeto vacío sin log enmascara fallos reales: el sistema parece funcionar pero está devolviendo datos incorrectos a los usuarios.
-- Olvidar añadir `@Component` a la clase de fallback o `FallbackFactory`. Feign busca el bean en el `ApplicationContext`; si no está registrado, lanza `BeanCreationException` en arranque con un mensaje críptico que no menciona el fallback como causa.
-- Configurar `feign.circuitbreaker.enabled=true` sin añadir la dependencia de Resilience4j al classpath. El comportamiento en ese caso es que el Circuit Breaker no tiene implementación y los fallos no se contabilizan: el fallback nunca se activa por apertura del circuito, solo por errores individuales.
+**Malas prácticas:**
+- Hacer en el fallback operaciones que también pueden fallar (llamadas a base de datos, otras llamadas HTTP) sin protección adicional.
+- Asumir que el fallback solo se invoca cuando el circuit está abierto: también se invoca ante cualquier excepción del cliente Feign mientras el circuit está cerrado.
+- Usar `fallback` (simple) cuando se necesita distinguir entre un fallo de red y un 503: la información del `Throwable` se pierde.
+
+> [ADVERTENCIA] El fallback se invoca tanto cuando el circuito está `OPEN` como cuando se produce cualquier excepción durante la ejecución del método Feign (incluyendo cuando el circuito está `CLOSED`). No asumir que el fallback solo actúa con el circuit breaker abierto.
+
+## Verificación y práctica
+
+> [EXAMEN] **1.** ¿Qué propiedad debe estar habilitada en `application.yml` para que los atributos `fallback` y `fallbackFactory` de `@FeignClient` surtan efecto?
+
+> [EXAMEN] **2.** ¿Qué debe implementar la clase especificada en el atributo `fallback` de `@FeignClient`?
+
+> [EXAMEN] **3.** ¿Cuándo es preferible usar `FallbackFactory` en lugar de `fallback` directo? Describe un escenario concreto.
+
+> [EXAMEN] **4.** Si el fallback o la clase que implementa `FallbackFactory` no está registrada como bean Spring (`@Component`), ¿qué error ocurre y cuándo?
+
+> [EXAMEN] **5.** ¿Se invoca el fallback únicamente cuando el circuit breaker está en estado OPEN, o también en otras situaciones? Explica la diferencia.
 
 ---
 
-<- [4.8 Manejo de errores HTTP](sc-feign-errores.md) | [Índice](README.md) | [4.10 Retryer](sc-feign-retryer.md) ->
+← [3.6 Integración con Eureka y Spring Cloud LoadBalancer](sc-feign-eureka-lb.md) | [Índice](README.md) | [3.8 Timeouts y cliente HTTP subyacente](sc-feign-http-client.md) →

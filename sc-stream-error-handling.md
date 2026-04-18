@@ -1,243 +1,177 @@
-# 6.8 Gestión de errores y DLQ
+# 6.9 Spring Cloud Stream — Error handling, reintentos y DLQ
 
-← [6.7 Particionado de mensajes](sc-stream-particionado.md) | [Índice (README.md)](README.md) | [6.9 Polling y batch consumers](sc-stream-polling-batch.md) →
+← [6.8 Particionado](sc-stream-particionado.md) | [Índice](README.md) | [6.10 Serialización](sc-stream-serializacion.md) →
+
+---
 
 ## Introducción
 
-La gestión de errores en Spring Cloud Stream resuelve uno de los problemas más críticos de los sistemas de mensajería en producción: qué hacer con un mensaje que el handler no puede procesar. Sin una estrategia de errores, el primer mensaje inválido puede bloquear una partición entera de Kafka indefinidamente o saturar una queue de RabbitMQ con reintentos infinitos, deteniendo el procesamiento de todos los mensajes subsiguientes.
+El manejo de errores en Spring Cloud Stream garantiza que los mensajes que fallan durante el procesamiento no se pierdan silenciosamente. Resuelve el problema de qué hacer cuando un handler lanza una excepción: reintentar, aplicar backoff exponencial, clasificar la excepción como retryable o no, y finalmente enviar el mensaje fallido a una Dead Letter Queue (DLQ). Existe porque en sistemas distribuidos los fallos transitorios son esperables y necesitan ser manejados con políticas predecibles. Se necesita en cualquier consumer de producción donde la pérdida de mensajes sea inaceptable.
 
-Spring Cloud Stream ofrece una cadena de gestión de errores en capas: primero, reintentos con backoff exponencial (gestionados por un `RetryTemplate`); segundo, si los reintentos se agotan, envío del mensaje a una Dead Letter Queue (DLQ); tercero, un error channel donde el desarrollador puede escribir lógica de manejo personalizado. El mecanismo de DLQ y su configuración difieren entre el binder Kafka y el binder RabbitMQ, por lo que este fichero cubre ambos.
+## Flujo de error handling en Spring Cloud Stream
 
-> [PREREQUISITO] Binder Kafka (6.3) y Binder RabbitMQ (6.5). Las propiedades `enableDlq` (Kafka) y `auto-bind-dlq`/`requeue-rejected` (RabbitMQ) son específicas del binder.
-
-## Representación visual
-
-El flujo de gestión de errores sigue una secuencia de escalada. El diagrama muestra el recorrido de un mensaje fallido a través de las capas.
+El flujo de error handling sigue una secuencia determinista cuando un consumer handler lanza una excepción:
 
 ```
-Mensaje recibido del broker
-        │
-        ▼
-┌───────────────────────────────────┐
-│  Handler funcional (@Bean)        │
-│  Function<I,O> / Consumer<I>      │
-└────────────┬──────────────────────┘
-             │ EXCEPCIÓN lanzada
-             ▼
-┌───────────────────────────────────┐
-│  RetryTemplate                    │
-│  maxAttempts: 3 (configurable)    │
-│  backoff: 500ms × 2.0 (hasta 5s) │
-│                                   │
-│  ¿retry agotado?                  │
-└──────────┬──────────────┬─────────┘
-  NO: retry │              │ SÍ: agotado
-            │              ▼
-            │   ┌─────────────────────────┐
-            │   │  ¿DLQ habilitada?        │
-            │   └──────┬──────────────────┘
-            │     SÍ   │          NO
-            │          ▼          ▼
-            │   ┌──────────┐  ┌────────────────┐
-            │   │ DLQ topic │  │ Error channel  │
-            │   │ (Kafka:   │  │ (descarta o    │
-            │   │  .dlq)    │  │  @ServiceActivator) │
-            │   └──────────┘  └────────────────┘
+Mensaje recibido
+      │
+  Handler lanza excepción
+      │
+  ¿Es retryable?
+    NO → Envía inmediatamente a DLQ (si está configurada) o descarta
+    SÍ → Reintento #1 (backOffInitialInterval)
+             │
+         ¿Sigue fallando?
+             SÍ → Reintento #2 (interval * multiplier)
+                     │
+                 ¿Sigue fallando?
+                     SÍ → Reintento #3
+                             │
+                     ¿Agotó maxAttempts?
+                         SÍ → Envía a DLQ
 ```
 
-## Ejemplo central
+## Ejemplo central — configuración completa de error handling
 
-El siguiente ejemplo configura la gestión de errores completa para Kafka y RabbitMQ: reintentos con backoff, DLQ habilitada, y un `@ServiceActivator` que monitoriza el error channel para mensajes con reintentos agotados.
+El siguiente ejemplo muestra un consumer con configuración completa de reintentos, backoff exponencial, clasificación de excepciones y DLQ tanto para Kafka como para RabbitMQ:
 
-**pom.xml**
-```xml
-<dependencies>
-    <dependency>
-        <groupId>org.springframework.cloud</groupId>
-        <artifactId>spring-cloud-stream-binder-kafka</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.integration</groupId>
-        <artifactId>spring-integration-core</artifactId>
-    </dependency>
-</dependencies>
+```java
+package com.example.stream;
 
-<dependencyManagement>
-    <dependencies>
-        <dependency>
-            <groupId>org.springframework.cloud</groupId>
-            <artifactId>spring-cloud-dependencies</artifactId>
-            <version>2025.1.1</version>
-            <type>pom</type>
-            <scope>import</scope>
-        </dependency>
-    </dependencies>
-</dependencyManagement>
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.Bean;
+import java.util.function.Consumer;
+
+@SpringBootApplication
+public class ErrorHandlingApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(ErrorHandlingApplication.class, args);
+    }
+
+    @Bean
+    public Consumer<String> processOrder() {
+        return order -> {
+            if (order.contains("FAIL")) {
+                throw new RuntimeException("Processing failed for order: " + order);
+            }
+            System.out.println("Processed: " + order);
+        };
+    }
+}
 ```
 
-**application.yml**
 ```yaml
+# application.yml — error handling completo para Kafka binder
 spring:
   cloud:
     function:
       definition: processOrder
+
     stream:
       bindings:
         processOrder-in-0:
-          destination: orders
-          group: order-processors
+          destination: orders-topic
+          group: order-service
           consumer:
-            max-attempts: 3                       # reintentos máximos antes de DLQ
-            back-off-initial-interval: 500         # ms de espera antes del primer reintento
-            back-off-multiplier: 2.0              # factor de incremento del intervalo
-            back-off-max-interval: 10000          # ms máximo de backoff (cap)
-            default-retryable: true               # todas las excepciones disparan retry por defecto
-            retryable-exceptions:                 # lista explícita (complementa default-retryable)
-              java.lang.RuntimeException: true
-              java.lang.IllegalArgumentException: false  # NO reintentar esta excepción
-        processOrder-out-0:
-          destination: orders-processed
+            max-attempts: 3                    # Intentos totales (1 original + 2 reintentos)
+            back-off-initial-interval: 1000    # 1 segundo en el primer reintento
+            back-off-max-interval: 10000       # Máximo 10 segundos de espera
+            back-off-multiplier: 2.0           # 1s → 2s → 4s (capped a 10s)
+            default-retryable: true            # Todas las excepciones son retryable por defecto
+            retryable-exceptions:
+              java.net.ConnectException: true  # Explícitamente retryable
+            non-retryable-exceptions:
+              java.lang.IllegalArgumentException: true  # NO reintenta: va directo a DLQ
+
       kafka:
         binder:
           brokers: localhost:9092
         bindings:
           processOrder-in-0:
             consumer:
-              enable-dlq: true                    # habilitar DLQ
-              dlq-name: orders.dlq                # nombre explícito del topic DLQ
-              dlq-partitions: 3                   # particiones en la DLQ
+              enable-dlq: true       # Activa DLQ en Kafka
+              # DLT generado: orders-topic.DLT
 ```
 
-**OrderEvent.java**
-```java
-package com.example.errors;
+```yaml
+# Para RabbitMQ binder (mismo bean Java, distinta configuración):
+spring:
+  cloud:
+    stream:
+      bindings:
+        processOrder-in-0:
+          destination: orders-exchange
+          group: order-service
+          consumer:
+            max-attempts: 3
+            back-off-initial-interval: 1000
+            back-off-multiplier: 2.0
 
-public record OrderEvent(String orderId, String type, double amount) {}
+      rabbit:
+        bindings:
+          processOrder-in-0:
+            consumer:
+              auto-bind-dlq: true      # Crea: orders-exchange.order-service.dlq
+              republish-to-dlq: true   # Añade x-exception-message y x-exception-stacktrace
 ```
 
-**ErrorHandlingConfig.java**
-```java
-package com.example.errors;
+## Tabla de propiedades de error handling
 
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.integration.annotation.ServiceActivator;
-import org.springframework.messaging.Message;
-import org.springframework.messaging.MessageHandlingException;
-import org.springframework.messaging.support.MessageBuilder;
+| Propiedad | Namespace | Descripción | Default |
+|-----------|-----------|-------------|---------|
+| `max-attempts` | `bindings.[b].consumer` | Intentos totales incluyendo el original | `3` |
+| `back-off-initial-interval` | `bindings.[b].consumer` | Pausa inicial entre reintentos (ms) | `1000` |
+| `back-off-max-interval` | `bindings.[b].consumer` | Pausa máxima entre reintentos (ms) | `10000` |
+| `back-off-multiplier` | `bindings.[b].consumer` | Factor multiplicador del backoff | `2.0` |
+| `default-retryable` | `bindings.[b].consumer` | Si las excepciones son retryable por defecto | `true` |
+| `retryable-exceptions` | `bindings.[b].consumer` | Mapa excepción→boolean para retryable | `{}` |
+| `enable-dlq` | `kafka.bindings.[b].consumer` | Activa DLT en Kafka | `false` |
+| `auto-bind-dlq` | `rabbit.bindings.[b].consumer` | Crea DLQ en RabbitMQ | `false` |
+| `republish-to-dlq` | `rabbit.bindings.[b].consumer` | Añade cabeceras de error en DLQ | `true` |
 
-import java.util.function.Consumer;
+> [CONCEPTO] `max-attempts: 3` significa 1 intento original más 2 reintentos. El valor `1` desactiva los reintentos completamente (solo el intento original). El valor `0` o negativo es inválido.
 
-@Configuration
-public class ErrorHandlingConfig {
+> [CONCEPTO] El canal de errores de Spring Integration (`[binding-name].errors`) recibe un `ErrorMessage` cada vez que el procesamiento de un mensaje falla, incluso durante los reintentos. Se puede suscribir a este canal para logging centralizado de errores.
 
-    /**
-     * Handler principal. Lanza excepción para mensajes con amount <= 0.
-     * Con maxAttempts=3 y backoff, se reintentará 3 veces antes de ir a la DLQ.
-     * IllegalArgumentException tiene retryable=false: va directamente a DLQ sin reintentos.
-     */
-    @Bean
-    public Consumer<Message<OrderEvent>> processOrder() {
-        return message -> {
-            OrderEvent order = message.getPayload();
+> [EXAMEN] `enable-dlq` está en el namespace `spring.cloud.stream.kafka.bindings.[nombre].consumer`, no en `spring.cloud.stream.bindings.[nombre].consumer`. El primero es del Kafka binder; el segundo es del core de Stream. Esta distinción aparece frecuentemente como pregunta trampa.
 
-            if (order.amount() <= 0) {
-                // No retryable: va directo a DLQ sin reintentos
-                throw new IllegalArgumentException(
-                    "Invalid amount for order: " + order.orderId());
-            }
+> [ADVERTENCIA] Si no se configura DLQ y se agotan los reintentos, el comportamiento depende del binder: en Kafka, el offset se confirma de todas formas y el mensaje se pierde; en RabbitMQ, el mensaje puede rechazarse y volver a la queue indefinidamente si `acknowledge-mode: MANUAL` y no se llama a `basicAck`.
 
-            if ("FRAUD_SUSPECT".equals(order.type())) {
-                // Retryable: se reintentará maxAttempts veces antes de ir a DLQ
-                throw new RuntimeException("Fraud check service unavailable");
-            }
+## Comparación — DLQ en Kafka vs RabbitMQ
 
-            System.out.printf("[processOrder] OK: %s amount=%.2f%n",
-                order.orderId(), order.amount());
-        };
-    }
-
-    /**
-     * Error channel handler: se invoca cuando un mensaje ha agotado todos los reintentos
-     * y NO tiene DLQ habilitada, o cuando se quiere lógica adicional de monitorización.
-     * El nombre del canal es: <bindingName>.errors
-     *
-     * NOTA: Con enableDlq=true en Kafka, el framework ya envía a DLQ automáticamente.
-     * Este @ServiceActivator es complementario para alertas/logging antes de la DLQ.
-     */
-    @ServiceActivator(inputChannel = "orders.order-processors.errors")
-    public void handleError(Message<MessageHandlingException> errorMessage) {
-        MessageHandlingException exception = errorMessage.getPayload();
-        Message<?> failedMessage = exception.getFailedMessage();
-
-        System.err.printf("[ERROR_CHANNEL] Message failed after retries: %s | Cause: %s%n",
-            failedMessage != null ? failedMessage.getPayload() : "unknown",
-            exception.getCause() != null ? exception.getCause().getMessage() : "unknown");
-
-        // Aquí se podría: enviar alerta a PagerDuty/Slack, escribir en BD de auditoría, etc.
-    }
-}
-```
-
-**ErrorHandlingApplication.java**
-```java
-package com.example.errors;
-
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-
-@SpringBootApplication
-public class ErrorHandlingApplication {
-    public static void main(String[] args) {
-        SpringApplication.run(ErrorHandlingApplication.class, args);
-    }
-}
-```
-
-## Tabla de elementos clave
-
-La gestión de errores se configura en dos niveles: propiedades comunes del binding (para la política de retry) y propiedades del binder específico (para la DLQ). La tabla siguiente cubre las más relevantes.
-
-| Parámetro | Tipo | Default | Descripción |
-|-----------|------|---------|-------------|
-| `spring.cloud.stream.bindings.<name>.consumer.max-attempts` | `int` | `3` | Número máximo de intentos de procesamiento antes de enviar a DLQ. `1` = sin reintentos. |
-| `spring.cloud.stream.bindings.<name>.consumer.back-off-initial-interval` | `long` (ms) | `1000` | Tiempo de espera antes del primer reintento. |
-| `spring.cloud.stream.bindings.<name>.consumer.back-off-multiplier` | `double` | `2.0` | Factor de incremento del intervalo entre reintentos sucesivos. |
-| `spring.cloud.stream.bindings.<name>.consumer.back-off-max-interval` | `long` (ms) | `10000` | Intervalo máximo de backoff. Cap para evitar esperas de minutos. |
-| `spring.cloud.stream.bindings.<name>.consumer.default-retryable` | `boolean` | `true` | Si `true`, todas las excepciones disparan retry. Si `false`, solo las listadas en `retryable-exceptions`. |
-| `spring.cloud.stream.bindings.<name>.consumer.retryable-exceptions` | `Map<Class,Boolean>` | `{}` | Override por tipo de excepción: `true` = retryable, `false` = no retryable (va directo a DLQ). |
-| `spring.cloud.stream.kafka.bindings.<name>.consumer.enable-dlq` | `boolean` | `false` | Habilita DLQ en Kafka. Sin esto, los mensajes que agotan reintentos son descartados. |
-| `spring.cloud.stream.kafka.bindings.<name>.consumer.dlq-name` | `String` | `<topic>.dlq` | Nombre explícito del topic DLQ en Kafka. |
-| `spring.cloud.stream.rabbit.bindings.<name>.consumer.auto-bind-dlq` | `boolean` | `false` | Habilita DLQ en RabbitMQ. Crea automáticamente la DLQ y la configura en el exchange. |
-| `spring.cloud.stream.rabbit.bindings.<name>.consumer.requeue-rejected` | `boolean` | `true` | En RabbitMQ: si `false`, los mensajes rechazados van a DLQ en lugar de reencolarerse. |
+| Aspecto | Kafka | RabbitMQ |
+|---------|-------|----------|
+| Propiedad para activar | `enable-dlq: true` | `auto-bind-dlq: true` |
+| Nombre del destino DLQ | `[destination].DLT` | `[destination].[group].dlq` |
+| Cabeceras de error | No por defecto | Con `republish-to-dlq: true` |
+| Namespace | `kafka.bindings.[b].consumer` | `rabbit.bindings.[b].consumer` |
 
 ## Buenas y malas prácticas
 
-**Hacer:**
+**Buenas prácticas:**
+- Siempre configurar DLQ en consumers de producción para garantizar que los mensajes fallidos no se pierdan.
+- Usar `non-retryable-exceptions` para excepciones de validación (evita reintentos inútiles en datos incorrectos).
+- Monitorizar la DLQ para detectar errores sistemáticos de procesamiento.
 
-- Configurar siempre `enable-dlq: true` (Kafka) o `auto-bind-dlq: true` (RabbitMQ) en todos los consumers de producción. Sin DLQ, los mensajes que fallan después de `maxAttempts` son descartados silenciosamente. Los datos perdidos en mensajería son frecuentemente irrecuperables.
-- Usar `retryable-exceptions` para distinguir errores transitorios (timeout de red, BD no disponible) de errores permanentes (payload inválido, violación de restricción). Los errores permanentes no deben reintentarse; enviarlos directamente a la DLQ ahorra tiempo y recursos.
-- Implementar un proceso de reprocessing de DLQ. Una DLQ que solo acumula mensajes sin ser monitoreada es un punto ciego en producción. Configurar alertas cuando la DLQ supera un umbral de mensajes.
+**Malas prácticas:**
+- Usar `max-attempts: 1` sin DLQ (los mensajes fallidos se pierden silenciosamente).
+- Configurar `back-off-multiplier: 1.0` (backoff lineal, no exponencial — se satura rápidamente).
+- Asumir que `enable-dlq` está en `spring.cloud.stream.bindings.*` cuando está en `spring.cloud.stream.kafka.bindings.*`.
 
-**Evitar:**
+## Verificación y práctica
 
-- Configurar `back-off-max-interval` muy alto (>60s) en consumers de Kafka. El binder Kafka bloquea el thread de polling durante el backoff, lo que en un consumer con muchas particiones puede causar un rebalanceo del consumer group (Kafka interpreta la inactividad como caída del consumer).
-- Ignorar el error channel. Por defecto, si no hay un `@ServiceActivator` registrado en el canal de errores, los mensajes que agotan los reintentos sin DLQ habilitada se descartan en silencio. Este es el escenario de pérdida de datos más común en Spring Cloud Stream.
+1. ¿Qué configuración permite reintentar 3 veces un mensaje con backoff exponencial (1s, 2s, 4s) antes de enviarlo a la DLQ en Kafka?
 
-## Comparación: DLQ en Kafka vs RabbitMQ
+2. ¿Cuál es la diferencia entre `retryable-exceptions` y `non-retryable-exceptions` y qué prioridad tiene `default-retryable`?
 
-El mecanismo de DLQ tiene diferencias importantes según el binder utilizado. Un profesional senior debe conocer estas diferencias para operar ambos sistemas.
+3. ¿En qué namespace de propiedades se configura `enable-dlq` para Kafka y `auto-bind-dlq` para RabbitMQ?
 
-| Aspecto | Kafka (`enable-dlq`) | RabbitMQ (`auto-bind-dlq`) |
-|---------|---------------------|---------------------------|
-| Infraestructura creada | Topic `<topic>.dlq` (o `dlq-name`) | Exchange DLX + Queue `<queue>.dlq` |
-| Retención de mensajes | Según política de retención del topic DLQ | Hasta ACK o TTL (`dlq-ttl`) |
-| Headers del mensaje en DLQ | `x-exception-message`, `x-exception-stacktrace`, `x-original-topic` | `x-death` (headers AMQP estándar) |
-| Reprocessing | Resetear offset del topic DLQ desde el inicio | NACK + requeue o mover manualmente |
-| Configuración complementaria | `dlq-partitions`, `dlq-name` | `dlq-ttl`, `dlq-dead-letter-exchange` |
+4. ¿Cuál es el nombre del Dead Letter Topic generado para `destination: inventory-updates` en el Kafka binder con `enable-dlq: true`?
 
-> [ADVERTENCIA] En Kafka, el consumer del topic DLQ debe configurarse con `enable-dlq: false` para evitar el bucle DLQ → DLQ → DLQ. Si el consumer de la DLQ también falla, sin esta protección se crea una cadena infinita de DLQs.
+5. Si `max-attempts: 1`, ¿cuántos reintentos se realizan y qué ocurre si el procesamiento falla y no hay DLQ configurada?
 
 ---
 
-← [6.7 Particionado de mensajes](sc-stream-particionado.md) | [Índice (README.md)](README.md) | [6.9 Polling y batch consumers](sc-stream-polling-batch.md) →
+← [6.8 Particionado](sc-stream-particionado.md) | [Índice](README.md) | [6.10 Serialización](sc-stream-serializacion.md) →

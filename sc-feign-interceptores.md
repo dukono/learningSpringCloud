@@ -1,71 +1,55 @@
-# 4.6 Interceptores y observabilidad — RequestInterceptor, BasicAuth y métricas Micrometer
+# 3.5 Interceptores de petición — RequestInterceptor
 
-<- [4.5 Codecs](sc-feign-codecs.md) | [Índice](README.md) | [4.7 Logging](sc-feign-logging.md) ->
+← [3.4.2 ErrorDecoder — manejo de errores HTTP](sc-feign-errores.md) | [Índice](README.md) | [3.6 Integración con Eureka y Spring Cloud LoadBalancer](sc-feign-eureka-lb.md) →
 
 ---
 
 ## Introducción
 
-Cuando un microservicio llama a otro, cada petición HTTP debe portar contexto transversal: el token de autenticación del usuario original, un identificador de correlación para rastrear la llamada en los logs, y los identificadores de traza distribuida para correlacionar spans en Zipkin o Jaeger. Hacer esto manualmente en cada método de la interfaz Feign es inmanejable y propenso a omisiones.
+El `RequestInterceptor` de Feign es el mecanismo para enriquecer o modificar cualquier petición HTTP antes de que sea enviada al servicio remoto. Su caso de uso principal es la propagación de headers transversales que no forman parte del contrato de la interfaz del cliente: tokens de autorización (Bearer, API Key), identificadores de correlación para trazabilidad distribuida (`X-Correlation-Id`, `traceparent`), o cualquier header de contexto que todos los métodos del cliente deben incluir. Sin `RequestInterceptor`, cada método de la interfaz necesitaría un parámetro `@RequestHeader` adicional, lo que contamina el contrato y duplica lógica.
 
-`RequestInterceptor` es el mecanismo de Feign para esta necesidad. La interfaz tiene un único método — `apply(RequestTemplate)` — que recibe la plantilla de la petición antes de que se envíe al cliente HTTP subyacente. Aquí se pueden añadir, modificar o eliminar cabeceras, parámetros de query o incluso el path. Los interceptores son la extensión correcta para cualquier lógica transversal que no depende del contenido del método concreto.
+> [PREREQUISITO] Es importante distinguir el alcance del `RequestInterceptor`: cuando se registra como `@Bean` global afecta a todos los clientes Feign; cuando se registra en la clase de configuración específica de un cliente, solo afecta a ese cliente.
 
-La observabilidad de Feign se integra en esta misma capa: el soporte de Micrometer Tracing en Feign funciona mediante un interceptor interno que propaga automáticamente las cabeceras de traza (`traceparent` W3C o `X-B3-TraceId` B3) sin que el desarrollador tenga que escribir código. Cuando se necesita un span personalizado, el lugar correcto también es un `RequestInterceptor`.
+## Ciclo de vida del interceptor
 
-> [PREREQUISITO] Para la propagación automática de trazas, `spring-cloud-starter-openfeign` junto con `micrometer-tracing-bridge-brave` o `micrometer-tracing-bridge-otel` debe estar en el classpath. Activar con `spring.cloud.openfeign.micrometer.enabled=true`.
-
----
-
-## Diagrama: pipeline de interceptores en una petición Feign
-
-El siguiente diagrama muestra el orden de ejecución de los interceptores dentro del pipeline de Feign.
+El `RequestInterceptor` se ejecuta después de que Feign construye el `RequestTemplate` con los parámetros del método (path, query params, body) y antes de que el cliente HTTP subyacente envíe la petición.
 
 ```
- Llamada al método de la interfaz @FeignClient
-         │
-         ▼
- ReflectiveFeign.invoke()
-         │
-         ▼
- SynchronousMethodHandler.invoke()
-         │   construye RequestTemplate con path, verb, body
-         │
-         ▼
- Por cada RequestInterceptor registrado (en orden de registro):
-   │
-   ├─ BasicAuthRequestInterceptor    → añade cabecera Authorization: Basic …
-   ├─ BearerTokenInterceptor         → añade cabecera Authorization: Bearer …
-   ├─ CorrelationIdInterceptor       → añade cabecera X-Correlation-Id
-   └─ MicrometerObservationInterceptor → añade traceparent / X-B3-TraceId  (automático)
-         │
-         ▼
- Client.execute(Request, Options)    → envío HTTP al servidor
+  Método Feign invocado
+          │
+          ▼
+  Feign construye RequestTemplate
+  (path, headers, body del método)
+          │
+          ▼
+  Para cada RequestInterceptor registrado:
+  ┌─────────────────────────────┐
+  │  interceptor.apply(template)│  ← aquí se añaden headers, params, etc.
+  └─────────────────────────────┘
+  (se aplican en el orden de registro)
+          │
+          ▼
+  HTTP Client envía la petición
+  (OkHttp / Apache HC5 / default)
 ```
-
----
 
 ## Ejemplo central
 
-El siguiente ejemplo cubre tres interceptores de uso frecuente: propagación de Bearer token desde el contexto de seguridad de Spring, propagación de un correlation ID, y creación de un span personalizado para medir la latencia de llamadas Feign a servicios externos.
-
-**BearerTokenInterceptor.java — propagación del token del usuario:**
+El siguiente ejemplo muestra tres interceptores con casos de uso diferentes: propagación de JWT Bearer token, propagación de correlation ID desde el contexto de la petición entrante, y añadido de un header de versión de API. También muestra cómo controlar el alcance (global vs por cliente).
 
 ```java
-package com.example.orderservice.feign;
+// Interceptor 1: propagar Authorization header con JWT
+// Alcance: global (aplica a todos los clientes Feign)
+package com.example.orders.feign;
 
 import feign.RequestInterceptor;
 import feign.RequestTemplate;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
+import org.springframework.stereotype.Component;
 
-/**
- * Propaga el JWT del usuario autenticado en el SecurityContext
- * a todas las peticiones salientes del cliente Feign que usa esta configuración.
- *
- * Registrado como bean en la configuración local del cliente (no global)
- * para no añadir la cabecera a clientes que llaman a servicios externos sin auth.
- */
+@Component  // @Component lo registra como bean global → aplica a TODOS los clientes Feign
 public class BearerTokenInterceptor implements RequestInterceptor {
 
     @Override
@@ -76,148 +60,178 @@ public class BearerTokenInterceptor implements RequestInterceptor {
             String token = jwtAuth.getToken().getTokenValue();
             template.header("Authorization", "Bearer " + token);
         }
-        // Si no hay autenticación activa, se deja pasar sin cabecera.
-        // El servicio remoto devolverá 401 y el ErrorDecoder lo gestionará.
+        // Si no hay autenticación activa, no se añade el header
+        // (evita NullPointerException en tests o llamadas internas sin contexto)
     }
 }
 ```
 
-**CorrelationIdInterceptor.java — propagación de correlation ID:**
-
 ```java
-package com.example.orderservice.feign;
+// Interceptor 2: propagar Correlation ID para trazabilidad distribuida
+// Alcance: global (añade el header a todos los servicios)
+package com.example.orders.feign;
 
 import feign.RequestInterceptor;
 import feign.RequestTemplate;
 import org.slf4j.MDC;
+import org.springframework.stereotype.Component;
 
-/**
- * Lee el correlation ID del MDC (puesto por un filtro de entrada en el servicio)
- * y lo propaga como cabecera HTTP al servicio remoto.
- */
+import java.util.UUID;
+
+@Component
 public class CorrelationIdInterceptor implements RequestInterceptor {
 
-    public static final String CORRELATION_HEADER = "X-Correlation-Id";
-    public static final String MDC_KEY            = "correlationId";
+    private static final String CORRELATION_HEADER = "X-Correlation-Id";
 
     @Override
     public void apply(RequestTemplate template) {
-        String correlationId = MDC.get(MDC_KEY);
-        if (correlationId != null) {
-            template.header(CORRELATION_HEADER, correlationId);
+        // Intentar obtener el correlation ID del MDC de Logback (propagado desde la petición entrante)
+        String correlationId = MDC.get("correlationId");
+
+        if (correlationId == null || correlationId.isBlank()) {
+            // Si no existe, generar uno nuevo (llamada iniciada internamente)
+            correlationId = UUID.randomUUID().toString();
         }
+
+        template.header(CORRELATION_HEADER, correlationId);
+        template.header("X-Source-Service", "orders-service");
     }
 }
 ```
 
-**GlobalFeignConfig.java — registro de interceptores globales:**
-
 ```java
-package com.example.orderservice.config;
-
-import com.example.orderservice.feign.CorrelationIdInterceptor;
-import feign.RequestInterceptor;
-
-// Sin @Configuration para evitar doble registro si está dentro del package escaneado
-public class GlobalFeignConfig {
-
-    @Bean
-    public RequestInterceptor correlationIdInterceptor() {
-        return new CorrelationIdInterceptor();
-    }
-    // BearerTokenInterceptor NO va aquí (global): solo en la config local del cliente interno
-}
-```
-
-**application.yml — activación de Micrometer Tracing en Feign:**
-
-```yaml
-spring:
-  cloud:
-    openfeign:
-      micrometer:
-        enabled: true   # activa propagación automática de traceId/spanId en todas las peticiones Feign
-
-management:
-  tracing:
-    sampling:
-      probability: 1.0  # 100% de muestreo en desarrollo; reducir en producción
-```
-
-**CustomSpanInterceptor.java — creación de span personalizado (cuando se necesita más granularidad):**
-
-```java
-package com.example.orderservice.feign;
+// Interceptor 3: header de API Key para servicio externo de pagos
+// Alcance: SOLO para payment-client (NO debe ser global)
+package com.example.orders.feign;
 
 import feign.RequestInterceptor;
 import feign.RequestTemplate;
-import io.micrometer.tracing.Span;
-import io.micrometer.tracing.Tracer;
+import org.springframework.beans.factory.annotation.Value;
 
-/**
- * Crea un span personalizado para cada llamada Feign saliente.
- * Útil cuando se quiere añadir atributos propios al span (p.ej. nombre del cliente,
- * versión de la API, tenant ID).
- *
- * NOTA: con spring.cloud.openfeign.micrometer.enabled=true, Feign ya crea spans
- * automáticamente. Este interceptor añade atributos extra al span activo.
- */
-public class CustomSpanInterceptor implements RequestInterceptor {
+// SIN @Component — se instancia solo desde la configuración del cliente específico
+public class PaymentApiKeyInterceptor implements RequestInterceptor {
 
-    private final Tracer tracer;
+    private final String apiKey;
 
-    public CustomSpanInterceptor(Tracer tracer) {
-        this.tracer = tracer;
+    // Constructor inyectado desde la configuración Feign del cliente
+    public PaymentApiKeyInterceptor(String apiKey) {
+        this.apiKey = apiKey;
     }
 
     @Override
     public void apply(RequestTemplate template) {
-        Span currentSpan = tracer.currentSpan();
-        if (currentSpan != null) {
-            // Añadir el nombre del servicio remoto como atributo del span
-            currentSpan.tag("feign.target", template.feignTarget().name());
-            currentSpan.tag("feign.path", template.path());
-        }
+        template.header("X-API-Key", apiKey);
+        template.header("X-API-Version", "v2");
     }
 }
 ```
 
-> [CONCEPTO] Un `RequestInterceptor` se ejecuta síncronamente en el thread que realiza la llamada Feign. Si el interceptor bloquea (p. ej. hace una llamada HTTP para refrescar un token), bloquea también el thread del llamador. Para tokens de corta duración, usar caché con expiración corta en el interceptor.
+```java
+// Configuración del cliente payment-service que registra el interceptor específico
+package com.example.orders.feign.config;
 
----
+import com.example.orders.feign.PaymentApiKeyInterceptor;
+import feign.RequestInterceptor;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
 
-## Tabla de elementos clave
+// SIN @Configuration para evitar scope global
+public class PaymentFeignConfig {
 
-| Elemento | Descripción | Cuándo registrar |
-|---|---|---|
-| `RequestInterceptor` | Interfaz de un único método; modifica el `RequestTemplate` antes del envío | Siempre que se necesite contexto transversal en peticiones salientes |
-| `BasicAuthRequestInterceptor` | Implementación lista; añade cabecera `Authorization: Basic` | Servicios internos con autenticación básica |
-| `BearerTokenInterceptor` (custom) | Lee el JWT del `SecurityContext` | Servicios que requieren propagación de identidad OAuth2 |
-| `CorrelationIdInterceptor` (custom) | Lee del MDC y añade cabecera | Todos los clientes para trazabilidad en logs |
-| `MicrometerObservationInterceptor` | Añadido automáticamente por Spring Cloud | Al activar `spring.cloud.openfeign.micrometer.enabled=true` |
-| `spring.cloud.openfeign.micrometer.enabled` | `boolean` | `true` para propagar traceId/spanId automáticamente |
-| `Tracer.currentSpan()` | Acceso al span activo | Para añadir atributos personalizados al span de tracing |
+    @Value("${services.payment.api-key}")
+    private String paymentApiKey;
 
----
+    @Bean
+    public RequestInterceptor paymentApiKeyInterceptor() {
+        // Se instancia con el valor inyectado en esta configuración
+        return new PaymentApiKeyInterceptor(paymentApiKey);
+    }
+}
+```
+
+```java
+// Clientes Feign con distinto alcance de interceptores
+package com.example.orders.clients;
+
+import com.example.orders.dto.InventoryResponse;
+import com.example.orders.dto.PaymentRequest;
+import com.example.orders.dto.PaymentResponse;
+import com.example.orders.feign.config.PaymentFeignConfig;
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+
+// inventory-service: recibe BearerTokenInterceptor y CorrelationIdInterceptor (globales)
+@FeignClient(name = "inventory-service", path = "/api/v1")
+public interface InventoryClient {
+
+    @GetMapping("/items/{id}")
+    InventoryResponse getItem(@PathVariable("id") Long id);
+}
+
+// payment-service: recibe los globales + PaymentApiKeyInterceptor (específico)
+@FeignClient(
+    name = "payment-service",
+    path = "/api/v1",
+    configuration = PaymentFeignConfig.class
+)
+public interface PaymentClient {
+
+    @PostMapping("/payments")
+    PaymentResponse processPayment(@RequestBody PaymentRequest request);
+}
+```
+
+## Tabla de métodos de RequestTemplate
+
+El `RequestTemplate` que recibe el interceptor expone los siguientes métodos relevantes:
+
+| Método | Efecto |
+|---|---|
+| `template.header(name, values)` | Añade o sobreescribe un header HTTP |
+| `template.headers()` | Devuelve todos los headers actuales (solo lectura) |
+| `template.query(name, values)` | Añade o sobreescribe un query parameter |
+| `template.queries()` | Devuelve todos los query params actuales |
+| `template.url()` | Devuelve la URL de la petición |
+| `template.method()` | Devuelve el método HTTP (GET, POST, etc.) |
+| `template.body(body, charset)` | Sobreescribe el cuerpo de la petición |
+
+## Alcance global vs por cliente
+
+La diferencia de alcance es uno de los conceptos más evaluados en el examen:
+
+- **Global**: el interceptor es un `@Component` o un `@Bean` en una clase con `@Configuration` dentro del scan. Se aplica a **todos** los clientes Feign del contexto.
+- **Por cliente**: el interceptor es un `@Bean` registrado en la clase de configuración específica del cliente (referenciada en `configuration = MiConfig.class`). Se aplica **solo** a ese cliente.
+
+Un interceptor global que lee el `SecurityContext` puede causar problemas en threads que no tienen autenticación (calls asíncronas, scheduled tasks). Hay que manejar los nulos con cuidado.
 
 ## Buenas y malas prácticas
 
-**Hacer:**
-- Registrar `CorrelationIdInterceptor` como interceptor global (en `defaultConfiguration`) y `BearerTokenInterceptor` como interceptor local (solo en clientes de servicios internos que requieren autenticación). Esta separación evita que peticiones a servicios externos (sin auth) reciban cabeceras de token que podrían filtrar credenciales.
-- Usar `spring.cloud.openfeign.micrometer.enabled=true` en lugar de crear manualmente un interceptor de tracing. La integración automática de Micrometer Tracing garantiza la propagación correcta de contexto en escenarios reactivos y asíncronos donde el MDC manual puede perderse.
-- Hacer los interceptores `@Bean` de prototype o stateless. Un interceptor con estado compartido (p. ej. un contador mutable) puede producir data races si múltiples threads Feign lo invocan concurrentemente.
+**Buenas prácticas:**
+- Usar interceptores globales para headers de infraestructura transversales (correlation ID, tracing).
+- Usar interceptores por cliente para credenciales específicas del servicio destino (API keys, tokens de sistema).
+- Verificar null-safety en el interceptor cuando lee del `SecurityContextHolder`: en tests y llamadas asíncronas puede estar vacío.
 
-**Evitar:**
-- Lanzar excepciones checked desde `RequestInterceptor.apply()`. Feign no las declara en la firma del método; cualquier excepción checked lanzada desde un interceptor produce una `UndeclaredThrowableException` que enmascara la causa real en los logs.
-- Llamar a servicios externos dentro de un `RequestInterceptor` para obtener tokens de acceso sin caché. Cada petición Feign generaría una llamada adicional al servidor de autenticación, multiplicando la latencia y el riesgo de saturar el endpoint de tokens.
-- Registrar el mismo tipo de interceptor tanto en la configuración local del cliente como en `defaultConfiguration`. Feign acumula todos los interceptores registrados; el resultado es que la cabecera se añade dos veces, lo que puede causar errores en servidores que validan cabeceras duplicadas.
+**Malas prácticas:**
+- Registrar un interceptor de API key como `@Component` global: todos los clientes Feign enviarán esa API key a todos los servicios.
+- Modificar el cuerpo de la petición en un `RequestInterceptor` sin coordinación con el `Encoder`: puede corromper el payload.
+
+> [ADVERTENCIA] Si un `RequestInterceptor` lanza una excepción (por ejemplo, al leer el `SecurityContext` en un contexto sin autenticación), Feign propagará la excepción al llamador sin enviar la petición. Siempre protege el interceptor con comprobaciones null-safe.
+
+## Verificación y práctica
+
+> [EXAMEN] **1.** ¿En qué momento del ciclo de vida de la petición Feign se ejecuta el `RequestInterceptor`: antes o después de construir el `RequestTemplate`?
+
+> [EXAMEN] **2.** Tienes un `RequestInterceptor` anotado con `@Component` para añadir un header de API Key específico de `payment-service`. ¿Qué problema causa este diseño?
+
+> [EXAMEN] **3.** ¿Cómo se limita un `RequestInterceptor` para que solo aplique a un cliente Feign específico y no a todos los demás?
+
+> [EXAMEN] **4.** Un `RequestInterceptor` lee el token JWT del `SecurityContextHolder`. Si el interceptor se invoca desde un thread `@Async` que no hereda el contexto de seguridad, ¿qué ocurre? ¿Cómo lo evitarías?
+
+> [EXAMEN] **5.** ¿Es posible registrar múltiples `RequestInterceptor` para un mismo cliente Feign? ¿En qué orden se aplican?
 
 ---
 
-## Referencias externas
-
-**Micrometer Tracing** — `spring.cloud.openfeign.micrometer.enabled=true` activa la propagación automática de `traceId` y `spanId` en todas las peticiones Feign. Sustituyó a Spring Cloud Sleuth a partir de Spring Cloud 2022.0. Las cabeceras B3 (`X-B3-TraceId`) o W3C TraceContext (`traceparent`) se propagan según el bridge configurado (`micrometer-tracing-bridge-brave` para B3, `micrometer-tracing-bridge-otel` para W3C). Ver módulo sc-tracing para configuración de exportadores y samplers.
-
----
-
-<- [4.5 Codecs](sc-feign-codecs.md) | [Índice](README.md) | [4.7 Logging](sc-feign-logging.md) ->
+← [3.4.2 ErrorDecoder — manejo de errores HTTP](sc-feign-errores.md) | [Índice](README.md) | [3.6 Integración con Eureka y Spring Cloud LoadBalancer](sc-feign-eureka-lb.md) →

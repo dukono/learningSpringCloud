@@ -1,212 +1,133 @@
-# 7.5 Eventos personalizados de Spring Cloud Bus
+# 7.4 Spring Cloud Bus — Eventos personalizados con RemoteApplicationEvent
 
-← [7.4 Refresh de configuración distribuido con Spring Cloud Bus](sc-bus-refresh-distribuido.md) | [Índice](README.md) | [7.6 Seguridad del endpoint actuator de Spring Cloud Bus](sc-bus-seguridad-endpoint.md) →
+← [7.3 Spring Cloud Bus — Refresh distribuido de configuración](sc-bus-refresh-distribuido.md) | [Índice](README.md) | [7.5 Spring Cloud Bus — Configuración de brokers RabbitMQ y Kafka](sc-bus-broker-config.md) →
+
+---
 
 ## Introducción
 
-Los eventos built-in de Spring Cloud Bus —`RefreshRemoteApplicationEvent` y `EnvironmentChangeRemoteApplicationEvent`— resuelven el caso de uso de infraestructura, pero hay escenarios de producción donde se necesita propagar eventos de infraestructura propios: invalidar una caché distribuida en todos los nodos, notificar a todos los servicios de un cambio en una lista negra de tokens, o coordinar un modo de mantenimiento sin reiniciar los pods. Spring Cloud Bus permite definir eventos personalizados extendiendo `RemoteApplicationEvent`, registrarlos con `@RemoteApplicationEventScan` para que el framework los deserialice correctamente, y enviarlos con el `ApplicationEventPublisher` estándar de Spring. El campo `destinationService` del evento controla si el broadcast llega a todos los nodos del bus o solo a un subconjunto específico.
+Spring Cloud Bus no se limita a los eventos predefinidos como `BusRefreshEvent`. Permite crear eventos personalizados que se propagan a todos los microservicios del Bus, o a un subconjunto de ellos, extendiendo la clase `RemoteApplicationEvent`. Este mecanismo habilita patrones de broadcast de eventos de dominio o infraestructura a través del sistema distribuido sin configuración de mensajería adicional.
 
-> [ADVERTENCIA] El registro del paquete con `@RemoteApplicationEventScan` es obligatorio. Si el paquete no está escaneado, el bus intentará deserializar el evento como `RemoteApplicationEvent` genérico y el receptor no podrá procesarlo, generando un error de tipo silencioso difícil de diagnosticar.
+> [CONCEPTO] `RemoteApplicationEvent` es la clase base abstracta de todos los eventos del Bus. Contiene dos campos clave: `originService` (el `spring.cloud.bus.id` del nodo que lo publicó) y `destinationService` (patrón de destino, por defecto `**` para broadcast total).
 
-## Representación visual
+## Anatomía de RemoteApplicationEvent
 
-El diagrama siguiente muestra el ciclo de vida completo de un evento personalizado desde su publicación hasta su recepción.
+Para crear un evento personalizado es necesario extender `RemoteApplicationEvent`. Esta clase abstracta serializable requiere un constructor sin argumentos para la deserialización Jackson, además del constructor de conveniencia.
 
-```
-Publicador (Service-A)
-┌──────────────────────────────────────────────────────┐
-│  1. new CacheInvalidationEvent("products", "all")    │
-│  2. applicationEventPublisher.publishEvent(event)    │
-│  3. BusAutoConfiguration detecta RemoteApplicationEvent│
-│  4. Serializa a JSON y publica en springCloudBus     │
-└──────────────────────────────────────────────────────┘
-                         │
-                    Broker (Kafka/RabbitMQ)
-                    topic: springCloudBus
-                         │
-        ┌────────────────┼────────────────┐
-        ▼                ▼                ▼
-  Service-A:inst-1  Service-B:inst-1  Service-C:inst-1
-  (origen, ignorado) (recibe y procesa) (recibe y procesa)
-        │
-  5. Spring deserializa JSON → CacheInvalidationEvent
-     (requiere @RemoteApplicationEventScan del paquete)
-  6. @EventListener(CacheInvalidationEvent.class) invocado
-  7. Lógica de negocio: invalidar caché "products"
-```
-
-La tabla siguiente resume los campos de `RemoteApplicationEvent` relevantes para eventos personalizados:
+Los campos heredados de `RemoteApplicationEvent` y sus roles son los siguientes:
 
 | Campo | Tipo | Descripción |
-|---|---|---|
-| `originService` | String | `bus.id` del nodo que publicó el evento. Rellenado automáticamente. |
-| `destinationService` | String | Patrón de destino. Vacío = broadcast. Soporta wildcards. |
-| `id` | String | UUID del evento. Usado para deduplicación. |
+|-------|------|-------------|
+| `originService` | `String` | `spring.cloud.bus.id` del nodo publicador; se rellena automáticamente |
+| `destinationService` | `String` | Patrón de destino; `**` = todos, o `appName:**:**` = servicio específico |
+| `id` | `String` | UUID del evento para deduplicación |
 
-## Ejemplo central
+> [EXAMEN] Sin el constructor sin argumentos (`protected NoArgsEvent() {}`), Jackson no puede deserializar el evento en los nodos receptores y el evento será ignorado silenciosamente.
 
-El ejemplo siguiente implementa un evento de invalidación de caché distribuida que invalida la caché de productos en todos los nodos del bus cuando el catálogo de productos se actualiza.
+## @AcceptRemoteApplicationEvent
 
-```xml
-<!-- pom.xml -->
-<dependencies>
-    <dependency>
-        <groupId>org.springframework.cloud</groupId>
-        <artifactId>spring-cloud-starter-bus-kafka</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-actuator</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-web</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-cache</artifactId>
-    </dependency>
-</dependencies>
-```
+La anotación `@AcceptRemoteApplicationEvent` se aplica a nivel de clase en el evento personalizado. Su propósito es registrar el tipo de evento en el `BusJacksonMessageConverter`, permitiendo que los nodos receptores deserialicen el JSON del mensaje en la clase Java correcta.
 
-```yaml
-# application.yml
-spring:
-  application:
-    name: catalog-service
-  cloud:
-    bus:
-      enabled: true
-      id: ${spring.application.name}:${spring.profiles.active:default}:${random.value}
-  kafka:
-    bootstrap-servers: kafka:9092
+Sin esta anotación, el Bus desconoce el tipo Java correspondiente al evento recibido y lo descarta sin procesar. Es un mecanismo de seguridad que evita deserializar clases arbitrarias recibidas del broker.
 
-management:
-  endpoints:
-    web:
-      exposure:
-        include: busrefresh, health, info
-```
+> [ADVERTENCIA] `@AcceptRemoteApplicationEvent` debe estar presente en la clase del evento en **todos los servicios** que necesiten recibirlo y procesarlo. Si solo está en el publicador, los receptores ignorarán el evento.
+
+## Ejemplo central — Evento personalizado completo
+
+El siguiente ejemplo implementa un evento personalizado `CacheInvalidationEvent` que cuando se publica hace que todos los microservicios limpien su caché local. Incluye la clase del evento, el publicador y el receptor.
 
 ```java
-// src/main/java/com/example/catalog/events/CacheInvalidationEvent.java
-package com.example.catalog.events;
+// CacheInvalidationEvent.java — definición del evento personalizado
+package com.example.shared.events;
 
 import org.springframework.cloud.bus.event.RemoteApplicationEvent;
+import org.springframework.cloud.bus.event.Accepted;
 
-// IMPORTANTE: esta clase debe estar en un paquete declarado
-// en @RemoteApplicationEventScan para ser deserializable
+@Accepted  // equivalente a @AcceptRemoteApplicationEvent en Spring Cloud 4.x
 public class CacheInvalidationEvent extends RemoteApplicationEvent {
 
     private String cacheName;
-    private String cacheKey;
+    private String reason;
 
-    // Constructor por defecto requerido por Jackson para deserialización
+    // Constructor sin argumentos requerido por Jackson para deserialización
     protected CacheInvalidationEvent() {
     }
 
-    // Constructor para broadcast a todos los nodos (destinationService = null)
-    public CacheInvalidationEvent(Object source, String originService,
-                                   String cacheName, String cacheKey) {
-        super(source, originService);
-        this.cacheName = cacheName;
-        this.cacheKey = cacheKey;
-    }
-
-    // Constructor para envío dirigido a un servicio específico
+    // Constructor completo para publicación
     public CacheInvalidationEvent(Object source, String originService,
                                    String destinationService,
-                                   String cacheName, String cacheKey) {
-        super(source, originService, destinationService);
+                                   String cacheName, String reason) {
+        super(source, originService, Destination.Factory.getDestination(destinationService));
         this.cacheName = cacheName;
-        this.cacheKey = cacheKey;
+        this.reason = reason;
     }
 
-    public String getCacheName() { return cacheName; }
-    public void setCacheName(String cacheName) { this.cacheName = cacheName; }
+    public String getCacheName() {
+        return cacheName;
+    }
 
-    public String getCacheKey() { return cacheKey; }
-    public void setCacheKey(String cacheKey) { this.cacheKey = cacheKey; }
-}
-```
+    public void setCacheName(String cacheName) {
+        this.cacheName = cacheName;
+    }
 
-```java
-// src/main/java/com/example/catalog/CatalogApplication.java
-package com.example.catalog;
+    public String getReason() {
+        return reason;
+    }
 
-import com.example.catalog.events.CacheInvalidationEvent;
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.cache.annotation.EnableCaching;
-// @RemoteApplicationEventScan registra el paquete para que Bus
-// pueda deserializar los eventos personalizados
-import org.springframework.cloud.bus.jackson.RemoteApplicationEventScan;
-
-@SpringBootApplication
-@EnableCaching
-@RemoteApplicationEventScan(basePackages = "com.example.catalog.events")
-public class CatalogApplication {
-    public static void main(String[] args) {
-        SpringApplication.run(CatalogApplication.class, args);
+    public void setReason(String reason) {
+        this.reason = reason;
     }
 }
 ```
 
 ```java
-// src/main/java/com/example/catalog/service/CatalogService.java
-package com.example.catalog.service;
+// CacheService.java — publicador del evento personalizado
+package com.example.orderservice.service;
 
-import com.example.catalog.events.CacheInvalidationEvent;
+import com.example.shared.events.CacheInvalidationEvent;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.cache.CacheManager;
-import org.springframework.cache.annotation.Cacheable;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
-import java.util.List;
 
 @Service
-public class CatalogService {
+public class CacheService {
 
     private final ApplicationEventPublisher eventPublisher;
-    private final CacheManager cacheManager;
 
-    @Value("${spring.cloud.bus.id:unknown}")
+    @Value("${spring.cloud.bus.id}")
     private String busId;
 
-    public CatalogService(ApplicationEventPublisher eventPublisher,
-                           CacheManager cacheManager) {
+    @Autowired
+    public CacheService(ApplicationEventPublisher eventPublisher) {
         this.eventPublisher = eventPublisher;
-        this.cacheManager = cacheManager;
     }
 
-    @Cacheable("products")
-    public List<String> getProducts() {
-        // Simulación de carga desde base de datos
-        return List.of("product-1", "product-2", "product-3");
-    }
-
-    // Llamado cuando el catálogo se actualiza: invalida la caché en todos los nodos
-    public void updateProduct(String productId) {
-        // ... lógica de actualización en base de datos ...
-
-        // Publicar evento de invalidación — broadcast a todos los nodos del bus
+    /**
+     * Invalida la caché en TODOS los microservicios del Bus.
+     */
+    public void invalidateCacheGlobally(String cacheName) {
+        // "**" como destination = broadcast a todos los nodos
         CacheInvalidationEvent event = new CacheInvalidationEvent(
-            this,          // source
-            busId,         // originService (bus.id de este nodo)
-            "products",    // cacheName
-            productId      // cacheKey
+                this,
+                busId,
+                "**",
+                cacheName,
+                "Manual invalidation from order-service"
         );
         eventPublisher.publishEvent(event);
     }
 
-    // Versión con envío dirigido solo a un servicio específico
-    public void invalidateCacheOnlyForSearchService(String productId) {
+    /**
+     * Invalida la caché solo en las instancias del servicio 'inventory-service'.
+     */
+    public void invalidateCacheInInventory(String cacheName) {
         CacheInvalidationEvent event = new CacheInvalidationEvent(
-            this,
-            busId,
-            "search-service:**",  // destinationService: solo instancias de search-service
-            "products",
-            productId
+                this,
+                busId,
+                "inventory-service:**:**",
+                cacheName,
+                "Inventory data changed"
         );
         eventPublisher.publishEvent(event);
     }
@@ -214,10 +135,10 @@ public class CatalogService {
 ```
 
 ```java
-// src/main/java/com/example/catalog/listener/CacheInvalidationListener.java
-package com.example.catalog.listener;
+// CacheInvalidationListener.java — receptor del evento en cualquier servicio
+package com.example.inventoryservice.listener;
 
-import com.example.catalog.events.CacheInvalidationEvent;
+import com.example.shared.events.CacheInvalidationEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cache.CacheManager;
@@ -236,55 +157,105 @@ public class CacheInvalidationListener {
     }
 
     @EventListener
-    public void onCacheInvalidation(CacheInvalidationEvent event) {
+    public void handleCacheInvalidation(CacheInvalidationEvent event) {
         String cacheName = event.getCacheName();
-        String cacheKey = event.getCacheKey();
+        log.info("Received CacheInvalidationEvent for cache '{}' from '{}', reason: {}",
+                cacheName, event.getOriginService(), event.getReason());
 
-        log.info("Recibido CacheInvalidationEvent: cache={}, key={}, origen={}",
-                 cacheName, cacheKey, event.getOriginService());
-
-        var cache = cacheManager.getCache(cacheName);
-        if (cache != null) {
-            if ("all".equals(cacheKey)) {
-                cache.clear();
-                log.info("Caché '{}' invalidada completamente", cacheName);
-            } else {
-                cache.evict(cacheKey);
-                log.info("Entrada '{}' invalidada en caché '{}'", cacheKey, cacheName);
-            }
+        if (cacheManager.getCache(cacheName) != null) {
+            cacheManager.getCache(cacheName).clear();
+            log.info("Cache '{}' cleared successfully", cacheName);
         }
     }
 }
 ```
 
+```yaml
+# Configuración YAML para el servicio receptor
+spring:
+  application:
+    name: inventory-service
+  rabbitmq:
+    host: localhost
+    port: 5672
+  cloud:
+    bus:
+      enabled: true
+      id: ${spring.application.name}:${spring.profiles.active:default}:${server.port:8082}
+```
+
+## Ciclo de serialización de un RemoteApplicationEvent personalizado
+
+El flujo de serialización y propagación de un evento personalizado sigue estos pasos precisos:
+
+```
+1. CacheService.invalidateCacheGlobally("products")
+       ↓
+2. eventPublisher.publishEvent(cacheInvalidationEvent)
+       ↓
+3. Bus intercepta el evento (es subclase de RemoteApplicationEvent)
+       ↓
+4. Jackson serializa el evento a JSON:
+   {
+     "type": "CacheInvalidationEvent",
+     "originService": "order-service:default:8080",
+     "destinationService": "**",
+     "cacheName": "products",
+     "reason": "Manual invalidation from order-service"
+   }
+       ↓
+5. Spring Cloud Stream publica el JSON en springCloudBus (broker)
+       ↓
+6. Todos los nodos reciben el mensaje del broker
+       ↓
+7. BusJacksonMessageConverter deserializa el JSON
+   → Busca la clase Java registrada con @AcceptRemoteApplicationEvent
+       ↓
+8. ServiceMatcher evalúa destinationService="**" → acepta el evento
+       ↓
+9. ApplicationEventPublisher publica el evento localmente
+       ↓
+10. @EventListener en CacheInvalidationListener se activa
+```
+
 ## Tabla de elementos clave
 
-La tabla recoge los elementos de la API de eventos personalizados de Bus.
+Los elementos necesarios para implementar eventos personalizados con Spring Cloud Bus son los siguientes:
 
-| Elemento | Tipo | Default | Descripción |
-|---|---|---|---|
-| `RemoteApplicationEvent` | Clase base | — | Clase que deben extender todos los eventos personalizados de Bus. |
-| `@RemoteApplicationEventScan` | Anotación | — | Declara los paquetes donde Bus busca subclases de `RemoteApplicationEvent` para deserialización. Obligatorio. |
-| `destinationService` | String | `null` (broadcast) | Patrón de nodos destino. Vacío o nulo = todos. Soporta wildcards `app:**`. |
-| `originService` | String | `bus.id` automático | Identificador del nodo emisor. Se rellena automáticamente si el constructor llama a `super(source, originService)`. |
-| `ApplicationEventPublisher` | Interface Spring | — | Publicador estándar de Spring. Inyectado por Spring; Bus intercepta los `RemoteApplicationEvent`. |
-| `@EventListener` | Anotación | — | Marca el método receptor del evento personalizado. Solo se invoca si el evento llega a este nodo. |
-| `id` | String (UUID) | Auto-generado | Identificador único del evento. Bus lo usa para evitar procesar el mismo evento dos veces en el nodo origen. |
+| Elemento | Obligatorio | Descripción |
+|----------|-------------|-------------|
+| Extender `RemoteApplicationEvent` | Sí | El evento debe ser subclase de esta clase abstracta |
+| Constructor sin argumentos `protected` | Sí | Requerido por Jackson para deserialización |
+| `@AcceptRemoteApplicationEvent` | Sí (en receptores) | Registra el tipo para deserialización segura |
+| `ApplicationEventPublisher` | Sí (en publicador) | Interfaz Spring para publicar eventos |
+| `@EventListener` o `ApplicationListener` | Sí (en receptor) | Para consumir el evento en el nodo receptor |
 
 ## Buenas y malas prácticas
 
-**Hacer:**
+**Buenas prácticas:**
 
-- Colocar todas las subclases de `RemoteApplicationEvent` en un paquete dedicado (por ejemplo `com.company.app.bus.events`) y declararlo en `@RemoteApplicationEventScan`. Esto facilita el mantenimiento y garantiza que el escaneo sea predecible: si el paquete se mueve, el error de deserialización es inmediato y obvio.
-- Añadir el constructor por defecto sin argumentos a cada subclase de `RemoteApplicationEvent`. Jackson requiere un constructor sin argumentos para la deserialización. Sin él, los nodos receptores lanzan `InvalidDefinitionException` al intentar deserializar el evento.
-- Usar `destinationService` cuando el evento solo es relevante para un tipo de servicio. Publicar en broadcast cuando solo el 10% de los nodos necesita el evento consume recursos de red y procesamiento en el 90% restante innecesariamente.
+- Colocar la clase del evento en un módulo compartido (`shared-events`) incluido tanto en el publicador como en los receptores, garantizando la misma versión de la clase en todos los servicios.
+- Usar `@EventListener` con el tipo específico del evento para evitar recibir eventos no deseados.
+- Incluir información de contexto en el evento (razón, timestamp, actor) para facilitar el troubleshooting y la auditoría.
 
-**Evitar:**
+**Malas prácticas:**
 
-- No incluir objetos de dominio complejos en el payload del evento personalizado. Los eventos Bus son de infraestructura: deben transportar identificadores y tipos, no entidades completas. Un payload grande (más de 1 KB) indica que el caso de uso debería usar Spring Cloud Stream con un topic de negocio.
-- No reutilizar el campo `originService` para lógica de negocio. El nodo origen siempre ignorará su propio evento (Bus deduplica por `originService` + `id`). Si la lógica requiere que el origen también procese el evento, publicarlo como un `ApplicationEvent` local además del `RemoteApplicationEvent`.
-- No crear eventos personalizados para casos de uso que ya tienen soporte built-in. Crear un evento `ConfigRefreshEvent` personalizado en lugar de usar `busrefresh` es trabajo duplicado que no añade valor y complica el diagnóstico.
+- Incluir objetos complejos o colecciones grandes en el payload del evento. Los eventos del Bus deben ser ligeros para no saturar el broker.
+- Omitir el constructor sin argumentos en la clase del evento. El error de deserialización no siempre produce una excepción visible; el evento puede simplemente ignorarse.
+- Usar eventos personalizados del Bus para flujos de negocio de alta frecuencia. El Bus está diseñado para eventos de control de baja frecuencia.
+
+## Verificación y práctica
+
+> [EXAMEN] **1.** ¿Qué clase debe extenderse para crear un evento personalizado que se propague por Spring Cloud Bus?
+
+> [EXAMEN] **2.** ¿Qué anotación deben tener los eventos personalizados y por qué es necesaria en los servicios receptores?
+
+> [EXAMEN] **3.** ¿Qué interfaz de Spring se usa para publicar un `RemoteApplicationEvent` desde un servicio?
+
+> [EXAMEN] **4.** ¿Por qué el constructor sin argumentos en la clase del evento es imprescindible?
+
+> [EXAMEN] **5.** Si un evento personalizado tiene `destinationService = "inventory-service:**:**"`, ¿qué nodos lo procesarán?
 
 ---
 
-← [7.4 Refresh de configuración distribuido con Spring Cloud Bus](sc-bus-refresh-distribuido.md) | [Índice](README.md) | [7.6 Seguridad del endpoint actuator de Spring Cloud Bus](sc-bus-seguridad-endpoint.md) →
+← [7.3 Spring Cloud Bus — Refresh distribuido de configuración](sc-bus-refresh-distribuido.md) | [Índice](README.md) | [7.5 Spring Cloud Bus — Configuración de brokers RabbitMQ y Kafka](sc-bus-broker-config.md) →

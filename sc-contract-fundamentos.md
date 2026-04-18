@@ -1,116 +1,88 @@
-# 10.1 Arquitectura CDC y modelo Consumer-Driven Contracts
+# 10.1 Spring Cloud Contract — Fundamentos CDC
 
-← [9.12 Testing de Spring Cloud Kubernetes](sc-kubernetes-testing.md) | [Índice](README.md) | [10.2 Ciclo de vida CDC y workflow CI/CD](sc-contract-workflow.md) →
+← [9.10 Spring Cloud Kubernetes — Testing](sc-kubernetes-testing.md) | [Índice](README.md) | [10.2 DSL Groovy y YAML](sc-contract-dsl.md) →
 
 ---
 
 ## Introducción
 
-En arquitecturas de microservicios, la comunicación entre servicios se prueba habitualmente con tests de integración de extremo a extremo que levantan todos los servicios en un entorno compartido. Este enfoque tiene un coste real en producción: entornos costosos, pipelines lentos, fallos intermitentes por dependencias de red y, lo más grave, la detección tardía de *breaking changes* solo cuando el cambio ya está desplegado. Consumer-Driven Contracts (CDC) resuelve este problema invirtiendo la responsabilidad: el consumer describe exactamente qué necesita del producer en forma de contrato; el producer genera tests a partir de ese contrato y publica stubs que el consumer usa en sus propios tests. El resultado es que ambos lados pueden testear de forma aislada con la garantía de que el contrato compartido actúa como fuente de verdad.
+Consumer-Driven Contract Testing (CDC) es una técnica de verificación de contratos entre microservicios donde el **consumidor** define sus expectativas sobre el productor en forma de contratos, y el **productor** las verifica automáticamente. Spring Cloud Contract implementa este patrón generando tests en el lado del productor y stubs WireMock en el lado del consumidor, permitiendo que ambos servicios se prueben de forma completamente aislada.
 
-> [CONCEPTO] **Consumer-Driven Contracts**: metodología en la que el consumidor de una API define formalmente sus expectativas sobre el productor mediante un contrato verificable automáticamente en el pipeline CI/CD.
+> [CONCEPTO] Un **contrato** en Spring Cloud Contract es un fichero (Groovy o YAML) que describe una interacción: dado un request concreto, el productor debe devolver una respuesta específica. El contrato es la única fuente de verdad compartida entre productor y consumidor.
 
-> [PREREQUISITO] Se asume conocimiento de Spring Boot 4.0.x, JUnit 5 y conceptos básicos de testing de integración con MockMvc o REST Assured.
+## Flujo productor-consumidor
 
-## Representación visual
-
-El diagrama siguiente muestra los tres actores del modelo CDC y el flujo de artefactos entre ellos. El contrato es el único artefacto compartido; ningún servicio depende del otro en tiempo de test.
+El flujo CDC con Spring Cloud Contract sigue cuatro etapas claramente diferenciadas que garantizan el aislamiento de los tests de ambas partes.
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                      FLUJO CDC — SPRING CLOUD CONTRACT                  │
-│                                                                         │
-│  CONSUMER TEAM                       PRODUCER TEAM                      │
-│  ─────────────────                   ───────────────────                │
-│  1. Escribe contrato                 3. Recibe contrato                 │
-│     (Groovy / YAML)                     (vía SCM o Nexus)               │
-│         │                                    │                          │
-│         ▼                                    ▼                          │
-│  2. Publica contrato ──────────────► 4. Plugin genera tests             │
-│     en repositorio                     (build/generated-test-sources)   │
-│     compartido                              │                           │
-│                                        5. Tests se ejecutan             │
-│                                           contra implementación real    │
-│                                              │                          │
-│                                        6. Plugin publica Stub JAR       │
-│                                           (WireMock mappings)           │
-│                                              │                          │
-│  8. Tests del consumer  ◄──────────── 7. Consumer descarga Stub JAR    │
-│     usan WireMock stubs                   vía StubRunner                │
-│     (sin llamar al                                                       │
-│      producer real)                                                      │
-└─────────────────────────────────────────────────────────────────────────┘
+Consumidor                    Contrato                   Productor
+─────────                     ────────                   ─────────
+  define              →    .groovy / .yaml   →         verifica
+  expectativas              (fuente única                genera tests
+                              de verdad)                  genera stubs
+                                 │
+                                 ▼
+                          stubs.jar publicado
+                                 │
+                                 ▼
+Consumidor  ←──────────  Stub Runner descarga
+tests con                   y ejecuta stubs
+stubs locales              WireMock en puerto local
 ```
+
+El productor ejecuta `mvn verify`, que genera tests automáticos a partir de los contratos. Si los tests pasan, el productor empaqueta los stubs en un JAR clasificador y los publica en el repositorio de artefactos. El consumidor, en su CI, descarga ese JAR y usa `@AutoConfigureStubRunner` para levantar un servidor WireMock local que responde exactamente según el contrato.
+
+> [PREREQUISITO] Para trabajar con Spring Cloud Contract se necesita conocer conceptos básicos de testing con JUnit 5 y MockMvc/RestAssured en Spring Boot. No es necesario conocer WireMock directamente, ya que SCC gestiona su configuración.
+
+## Diferencia con integration testing end-to-end
+
+Los tests de integración end-to-end requieren que todos los servicios involucrados estén desplegados y disponibles simultáneamente. Esta dependencia genera tests lentos, frágiles y difíciles de mantener en entornos de CI/CD con muchos microservicios.
+
+| Criterio | Integration Test E2E | Consumer-Driven Contract Testing |
+|---|---|---|
+| Servicios requeridos | Todos desplegados | Solo el servicio bajo test |
+| Velocidad de ejecución | Lenta (minutos) | Rápida (segundos) |
+| Entorno necesario | Infraestructura completa | Local / CI básico |
+| Detección de rotura | Al final del pipeline | En el build del productor |
+| Quién define el contrato | Nadie / acuerdo informal | El consumidor formalmente |
+| Mantenimiento | Alto — cambios en cualquier servicio rompen | Bajo — contratos versionados |
+
+> [EXAMEN] La clave diferencial es que en CDC el consumidor **define** el contrato, no el productor. Si el productor cambia su API de forma incompatible, los tests generados fallarán **en el build del productor**, antes de que el artefacto llegue a ningún entorno.
+
+## Roles y responsabilidades
+
+Cada parte tiene un rol estricto en el proceso CDC. Comprender estos roles es fundamental para entender por qué el testing contractual funciona.
+
+El **consumidor** es el servicio que llama a otro servicio. Es responsable de escribir los contratos que expresan qué necesita del productor — ni más ni menos. Un consumidor que sobrespecifica el contrato (validando campos que no usa) crea fragilidad innecesaria.
+
+El **productor** es el servicio que expone la API. Es responsable de mantener los contratos en su repositorio bajo `src/test/resources/contracts/`, ejecutar los tests generados y publicar los stubs resultantes. El productor no escribe los contratos; los acepta del consumidor.
+
+> [ADVERTENCIA] En la práctica, los contratos pueden vivir en el repositorio del productor o en un repositorio compartido. Spring Cloud Contract soporta ambos enfoques mediante la propiedad `repositoryRoot`. El enfoque más común es que los contratos vivan en el repo del productor bajo control de versiones.
+
+## Beneficios del aislamiento
+
+El aislamiento que proporciona CDC resuelve varios problemas concretos de los microservicios.
+
+**Detección temprana de incompatibilidades**: cuando el productor modifica su contrato de forma incompatible (cambia un campo, elimina un endpoint), los tests generados fallan inmediatamente en el build del productor, sin necesidad de desplegar nada.
+
+**Tests del consumidor deterministas**: el consumidor prueba contra un stub que refleja exactamente el comportamiento acordado, sin depender de disponibilidad de red, datos de prueba compartidos ni versiones del productor en entornos.
+
+**Documentación ejecutable**: los contratos son documentación que siempre está actualizada porque es verificada automáticamente en cada build.
 
 ## Ejemplo central
 
-El ejemplo muestra el mínimo viable del lado del producer: dependencias, un contrato Groovy simple y la clase base de test necesaria para que el plugin genere y ejecute el test automáticamente.
-
-**Dependencias Maven (producer):**
-
-```xml
-<dependencies>
-    <dependency>
-        <groupId>org.springframework.cloud</groupId>
-        <artifactId>spring-cloud-starter-contract-verifier</artifactId>
-        <scope>test</scope>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-web</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-test</artifactId>
-        <scope>test</scope>
-    </dependency>
-</dependencies>
-
-<build>
-    <plugins>
-        <plugin>
-            <groupId>org.springframework.cloud</groupId>
-            <artifactId>spring-cloud-contract-maven-plugin</artifactId>
-            <version>${spring-cloud-contract.version}</version>
-            <extensions>true</extensions>
-            <configuration>
-                <baseClassForTests>com.example.producer.BaseContractTest</baseClassForTests>
-            </configuration>
-        </plugin>
-    </plugins>
-</build>
-```
-
-**Dependencias Maven (consumer):**
-
-```xml
-<dependencies>
-    <dependency>
-        <groupId>org.springframework.cloud</groupId>
-        <artifactId>spring-cloud-starter-contract-stub-runner</artifactId>
-        <scope>test</scope>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-test</artifactId>
-        <scope>test</scope>
-    </dependency>
-</dependencies>
-```
-
-**Contrato Groovy** (`src/test/resources/contracts/shouldReturnUser.groovy`):
+El siguiente ejemplo muestra el flujo mínimo completo: un contrato HTTP, el fragmento de configuración del productor y el test del consumidor con Stub Runner.
 
 ```groovy
+// Contrato: src/test/resources/contracts/order/shouldReturnOrder.groovy
+// (reside en el repositorio del PRODUCTOR)
 import org.springframework.cloud.contract.spec.Contract
 
 Contract.make {
-    description "should return user by id"
+    description "should return an order by id"
     request {
         method GET()
-        url '/api/users/1'
-        headers {
-            accept(applicationJson())
-        }
+        url "/orders/1"
     }
     response {
         status OK()
@@ -118,168 +90,100 @@ Contract.make {
             contentType(applicationJson())
         }
         body([
-            id  : 1,
-            name: "Alice",
-            email: anyNonEmptyString()
+            id    : 1,
+            status: "CONFIRMED"
         ])
     }
 }
 ```
 
-**Clase base del producer** (`src/test/java/com/example/producer/BaseContractTest.java`):
-
 ```java
-package com.example.producer;
-
-import com.example.producer.controller.UserController;
+// Clase base en el PRODUCTOR (src/test/java/.../BaseOrderTest.java)
 import io.restassured.module.mockmvc.RestAssuredMockMvc;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 
 @SpringBootTest
-public abstract class BaseContractTest {
+public abstract class BaseOrderTest {
 
     @Autowired
-    private UserController userController;
+    OrderController orderController;
 
     @BeforeEach
     public void setup() {
-        RestAssuredMockMvc.standaloneSetup(userController);
+        RestAssuredMockMvc.standaloneSetup(orderController);
     }
 }
 ```
 
-**Controller del producer** (`src/main/java/com/example/producer/controller/UserController.java`):
-
 ```java
-package com.example.producer.controller;
-
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
-
-import java.util.Map;
-
-@RestController
-@RequestMapping("/api/users")
-public class UserController {
-
-    @GetMapping("/{id}")
-    public ResponseEntity<Map<String, Object>> getUser(@PathVariable Long id) {
-        return ResponseEntity.ok(Map.of(
-            "id", id,
-            "name", "Alice",
-            "email", "alice@example.com"
-        ));
-    }
-}
-```
-
-**application.yml** (producer):
-
-```yaml
-spring:
-  application:
-    name: user-service
-server:
-  port: 8080
-```
-
-**Test del consumer** (`src/test/java/com/example/consumer/UserClientContractTest.java`):
-
-```java
-package com.example.consumer;
-
+// Test del CONSUMIDOR (src/test/java/.../OrderClientTest.java)
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.cloud.contract.stubrunner.spring.AutoConfigureStubRunner;
-import org.springframework.cloud.contract.stubrunner.spring.StubRunnerProperties;
-import org.springframework.web.client.RestTemplate;
-
-import java.util.Map;
-
+import org.springframework.cloud.contract.stubrunner.StubRunnerProperties;
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
 @AutoConfigureStubRunner(
-    ids = "com.example:user-service:+:stubs:8090",
-    stubsMode = StubRunnerProperties.StubsMode.CLASSPATH
+    ids = "com.example:order-service:+:stubs:8090",
+    stubsMode = StubRunnerProperties.StubsMode.LOCAL
 )
-class UserClientContractTest {
+public class OrderClientTest {
 
     @Autowired
-    private RestTemplate restTemplate;
+    OrderClient orderClient;  // cliente HTTP que llama a localhost:8090
 
     @Test
-    void shouldGetUserById() {
-        Map response = restTemplate.getForObject("http://localhost:8090/api/users/1", Map.class);
-
-        assertThat(response).isNotNull();
-        assertThat(response.get("id")).isEqualTo(1);
-        assertThat(response.get("name")).isEqualTo("Alice");
-        assertThat(response.get("email")).isNotNull();
+    void shouldRetrieveConfirmedOrder() {
+        Order order = orderClient.getOrder(1L);
+        assertThat(order.getId()).isEqualTo(1L);
+        assertThat(order.getStatus()).isEqualTo("CONFIRMED");
     }
 }
 ```
 
 ## Tabla de elementos clave
 
-La siguiente tabla recoge la terminología fundamental del modelo CDC que todo desarrollador senior debe manejar con precisión en una entrevista técnica.
+Los siguientes son los artefactos y anotaciones centrales que todo desarrollador debe conocer para trabajar con Spring Cloud Contract.
 
-| Término | Rol | Descripción |
-|---------|-----|-------------|
-| Contrato | Compartido | Fichero Groovy/YAML que describe la interacción esperada entre producer y consumer |
-| Producer | Proveedor | Servicio que implementa la API; ejecuta tests generados para verificar el contrato |
-| Consumer | Cliente | Servicio que consume la API; usa stubs WireMock para testear sin llamar al producer real |
-| Stub JAR | Artefacto | JAR publicado por el producer con los mappings WireMock generados desde los contratos |
-| StubRunner | Infraestructura test | Componente que descarga y levanta el Stub JAR como servidor WireMock en el consumer |
-| CDC testing | Estrategia | Verificación de compatibilidad basada en contratos definidos por el consumer |
-| @AutoConfigureStubRunner | Anotación | Activa el StubRunner en tests del consumer con la configuración declarada |
-| ContractVerifierMockMvc | Clase base | Superclase que configura el contexto MockMvc para los tests generados del producer |
-| WireMock mapping | Artefacto interno | JSON dentro del Stub JAR que reproduce la respuesta del producer para un request definido |
-| Breaking change | Evento | Modificación del producer que invalida uno o más contratos existentes |
-| Contract-first | Estrategia | El consumer escribe el contrato antes de que el producer implemente el endpoint |
-| Code-first | Estrategia | El producer implementa y luego extrae el contrato de la implementación existente |
+| Elemento | Rol | Dónde se usa |
+|---|---|---|
+| Fichero `.groovy` / `.yaml` | Define el contrato | Repositorio del productor |
+| `spring-cloud-contract-maven-plugin` | Genera tests y stubs en el productor | `pom.xml` del productor |
+| `@AutoConfigureStubRunner` | Activa Stub Runner en el consumidor | Test class del consumidor |
+| `stubs.jar` | JAR con stubs WireMock empaquetados | Nexus/Artifactory/Git |
+| `RestAssuredMockMvc.standaloneSetup()` | Configura contexto en clase base | Clase base del productor |
+| `StubRunnerProperties.StubsMode` | Controla cómo se resuelven los stubs | `@AutoConfigureStubRunner` |
 
 ## Buenas y malas prácticas
 
-**Hacer:**
+**Buenas prácticas**:
+- El consumidor escribe contratos con solo los campos que realmente usa, sin sobrespecificar la respuesta.
+- El productor mantiene los contratos bajo control de versiones con el mismo ciclo de vida que el código.
+- Se versiona el JAR de stubs con semántica clara (MAJOR.MINOR.PATCH) para que el consumidor pueda fijar versiones compatibles.
+- Se usan matchers dinámicos (`byType`, `byRegex`) para campos no deterministas como timestamps o UUIDs.
 
-- Situar los contratos en el repositorio del producer bajo `src/test/resources/contracts/` para que el plugin los detecte automáticamente sin configuración adicional de `contractsDirectory`.
-- Usar matchers (`anyNonNull()`, `byRegex()`) en los campos que cambian entre ejecuciones (UUIDs, timestamps, tokens) para evitar que los tests fallen por valores concretos no predecibles.
-- Versionar los contratos en el mismo repositorio Git del producer; esto garantiza que el historial de cambios del contrato y de la implementación estén sincronizados.
-- Definir una única clase base por modo de test (MockMvc, WebTestClient, RestAssured) y usar `baseClassMappings` para asignarla por directorio de contratos.
-- Publicar el Stub JAR en Nexus/Artifactory como parte del pipeline CI del producer; los consumers no deben depender de builds locales del producer.
+**Malas prácticas**:
+- Copiar el JSON completo de una respuesta real como body esperado sin usar matchers — rompe con cualquier campo opcional nuevo.
+- Mantener contratos en un repositorio separado sin integración continua — los contratos se vuelven obsoletos.
+- Usar `stubsMode = REMOTE` en CI sin cache — genera dependencia de red y tests lentos.
+- Escribir el contrato desde el productor en lugar de desde el consumidor — pierde el beneficio del enfoque CDC.
 
-**Evitar:**
+## Verificación y práctica
 
-- Evitar usar valores literales (`"email": "alice@example.com"`) en campos variables del contrato: provoca fallos por acoplamiento a datos de test, no por incompatibilidad real de la API.
-- Evitar omitir el Stub JAR en el artefacto publicado: sin el JAR de stubs, ningún consumer puede ejecutar sus tests de contrato en CI, paralizando los builds dependientes.
-- Evitar usar `StubsMode.CLASSPATH` en CI si el Stub JAR no está en el classpath del proyecto consumer: el test pasa en local pero falla en pipeline por ausencia del artefacto.
-- Evitar escribir contratos demasiado restrictivos que validen el orden de campos JSON o el formato exacto de fechas: genera fallos de contrato por cambios de serialización irrelevantes para el negocio.
-- Evitar que el producer modifique un contrato existente sin coordinar con el equipo consumer: un cambio en el contrato rompe los stubs que el consumer ya usa en producción.
+> [EXAMEN] 1. ¿Cuál es la diferencia fundamental entre Consumer-Driven Contract Testing y un test de integración end-to-end tradicional?
 
-## Comparación: CDC vs otras estrategias de testing
+> [EXAMEN] 2. ¿Quién es responsable de escribir los contratos en CDC: el productor o el consumidor? ¿Por qué?
 
-La tabla siguiente muestra por qué CDC es la estrategia óptima para equipos que trabajan con microservicios independientes desplegados con frecuencia.
+> [EXAMEN] 3. Describe las cuatro etapas del flujo CDC con Spring Cloud Contract: desde la definición del contrato hasta la ejecución del test del consumidor.
 
-| Criterio | CDC (Spring Cloud Contract) | E2E Testing | Integration Testing clásico |
-|---------|----------------------------|-------------|----------------------------|
-| Entorno necesario | Ninguno en runtime de test | Todos los servicios activos | Servicio real o mock manual |
-| Velocidad de feedback | Segundos (tests aislados) | Minutos/horas | Minutos |
-| Detección de breaking changes | En CI del producer, antes del merge | En entorno de staging, post-deploy | Solo si el mock es correcto |
-| Mantenimiento | Contrato como artefacto versionado | Scripts de entorno complejos | Mocks duplicados en cada consumer |
-| Cobertura de comportamiento | Contrato define los casos explícitamente | Alta pero lenta y frágil | Limitada al mock manual |
-| Acoplamiento entre equipos | Mínimo (solo vía contrato) | Total (deploy sincronizado) | Medio (mock compartido informalmente) |
+> [EXAMEN] 4. ¿Qué contiene el JAR clasificador `stubs` que genera el plugin de Spring Cloud Contract?
 
-> [EXAMEN] Pregunta frecuente en entrevistas: "¿Qué diferencia hay entre un stub y un mock en el contexto de Spring Cloud Contract?" — El stub es un artefacto generado automáticamente desde el contrato; el mock es una implementación manual. El stub garantiza que lo que el consumer testea corresponde al comportamiento real del producer porque ambos son verificados contra el mismo contrato.
-
-> [ADVERTENCIA] Spring Cloud Contract 2025.1.1 (Oakwood) usa WireMock 3.x como motor de stubs. Las extensiones de WireMock 2.x usan el paquete `com.github.tomakehurst.wiremock`; WireMock 3.x usa `org.wiremock`. Los transformers personalizados escritos para versiones anteriores deben migrarse antes de actualizar a Oakwood.
+> [EXAMEN] 5. ¿Qué ventaja tiene CDC respecto al e2e testing en cuanto a la detección temprana de incompatibilidades entre servicios?
 
 ---
 
-← [9.12 Testing de Spring Cloud Kubernetes](sc-kubernetes-testing.md) | [Índice](README.md) | [10.2 Ciclo de vida CDC y workflow CI/CD](sc-contract-workflow.md) →
+← [9.10 Spring Cloud Kubernetes — Testing](sc-kubernetes-testing.md) | [Índice](README.md) | [10.2 DSL Groovy y YAML](sc-contract-dsl.md) →

@@ -1,272 +1,216 @@
-# 1.8 Operación del Config Server en producción (HA, Webhooks y Observabilidad)
+# 1.7 Operación y alta disponibilidad — fail-fast, retry y Eureka discovery
 
-← [1.7 Seguridad del Config Server](sc-config-security.md) | [Índice (README.md)](README.md) | [1.9 Testing / Verificación de Spring Cloud Config →](sc-config-testing.md)
+← [1.6 Seguridad Config Server](sc-config-security.md) | [Índice](README.md) | [1.8 Testing Config Server](sc-config-testing.md) →
 
 ---
 
 ## Introducción
 
-Un Config Server que funciona en desarrollo o staging puede fallar silenciosamente en producción bajo tres tipos de presión: carga simultánea de decenas de microservicios al arrancar, falta de alta disponibilidad cuando el servidor cae, y ausencia de un mecanismo automático de propagación de cambios cuando el repositorio Git se actualiza.
+Un Config Server en producción puede fallar, estar temporalmente inaccesible o estar escalado horizontalmente detrás de un balanceador. Los microservicios clientes necesitan estrategias para manejar estas situaciones: `fail-fast` controla si un cliente que no puede contactar al Config Server debe fallar inmediatamente al arrancar (en lugar de arrancar con valores por defecto potencialmente incorrectos); `retry` proporciona una estrategia de reintentos con backoff exponencial antes de declarar el fallo; y la integración con Eureka permite que los clientes descubran el Config Server dinámicamente por nombre de servicio, sin depender de una URL fija que cambia con el escalado horizontal.
 
-Este fichero cubre los tres bloques operativos del "día 2" del Config Server: **alta disponibilidad** (múltiples instancias detrás de un balanceador o registro en Eureka), **webhooks** (propagación automática de cambios desde el repositorio Git) y **observabilidad** (endpoints Actuator, health indicator y logging de resolución). Los tres bloques son inseparables en la operación real de producción.
+> [CONCEPTO] `spring.cloud.config.fail-fast=true` convierte los errores de conexión al Config Server en un `BeanCreationException` durante el arranque de la aplicación. Esto garantiza que un servicio no arranque con configuración incorrecta (por defecto) en lugar de la configuración remota esperada.
 
-> [ADVERTENCIA] El Config Server es un prerequisito de arranque para todos los microservicios del ecosistema. Su indisponibilidad en producción tiene un radio de impacto igual al número de microservicios que lo usan. Planificar HA desde el diseño inicial, no como mejora posterior.
+> [PREREQUISITO] La integración con Eureka requiere tener el módulo Eureka configurado (módulo 2). Si no se ha completado el módulo Eureka, enfocarse en fail-fast y retry que son independientes.
 
-## Diagrama: arquitectura HA del Config Server
+## Arquitectura de alta disponibilidad
 
-El siguiente diagrama muestra la topología recomendada para alta disponibilidad del Config Server con balanceador de carga y registro en Eureka.
+El Config Server puede ejecutarse en múltiples instancias detrás de un balanceador de carga. En este escenario, los clientes necesitan apuntar al balanceador (URL fija) o descubrir las instancias dinámicamente via Eureka.
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                     Config Clients                           │
-│  spring.cloud.config.discovery.enabled=true                  │
-│  spring.cloud.config.discovery.service-id=config-server      │
-└──────────────┬───────────────────────────────────────────────┘
-               │  localiza instancias vía Eureka
-               ▼
-┌──────────────────────────────────────────────────────────────┐
-│                   Eureka Server                              │
-│   config-server → [10.0.0.1:8888, 10.0.0.2:8888]           │
-└──────────────┬───────────────────────────────────────────────┘
-               │  registra sus instancias
-               ▼
-┌─────────────────────┐       ┌─────────────────────┐
-│  Config Server #1   │       │  Config Server #2   │
-│  10.0.0.1:8888      │       │  10.0.0.2:8888      │
-└──────────┬──────────┘       └──────────┬──────────┘
-           │                             │
-           └──────────┬──────────────────┘
-                      │  comparten el mismo backend Git
-                      ▼
-              ┌───────────────┐
-              │  Git Backend  │
-              │  (repositorio │
-              │   remoto)     │
-              └───────────────┘
+ARQUITECTURA DE ALTA DISPONIBILIDAD
+═══════════════════════════════════════════════════════════════
+  ┌──────────────────────────────────────────────────────────┐
+  │                 OPCIÓN 1: URL fija al LB                 │
+  │                                                          │
+  │  Client ──▶ Load Balancer ──▶ Config Server 1 (8888)    │
+  │                           └──▶ Config Server 2 (8888)   │
+  │                                                          │
+  │  spring.config.import=configserver:http://lb:8888        │
+  └──────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────┐
+  │              OPCIÓN 2: Discovery via Eureka              │
+  │                                                          │
+  │  Config Server 1 ──▶ Eureka (registrado como            │
+  │  Config Server 2 ──▶   "config-server")                 │
+  │                                                          │
+  │  Client ──▶ Eureka ──▶ Config Server (instancia elegida)│
+  │                                                          │
+  │  spring.cloud.config.discovery.enabled=true             │
+  │  spring.cloud.config.discovery.service-id=config-server │
+  └──────────────────────────────────────────────────────────┘
 ```
 
-Cada instancia del Config Server es **stateless** respecto al estado de configuración (todo está en Git): no hay sincronización entre instancias, no hay líder/seguidor. El único estado local es el clon Git en `basedir`, que es un caché prescindible.
+## Ejemplo central — fail-fast con retry y discovery via Eureka
 
-## Alta disponibilidad
+El siguiente ejemplo muestra la configuración completa de un cliente con fail-fast, retry exponencial, y discovery via Eureka.
 
-### Opción 1: Múltiples instancias detrás de un load balancer
+**pom.xml — dependencias para discovery**:
 
-La opción más sencilla: desplegar N instancias del Config Server y poner un load balancer (Nginx, HAProxy, AWS ALB) delante.
+```xml
+<dependencies>
+  <dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-config</artifactId>
+  </dependency>
+  <dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+  </dependency>
+  <dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-actuator</artifactId>
+  </dependency>
+  <!-- Necesario para retry -->
+  <dependency>
+    <groupId>org.springframework.retry</groupId>
+    <artifactId>spring-retry</artifactId>
+  </dependency>
+  <dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-aop</artifactId>
+  </dependency>
+</dependencies>
+```
+
+**application.yml — Config Client con fail-fast, retry y Eureka discovery**:
 
 ```yaml
-# application.yml del Config Client — apunta al VIP del balanceador
-spring:
-  config:
-    import: "configserver:http://config-lb.internal:8888"
-  cloud:
-    config:
-      fail-fast: true
-      retry:
-        max-attempts: 6
-        initial-interval: 1000
-        multiplier: 1.5
-        max-interval: 2000
-```
-
-El balanceador (Nginx, HAProxy, ALB) enruta las peticiones entre las N instancias del Config Server. Spring Cloud Config no impone un balanceador específico.
-
-### Opción 2: Descubrimiento dinámico vía Eureka
-
-```yaml
-# application.yml del Config Server — se registra en Eureka
-spring:
-  application:
-    name: config-server
-  cloud:
-    config:
-      server:
-        git:
-          uri: https://github.com/mi-org/config-repo
-
-eureka:
-  client:
-    service-url:
-      defaultZone: http://eureka:8761/eureka/
-  instance:
-    prefer-ip-address: true
-```
-
-```yaml
-# application.yml del Config Client — localiza el Config Server vía Eureka
 spring:
   application:
     name: order-service
   cloud:
     config:
-      discovery:
-        enabled: true
-        service-id: config-server    # nombre con el que el Config Server se registra en Eureka
+      # Opción A: URL fija con fail-fast y retry
+      uri: http://config-server-lb:8888
       fail-fast: true
       retry:
-        max-attempts: 6
+        initial-interval: 1000     # Primer reintento a los 1s
+        max-interval: 5000         # Máximo 5s entre reintentos
+        multiplier: 1.5            # Backoff: 1s, 1.5s, 2.25s, 3.37s...
+        max-attempts: 5            # Máximo 5 intentos antes de fallar
+
+      # Opción B: Discovery via Eureka (comentar uri y descomentar esto)
+      # discovery:
+      #   enabled: true
+      #   service-id: config-server   # Nombre con el que el Config Server se registra en Eureka
 
 eureka:
   client:
     service-url:
-      defaultZone: http://eureka:8761/eureka/
+      defaultZone: http://eureka-server:8761/eureka/
+    registry-fetch-interval-seconds: 5
+  instance:
+    prefer-ip-address: true
 ```
 
-> [ADVERTENCIA] El bootstrap con descubrimiento Eureka crea una dependencia de arranque circular: el Config Client necesita Eureka para encontrar al Config Server, y los microservicios necesitan al Config Server para su configuración. Resolver usando un `bootstrap.yml` (modo legacy) o configurando la URL de Eureka directamente en `application.yml` sin importarla del Config Server.
+**ConfigServerApplication.java (del servidor — registrado en Eureka)**:
 
-### refreshRate y comportamiento de caché
+```java
+package com.example.configserver;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cloud.config.server.EnableConfigServer;
+import org.springframework.cloud.netflix.eureka.EnableEurekaClient;
+
+@SpringBootApplication
+@EnableConfigServer
+@EnableEurekaClient
+public class ConfigServerApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(ConfigServerApplication.class, args);
+    }
+}
+```
+
+**application.yml del Config Server — registrado en Eureka**:
 
 ```yaml
+server:
+  port: 8888
+
 spring:
+  application:
+    name: config-server              # Este es el service-id en Eureka
   cloud:
     config:
       server:
         git:
-          refresh-rate: 60       # segundos entre git fetch automáticos
-          force-pull: true       # descarta cambios locales en el clon
-          clone-on-start: true   # clona al arrancar, no en la primera petición
+          uri: https://github.com/myorg/config-repo
+          default-label: main
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://eureka-server:8761/eureka/
+  instance:
+    prefer-ip-address: true
+    lease-renewal-interval-in-seconds: 5
+    lease-expiration-duration-in-seconds: 10
 ```
 
-Con `refresh-rate: 0`, el servidor hace `git fetch` en cada petición, lo que puede ser un bottleneck bajo carga.
+> [ADVERTENCIA] Cuando se usa discovery via Eureka (`spring.cloud.config.discovery.enabled=true`), el cliente necesita que Eureka esté disponible ANTES de intentar conectar al Config Server. Esto crea un orden de arranque: Eureka Server → Config Server → Clientes.
 
-## Webhooks y notificaciones push
+> [EXAMEN] `fail-fast: true` + `retry` es el patrón recomendado en producción. Sin retry, con `fail-fast: true`, un Config Server que tarda 2s en arrancar causa que todos los clientes fallen en su primer intento. Con retry, los clientes esperan con backoff hasta que el servidor esté disponible.
 
-### Flujo webhook: GitHub/GitLab → Config Server → Bus
+## Tabla de propiedades de operación
 
-Cuando se hace un push al repositorio Git, el proveedor Git puede notificar al Config Server vía webhook HTTP. El Config Server entonces invalida su caché y publica un evento en Spring Cloud Bus para que todos los microservicios actualicen su configuración.
-
-```xml
-<!-- pom.xml del Config Server — añadir spring-cloud-config-monitor -->
-<dependency>
-    <groupId>org.springframework.cloud</groupId>
-    <artifactId>spring-cloud-config-monitor</artifactId>
-</dependency>
-<!-- Y el binder de bus: Kafka o AMQP (RabbitMQ) -->
-<dependency>
-    <groupId>org.springframework.cloud</groupId>
-    <artifactId>spring-cloud-starter-bus-kafka</artifactId>
-</dependency>
-```
-
-Con estas dependencias, el Config Server expone el endpoint `/monitor` que acepta los payloads webhook de GitHub, GitLab y Bitbucket.
-
-```yaml
-# application.yml del Config Server — configuración del bus
-spring:
-  cloud:
-    bus:
-      enabled: true
-    stream:
-      kafka:
-        binder:
-          brokers: kafka:9092
-```
-
-Configuración del webhook en GitHub:
-- URL: `https://config-server:8888/monitor`
-- Content type: `application/json`
-- Events: `push`
-
-Cuando se recibe el webhook, el Config Server publica un `RefreshRemoteApplicationEvent` en el bus. Todos los microservicios suscritos al bus reciben el evento y ejecutan `ContextRefresher.refresh()` automáticamente.
-
-`spring-cloud-config-monitor` publica un `RefreshRemoteApplicationEvent` en el bus; la propagación la gestiona Spring Cloud Bus. Ver módulo Spring Cloud Bus.
-
-> [EXAMEN] El endpoint `/monitor` no es parte del Actuator estándar: es específico de `spring-cloud-config-monitor`. Su diferencia con `POST /actuator/refresh` es que `/monitor` acepta el formato nativo de los webhooks de Git (GitHub, GitLab, Bitbucket) y determina automáticamente qué aplicaciones afecta el push, publicando un evento selectivo (solo las aplicaciones cuyos ficheros de configuración cambiaron).
-
-## Observabilidad
-
-### Health indicator del Config Server
-
-```yaml
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health,info,env,refresh
-  endpoint:
-    health:
-      show-details: when-authorized
-```
-
-```bash
-# Health del Config Server — incluye el estado del backend Git
-curl http://config-server:8888/actuator/health
-
-{
-  "status": "UP",
-  "components": {
-    "configServer": {
-      "status": "UP",
-      "details": {
-        "repositories": [
-          {
-            "name": "default",
-            "profiles": ["*"],
-            "label": null,
-            "uri": "https://github.com/mi-org/config-repo",
-            "info": { "deleteUntrackedBranches": false, "forcePull": true }
-          }
-        ]
-      }
-    }
-  }
-}
-```
-
-El `HealthIndicator` del Config Server verifica la conectividad con el backend (Git, Vault, etc.) en cada llamada a `/actuator/health`. Si el backend no es accesible, el estado pasa a `DOWN`.
-
-### Endpoint /actuator/env
-
-```bash
-# Ver todas las propiedades resueltas para una aplicación concreta (desde el servidor)
-curl http://config-server:8888/order-service/prod
-
-# Ver el Environment interno del propio Config Server
-curl http://config-server:8888/actuator/env
-```
-
-### Logging de resolución de configuración
-
-```yaml
-# application.yml del Config Server
-logging:
-  level:
-    org.springframework.cloud.config.server: DEBUG
-    org.eclipse.jgit: WARN    # reducir el ruido de JGit en DEBUG
-```
-
-Con `DEBUG`, el log muestra cada petición de resolución: qué ficheros se buscan, cuáles se encuentran y en qué rama/directorio.
-
-```
-DEBUG o.s.c.c.s.e.JGitEnvironmentRepository - Fetching for remote branches...
-DEBUG o.s.c.c.s.e.JGitEnvironmentRepository - Found 4 resource(s) for config
-DEBUG o.s.c.c.s.EnvironmentController - Returning environment for 'order-service/prod'
-```
-
-## Tabla de parámetros operativos
-
-La siguiente tabla resume los parámetros más relevantes para la operación en producción.
-
-| Parámetro | Tipo | Default | Descripción |
-|---|---|---|---|
-| `spring.cloud.config.discovery.enabled` | `boolean` | `false` | Activa el descubrimiento del servidor vía Eureka en el cliente. |
-| `spring.cloud.config.discovery.service-id` | `String` | `configserver` | Nombre del servicio Config Server en Eureka. |
-| `spring.cloud.config.server.git.refresh-rate` | `int` | `0` | Segundos entre git fetch automáticos. `0` = fetch en cada petición. |
-| `spring.cloud.config.server.health.enabled` | `boolean` | `true` | Activa el health indicator del backend de configuración. |
-| `spring.cloud.config.server.health.repositories.*` | `Map` | — | Repositorios a verificar en el health check. |
-| `management.endpoints.web.exposure.include` | `String` | `health` | Endpoints Actuator expuestos. Para debug añadir `env`. |
+| Propiedad | Tipo | Default | Descripción |
+|-----------|------|---------|-------------|
+| `spring.cloud.config.fail-fast` | boolean | `false` | Si true, falla el arranque del cliente cuando el Config Server no responde |
+| `spring.cloud.config.retry.max-attempts` | int | `6` | Número máximo de intentos de conexión |
+| `spring.cloud.config.retry.initial-interval` | long | `1000` | Espera inicial en ms antes del primer reintento |
+| `spring.cloud.config.retry.max-interval` | long | `2000` | Espera máxima en ms entre reintentos |
+| `spring.cloud.config.retry.multiplier` | double | `1.1` | Factor multiplicador del backoff exponencial |
+| `spring.cloud.config.discovery.enabled` | boolean | `false` | Activa el discovery del Config Server via Eureka |
+| `spring.cloud.config.discovery.service-id` | String | `configserver` | Nombre del servicio Config Server en Eureka |
 
 ## Buenas y malas prácticas
 
-**Hacer:**
-- Monitorear el health indicator del Config Server en el sistema de alertas. Un estado `DOWN` en el Config Server significa que el siguiente arranque de cualquier microservicio fallará si `fail-fast: true` está activado.
-- Usar `refresh-rate` entre 30 y 120 segundos en producción para balancear entre latencia de propagación de cambios y carga sobre el servidor Git.
-- Configurar la URL del webhook en Git como HTTPS con autenticación (secret token de GitHub/GitLab) para evitar que actores externos puedan disparar refrescos masivos en el ecosistema.
+Hacer:
+- Usar `fail-fast: true` con retry configurado en producción; es el patrón de resiliencia estándar.
+- Cuando se usa discovery, asegurarse de que el `spring.application.name` del Config Server coincide exactamente con el `service-id` configurado en los clientes.
+- Configurar health checks en el Config Server y en el balanceador para que las instancias no sanas sean excluidas antes de recibir tráfico.
+- Registrar el Config Server en Eureka con lease-renewal bajo (5s) para que las instancias caídas se detecten rápidamente.
 
-**Evitar:**
-- Exponer `/actuator/env` sin autenticación: este endpoint devuelve todas las propiedades resueltas del Config Server, incluyendo las no cifradas.
-- Operar el Config Server con una sola instancia sin plan de HA si el ecosistema tiene más de 5 microservicios dependientes: una caída del servidor en producción bloquea todos los reinicios y despliegues hasta que el servidor vuelva.
-- Ignorar los tiempos de arranque bajo carga: con 50 microservicios arrancando simultáneamente (rolling deploy), el Config Server recibe 50 peticiones concurrentes en segundos. Dimensionar el servidor y el backend Git para este pico de carga.
+Evitar:
+- Usar `fail-fast: false` en producción; permite arranques silenciosos con configuración por defecto incorrecta que generan errores difíciles de diagnosticar en runtime.
+- Omitir `spring-retry` y `spring-boot-starter-aop` del classpath cuando se usa retry; sin estas dependencias, la configuración de retry se ignora silenciosamente.
+- Depender de una URL fija del Config Server sin fail-fast ni retry; si el servidor tarda en arrancar, los clientes fallan sin posibilidad de recuperación.
+- Escalar el Config Server con estado local (por ejemplo, usando un git clone local sin `force-pull`); las distintas instancias pueden servir configuraciones diferentes.
+
+## Verificación y práctica
+
+Para simular el comportamiento de fail-fast y verificar la configuración de retry:
+
+```bash
+# Verificar que el Config Server está registrado en Eureka
+curl http://eureka-server:8761/eureka/apps/config-server
+
+# Verificar el estado del Config Server via Actuator
+curl http://config-server:8888/actuator/health
+
+# Simular fallo del Config Server (detener el servidor)
+# Con fail-fast=true y retry configurado, el cliente intentará N veces
+# antes de lanzar BeanCreationException y abortar el arranque.
+
+# Ver los logs del cliente durante el fallo (búsqueda de patrón de retry):
+# INFO - Fetching config from server at: http://config-server-lb:8888
+# WARN - Could not locate PropertySource: ... retrying in 1000ms
+# WARN - Could not locate PropertySource: ... retrying in 1500ms
+# ERROR - Could not connect to config server after 5 retries
+```
+
+**Preguntas estilo examen VMware Spring Professional:**
+
+1. ¿Qué ocurre exactamente cuando `spring.cloud.config.fail-fast=true` y el Config Server no está disponible durante el arranque del cliente?
+2. ¿Qué dependencias adicionales son necesarias para que funcione el retry en el Config Client?
+3. ¿Cómo se configura el Config Client para descubrir el Config Server via Eureka en lugar de usar una URL fija?
+4. ¿Cuál es el valor por defecto del `service-id` del Config Server en Eureka cuando se usa discovery?
+5. El Config Server está en alta disponibilidad con 3 instancias detrás de un balanceador. Un cliente tiene `spring.cloud.config.uri=http://lb:8888`. ¿Qué ocurre si una de las instancias falla?
 
 ---
 
-← [1.7 Seguridad del Config Server](sc-config-security.md) | [Índice (README.md)](README.md) | [1.9 Testing / Verificación de Spring Cloud Config →](sc-config-testing.md)
+← [1.6 Seguridad Config Server](sc-config-security.md) | [Índice](README.md) | [1.8 Testing Config Server](sc-config-testing.md) →

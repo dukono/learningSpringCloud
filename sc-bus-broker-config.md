@@ -1,233 +1,213 @@
-# 7.3 Configuración del broker subyacente para Spring Cloud Bus
+# 7.5 Spring Cloud Bus — Configuración de brokers RabbitMQ y Kafka
 
-← [7.2 Setup y dependencias de Spring Cloud Bus](sc-bus-setup.md) | [Índice](README.md) | [7.4 Refresh de configuración distribuido con Spring Cloud Bus](sc-bus-refresh-distribuido.md) →
+← [7.4 Spring Cloud Bus — Eventos personalizados con RemoteApplicationEvent](sc-bus-eventos-personalizados.md) | [Índice](README.md) | [7.6 Spring Cloud Bus — Trazabilidad y destination pattern](sc-bus-observabilidad.md) →
+
+---
 
 ## Introducción
 
-Spring Cloud Bus no implementa su propio protocolo de mensajería: delega completamente en Spring Cloud Stream, que a su vez usa el binder del broker elegido. Esto significa que configurar Bus para producción requiere configurar correctamente dos capas: las propiedades del broker (`spring.rabbitmq.*` o `spring.kafka.*`) y las propiedades específicas de los bindings internos de Bus (`springCloudBusInput` y `springCloudBusOutput`). El comportamiento del sistema ante la desconexión del broker es una de las preguntas más frecuentes en entrevistas: con RabbitMQ en modo fanout, los eventos emitidos mientras un nodo está caído se pierden irrecuperablemente; con Kafka, la retención configurable permite que el nodo los recupere al reconectarse. Esta distinción impacta directamente en el diseño de la estrategia de alta disponibilidad del bus.
+Spring Cloud Bus abstrae el broker subyacente pero expone las propiedades de conexión y configuración de RabbitMQ y Kafka a través de sus respectivos namespaces de Spring Boot y Spring Cloud Stream. Conocer las propiedades específicas de cada broker es necesario para configurar correctamente entornos de producción y para resolver problemas de conectividad o comportamiento inesperado del Bus.
 
-> [PREREQUISITO] Comprende cómo Bus usa los bindings `springCloudBusInput` y `springCloudBusOutput` internamente antes de modificar propiedades de Spring Cloud Stream para esos canales. Consulta sc-stream-bindings.md para el modelo de bindings de Stream.
+> [PREREQUISITO] Spring Cloud Bus delega el transporte en Spring Cloud Stream. La configuración del broker se realiza a través de las propiedades de Spring Boot (`spring.rabbitmq.*`, `spring.kafka.*`) y de Spring Cloud Stream (`spring.cloud.stream.bindings.*`). No existe un namespace propio del Bus para la configuración del broker.
 
-## Representación visual
+## Configuración de RabbitMQ
 
-El diagrama siguiente muestra cómo Bus se apoya en Stream para conectarse al broker, evidenciando las dos capas de configuración.
+RabbitMQ es el broker más común en despliegues de Spring Cloud Bus. El Bus crea automáticamente un exchange de tipo `fanout` con el nombre definido en `spring.cloud.bus.destination` (por defecto `springCloudBus`). Cada instancia crea una cola anónima que se liga a este exchange.
 
-```
-  Aplicación Spring Boot
-  ┌─────────────────────────────────────────────────────┐
-  │                                                     │
-  │  BusAutoConfiguration                               │
-  │    ├── BusProperties (spring.cloud.bus.*)           │
-  │    └── Registra listeners de RemoteApplicationEvent │
-  │                                                     │
-  │  Spring Cloud Stream                                │
-  │    ├── springCloudBusOutput ──► Binder ──► Broker   │
-  │    └── springCloudBusInput  ◄── Binder ◄── Broker   │
-  │                                                     │
-  │  Binder RabbitMQ                Binder Kafka        │
-  │    spring.rabbitmq.host           spring.kafka.     │
-  │    spring.rabbitmq.port           bootstrap-servers │
-  │    spring.rabbitmq.username                         │
-  │    spring.rabbitmq.password                         │
-  │    spring.rabbitmq.virtual-host                     │
-  └─────────────────────────────────────────────────────┘
-```
+Las propiedades de conexión a RabbitMQ se configuran bajo el namespace `spring.rabbitmq`:
 
-La tabla siguiente resume las diferencias de comportamiento entre los dos brokers en escenarios de fallo:
+| Propiedad | Valor por defecto | Descripción |
+|-----------|-------------------|-------------|
+| `spring.rabbitmq.host` | `localhost` | Hostname del servidor RabbitMQ |
+| `spring.rabbitmq.port` | `5672` | Puerto AMQP del servidor |
+| `spring.rabbitmq.username` | `guest` | Usuario de autenticación |
+| `spring.rabbitmq.password` | `guest` | Contraseña de autenticación |
+| `spring.rabbitmq.virtual-host` | `/` | VirtualHost de RabbitMQ |
+| `spring.rabbitmq.ssl.enabled` | `false` | Habilita conexión SSL/TLS |
 
-| Escenario | RabbitMQ (fanout) | Kafka (topic con retención) |
-|---|---|---|
-| Nodo caído durante refresh | Evento perdido para ese nodo | Evento recuperable si retention > uptime |
-| Broker caído | Publicación falla; los listeners no reciben nada | Publicación falla; retención en broker no aplica |
-| Reconexión automática | Sí, via spring-retry | Sí, vía KafkaConsumer auto-reconnect |
-| Nodo que arranca tarde | No recibe eventos anteriores | Recibe eventos desde su último offset |
+## Configuración de Apache Kafka
 
-## Ejemplo central
+Con Apache Kafka, el Bus usa un topic llamado `springCloudBus` (o el valor de `spring.cloud.bus.destination`). La diferencia fundamental respecto a RabbitMQ es que Kafka usa consumer groups para distribuir mensajes, lo que requiere configuración explícita del grupo en el binding de entrada del Bus.
 
-El ejemplo siguiente muestra la configuración completa para Bus sobre RabbitMQ y Bus sobre Kafka, incluyendo propiedades de broker, bindings internos y comportamiento en fallo. Se incluyen ambas variantes en el mismo fichero con perfiles para facilitar la comparación.
+Las propiedades clave para Kafka son:
 
-```xml
-<!-- pom.xml — elige uno de los dos starters -->
-<dependencies>
-    <!-- Opción A: RabbitMQ -->
-    <dependency>
-        <groupId>org.springframework.cloud</groupId>
-        <artifactId>spring-cloud-starter-bus-amqp</artifactId>
-    </dependency>
+| Propiedad | Descripción |
+|-----------|-------------|
+| `spring.cloud.stream.kafka.binder.brokers` | Dirección(es) de los brokers Kafka |
+| `spring.cloud.stream.bindings.springCloudBusInput.group` | Consumer group único por instancia |
+| `spring.cloud.stream.kafka.binder.auto-create-topics` | Crear topics automáticamente (default: true) |
+| `spring.cloud.stream.kafka.binder.replication-factor` | Factor de replicación del topic del Bus |
 
-    <!-- Opción B: Kafka (comentar el de arriba y descomentar este) -->
-    <!--
-    <dependency>
-        <groupId>org.springframework.cloud</groupId>
-        <artifactId>spring-cloud-starter-bus-kafka</artifactId>
-    </dependency>
-    -->
+## Ejemplo central — Configuración completa con ambos brokers
 
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-actuator</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-web</artifactId>
-    </dependency>
-</dependencies>
-```
+El siguiente ejemplo muestra la configuración completa para entornos de producción con RabbitMQ y Kafka, incluyendo SSL, consumer groups y ajustes de rendimiento.
 
 ```yaml
-# application.yml — configuración base común
+# application-rabbitmq.yml — configuración de producción con RabbitMQ
 spring:
   application:
-    name: notification-service
+    name: payment-service
+  profiles:
+    active: rabbitmq
+
+  rabbitmq:
+    host: rabbitmq.internal.company.com
+    port: 5671                           # Puerto SSL/TLS
+    username: bus-user
+    password: ${RABBITMQ_PASSWORD}       # Inyectar desde variable de entorno
+    virtual-host: /spring-cloud-bus
+    ssl:
+      enabled: true
+      key-store: classpath:rabbit-client.p12
+      key-store-password: ${KEYSTORE_PASS}
+      trust-store: classpath:rabbit-ca.p12
+      trust-store-password: ${TRUSTSTORE_PASS}
+
   cloud:
     bus:
       enabled: true
-      id: ${spring.application.name}:${spring.profiles.active:default}:${random.value}
-      # Nombre del topic/exchange en el broker
-      destination: springCloudBus
-      # Activar ack y trace en diagnóstico
-      trace:
-        enabled: false
-      ack:
-        enabled: false
+      destination: springCloudBus        # Nombre del exchange fanout
+      id: ${spring.application.name}:${spring.profiles.active}:${server.port:8080}
+
+    stream:
+      bindings:
+        # El binding de entrada del Bus en RabbitMQ NO requiere group
+        # (cada instancia tiene cola anónima propia, recibe todos los mensajes)
+        springCloudBusInput:
+          destination: springCloudBus
+        springCloudBusOutput:
+          destination: springCloudBus
 
 management:
   endpoints:
     web:
       exposure:
-        include: busrefresh, health, info
+        include: bus-refresh, bus-env, health
+```
 
----
-# Perfil: rabbitmq
+```yaml
+# application-kafka.yml — configuración de producción con Kafka
 spring:
-  config:
-    activate:
-      on-profile: rabbitmq
-  rabbitmq:
-    host: rabbitmq-host
-    port: 5672
-    username: bususer
-    password: buspassword
-    virtual-host: /production
-    # Reconexión automática en caso de caída del broker
-    connection-timeout: 60000
-  cloud:
-    stream:
-      bindings:
-        springCloudBusInput:
-          destination: springCloudBus
-          group: ${spring.application.name}
-        springCloudBusOutput:
-          destination: springCloudBus
+  application:
+    name: payment-service
+  profiles:
+    active: kafka
 
----
-# Perfil: kafka
-spring:
-  config:
-    activate:
-      on-profile: kafka
-  kafka:
-    bootstrap-servers: kafka-broker-1:9092,kafka-broker-2:9092
-    consumer:
-      group-id: ${spring.application.name}-bus
-      auto-offset-reset: latest
-      enable-auto-commit: true
-    producer:
-      acks: 1
   cloud:
     stream:
       kafka:
         binder:
-          brokers: kafka-broker-1:9092,kafka-broker-2:9092
+          brokers: kafka1.internal:9092, kafka2.internal:9092, kafka3.internal:9092
           auto-create-topics: true
-        bindings:
-          springCloudBusInput:
-            consumer:
-              # Número de particiones del topic springCloudBus
-              # Si hay más nodos que particiones, algunos no recibirán mensajes
-              # Por eso el topic de Bus debe tener al menos tantas particiones
-              # como instancias máximas esperadas del servicio con mayor escala
-              start-offset: latest
+          replication-factor: 3         # Replicación en clúster de 3 nodos
+          configuration:
+            # Seguridad SSL para Kafka
+            security.protocol: SSL
+            ssl.truststore.location: /etc/ssl/kafka/truststore.jks
+            ssl.truststore.password: ${KAFKA_TRUSTSTORE_PASS}
+            ssl.keystore.location: /etc/ssl/kafka/keystore.jks
+            ssl.keystore.password: ${KAFKA_KEYSTORE_PASS}
       bindings:
         springCloudBusInput:
           destination: springCloudBus
-          group: ${spring.application.name}
-          consumer:
-            # Con auto-offset-reset: latest, los nodos que arrancan tarde
-            # no reciben eventos anteriores a su inicio
-            # Cambiar a earliest solo si se quiere replay de eventos de infraestructura
-            concurrency: 1
+          # CRÍTICO: cada instancia debe tener un consumer group ÚNICO
+          # para recibir TODOS los mensajes (comportamiento broadcast)
+          group: ${spring.application.name}-${random.uuid}
         springCloudBusOutput:
           destination: springCloudBus
+
+    bus:
+      enabled: true
+      destination: springCloudBus
+      id: ${spring.application.name}:${spring.profiles.active}:${server.port:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: bus-refresh, bus-env, health
 ```
 
 ```java
-// src/main/java/com/example/notification/NotificationApplication.java
-package com.example.notification;
+// BrokerHealthCheck.java — verificar conectividad al broker en arranque
+package com.example.paymentservice.health;
 
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.cloud.context.config.annotation.RefreshScope;
-import org.springframework.beans.factory.annotation.Value;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
-
-@SpringBootApplication
-public class NotificationApplication {
-    public static void main(String[] args) {
-        SpringApplication.run(NotificationApplication.class, args);
-    }
-}
+import org.springframework.web.client.RestTemplate;
 
 @Component
-@RefreshScope
-class NotificationConfig {
+public class BrokerHealthCheck {
 
-    private final String smtpHost;
-    private final int smtpPort;
+    private static final Logger log = LoggerFactory.getLogger(BrokerHealthCheck.class);
 
-    public NotificationConfig(
-            @Value("${notification.smtp.host:localhost}") String smtpHost,
-            @Value("${notification.smtp.port:587}") int smtpPort) {
-        this.smtpHost = smtpHost;
-        this.smtpPort = smtpPort;
-        System.out.printf("NotificationConfig: smtp=%s:%d%n", smtpHost, smtpPort);
+    @EventListener(ApplicationReadyEvent.class)
+    public void verifyBusConnectivity() {
+        log.info("Spring Cloud Bus initialized. Broker connectivity verified by BusAutoConfiguration.");
+        log.info("Bus endpoint available at: POST /actuator/bus-refresh");
     }
-
-    public String getSmtpHost() { return smtpHost; }
-    public int getSmtpPort() { return smtpPort; }
 }
 ```
 
-## Tabla de elementos clave
+## Diferencias clave entre RabbitMQ y Kafka en el Bus
 
-La tabla siguiente recoge las propiedades de broker más relevantes para Bus en producción, agrupadas por broker.
+El comportamiento del Bus difiere entre los dos brokers por la arquitectura de mensajería de cada uno. Estas diferencias son relevantes para el examen y para decidir qué broker usar en producción.
 
-| Parámetro | Tipo | Default | Descripción |
-|---|---|---|---|
-| `spring.cloud.bus.destination` | String | `springCloudBus` | Nombre del topic Kafka o exchange RabbitMQ. Cambiar para aislar entornos. |
-| `spring.rabbitmq.host` | String | `localhost` | Host del broker RabbitMQ usado por Bus. |
-| `spring.rabbitmq.port` | Int | `5672` | Puerto AMQP de RabbitMQ. |
-| `spring.rabbitmq.username` | String | `guest` | Usuario de autenticación en RabbitMQ. |
-| `spring.rabbitmq.password` | String | `guest` | Contraseña de autenticación en RabbitMQ. |
-| `spring.rabbitmq.virtual-host` | String | `/` | Virtual host de RabbitMQ. Aislar entornos con virtual hosts distintos. |
-| `spring.kafka.bootstrap-servers` | String | `localhost:9092` | Dirección del broker Kafka usado por Bus. |
-| `spring.cloud.stream.bindings.springCloudBusInput.group` | String | — | Consumer group del binding de entrada. Debe ser único por servicio para garantizar broadcast a todos los nodos. |
-| `spring.cloud.stream.bindings.springCloudBusInput.destination` | String | `springCloudBus` | Destino del binding de entrada. Debe coincidir con `spring.cloud.bus.destination`. |
+| Aspecto | RabbitMQ | Apache Kafka |
+|---------|----------|--------------|
+| Tipo de canal | Exchange `fanout` | Topic con particiones |
+| Consumer group requerido | No (cola anónima por instancia) | Sí (único por instancia para broadcast) |
+| Persistencia de mensajes | No (por defecto, colas anónimas son transitorias) | Sí (mensajes persistidos en log) |
+| Broadcast natural | Automático con exchange fanout | Requiere consumer group único |
+| Mensajes al reconectar | No recibe mensajes previos | Puede recibir mensajes anteriores según `auto.offset.reset` |
+| Escalado horizontal | Simple | Requiere cuidado con particiones |
+
+> [ADVERTENCIA] Con Kafka, si se usa un consumer group compartido entre instancias del mismo servicio (por ejemplo, `group: payment-service`), Kafka asignará particiones del topic a cada instancia. Solo una instancia recibirá cada mensaje, rompiendo el comportamiento de broadcast del Bus.
+
+## Consumer groups en Kafka — el problema de duplicados
+
+El consumer group en Kafka define qué instancias compiten por los mensajes de un topic. Para el Bus se necesita el comportamiento opuesto a la competencia: cada instancia debe recibir TODOS los mensajes.
+
+La solución es asignar un consumer group único a cada instancia del Bus usando un identificador aleatorio o el puerto:
+
+```yaml
+spring:
+  cloud:
+    stream:
+      bindings:
+        springCloudBusInput:
+          group: ${spring.application.name}-${random.uuid}
+          # Alternativa usando el puerto:
+          # group: ${spring.application.name}-${server.port:8080}
+```
 
 ## Buenas y malas prácticas
 
-**Hacer:**
+**Buenas prácticas:**
 
-- Configurar `spring.cloud.stream.bindings.springCloudBusInput.group` con el nombre del servicio. En Kafka, si varios nodos del mismo servicio comparten el mismo `group`, el broker distribuye las particiones entre ellos (cada evento llega a un solo nodo del grupo). Si cada nodo tiene un `group` distinto (o no tiene group), todos los nodos reciben todos los eventos, que es el comportamiento correcto para Bus.
-- Separar `spring.cloud.bus.destination` de los topics de negocio. Un nombre como `infra.bus.production` evita que herramientas de monitorización de topics de negocio confundan los eventos de Bus con mensajes de dominio.
-- Monitorizar el lag del consumer group de Bus en Kafka. Si el lag crece indefinidamente, los nodos no están consumiendo los eventos de refresh, y la configuración del clúster puede estar desactualizada durante periodos prolongados.
+- En producción, usar variables de entorno o un secrets manager (Vault, Kubernetes Secrets) para las credenciales del broker, nunca hardcodearlas en el YAML.
+- Configurar `spring.cloud.bus.destination` con un nombre descriptivo y diferente por entorno para evitar que múltiples entornos compartan el mismo topic/exchange accidentalmente.
+- Usar SSL/TLS para la conexión al broker en entornos de producción y staging.
 
-**Evitar:**
+**Malas prácticas:**
 
-- No configurar `auto-offset-reset: earliest` para el binding `springCloudBusInput` en Kafka en producción. Al reiniciar el consumer group, todos los eventos de refresh históricos se reprocesarán, causando que todos los beans con `@RefreshScope` se re-instancien en cascada y generando un pico de carga en el Config Server.
-- No reutilizar las credenciales de RabbitMQ de las colas de negocio para Bus. Si esas credenciales rotan o se restringen, Bus deja de funcionar silenciosamente: los nodos no reciben refresh pero tampoco logean errores obvios hasta que el broker rechaza la conexión.
-- No asumir que Bus crea automáticamente el topic de Kafka con las particiones correctas. En producción, crear el topic `springCloudBus` manualmente con tantas particiones como instancias máximas esperadas del servicio con mayor escala, para garantizar que cada nodo tiene su propia partición asignada.
+- Compartir el mismo `spring.cloud.bus.destination` entre entornos de desarrollo y producción. Un refresh en dev podría propagarse a producción si ambos apuntan al mismo broker y exchange.
+- Configurar `spring.cloud.stream.bindings.springCloudBusInput.group` con un valor estático y compartido entre instancias en Kafka. Esto rompe el broadcast.
+- Ignorar los logs de arranque del BusAutoConfiguration. Contienen información sobre los bindings activos y posibles errores de conexión.
+
+## Verificación y práctica
+
+> [EXAMEN] **1.** ¿Por qué RabbitMQ no requiere configurar un consumer group para el Bus, mientras que Kafka sí lo requiere?
+
+> [EXAMEN] **2.** ¿Qué tipo de exchange crea Spring Cloud Bus en RabbitMQ y cómo garantiza que todas las instancias reciban los mensajes?
+
+> [EXAMEN] **3.** ¿Qué valor debe tener `spring.cloud.stream.bindings.springCloudBusInput.group` en Kafka para garantizar que cada instancia reciba todos los mensajes del Bus?
+
+> [EXAMEN] **4.** ¿A través de qué namespace de Spring Boot se configura la conexión AMQP a RabbitMQ para el Bus?
 
 ---
 
-← [7.2 Setup y dependencias de Spring Cloud Bus](sc-bus-setup.md) | [Índice](README.md) | [7.4 Refresh de configuración distribuido con Spring Cloud Bus](sc-bus-refresh-distribuido.md) →
+← [7.4 Spring Cloud Bus — Eventos personalizados con RemoteApplicationEvent](sc-bus-eventos-personalizados.md) | [Índice](README.md) | [7.6 Spring Cloud Bus — Trazabilidad y destination pattern](sc-bus-observabilidad.md) →

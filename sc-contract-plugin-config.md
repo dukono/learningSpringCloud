@@ -1,286 +1,257 @@
-# 10.3.2 Plugin Maven/Gradle — propiedades de personalización
+# 10.5 Spring Cloud Contract — Plugin Maven y Gradle
 
-← [10.3.1 Plugin Maven/Gradle — goals, tasks y testMode](sc-contract-plugin.md) | [Índice](README.md) | [10.4.1 DSL Groovy/YAML — estructura base de contratos HTTP](sc-contract-dsl.md) →
+← [10.4 Contratos Mensajería](sc-contract-mensajeria.md) | [Índice](README.md) | [10.6 Clases Base Productor](sc-contract-base-class.md) →
 
 ---
 
 ## Introducción
 
-Cuando un proyecto Spring Cloud Contract supera la configuración mínima —un solo directorio de contratos y una única clase base— la configuración por defecto del plugin deja de ser suficiente. En proyectos con múltiples servicios, múltiples dominios de contratos, o estructuras de paquetes no estándar, las propiedades de personalización del plugin determinan si los tests generados compilan y se mapean correctamente a las clases base del producer. Un error de configuración en `baseClassMappings` o `basePackageForTests` produce tests generados que no compilan, un fallo difícil de diagnosticar si no se conoce la mecánica interna del plugin.
+El `spring-cloud-contract-maven-plugin` y su equivalente Gradle son el núcleo del lado productor en Spring Cloud Contract. Estos plugins leen los contratos del directorio configurado, generan automáticamente tests JUnit 5 (o Spock) que verifican que el productor cumple los contratos, y empaquetan los stubs WireMock resultantes en un JAR clasificador para que el consumidor los descargue. Conocer todas las propiedades del plugin y las fases que ejecuta es contenido de examen.
 
-> [CONCEPTO] **baseClassMappings**: propiedad que permite asignar una clase base distinta a cada directorio de contratos, lo que habilita usar diferentes setups de contexto (MockMvc, WebTestClient) para diferentes grupos de contratos en el mismo proyecto.
+> [PREREQUISITO] Este nodo requiere haber comprendido el flujo productor-consumidor de [10.1 Fundamentos CDC](sc-contract-fundamentos.md).
 
-> [PREREQUISITO] Conocimiento de los goals del plugin (10.3.1) y de la estructura básica de la clase base de tests (10.5).
+## Configuración del plugin Maven
 
-## Representación visual
-
-El diagrama muestra cómo el plugin resuelve qué clase base usar para un contrato dado, aplicando primero `baseClassMappings` y cayendo a `baseClassForTests` como fallback.
-
-```
-RESOLUCIÓN DE CLASE BASE POR CONTRATO
-══════════════════════════════════════
-
-src/test/resources/contracts/
-├── user/
-│   └── shouldReturnUser.groovy  ──────► baseClassMappings?
-│                                            │
-│                                    ".*user.*" → UserBaseTest
-│                                            │
-│                                            ▼
-│                                    UserBaseTest.java
-│                                    (extiende ContractVerifierMockMvc)
-│
-├── order/
-│   └── shouldCreateOrder.groovy ──────► baseClassMappings?
-│                                            │
-│                                    ".*order.*" → OrderBaseTest
-│                                            │
-│                                            ▼
-│                                    OrderBaseTest.java
-│                                    (extiende ContractVerifierMockMvc)
-│
-└── legacy/
-    └── oldEndpoint.groovy        ──────► baseClassMappings?
-                                              │
-                                    Sin match → baseClassForTests
-                                              │
-                                              ▼
-                                    DefaultBaseTest.java
-```
-
-## Ejemplo central
-
-El ejemplo muestra un proyecto con múltiples grupos de contratos que requieren clases base distintas, configurando todas las propiedades de personalización relevantes.
-
-**pom.xml — configuración completa del plugin con baseClassMappings:**
+La configuración mínima del plugin en Maven requiere declararlo en la sección `<build><plugins>` del `pom.xml` del productor. El siguiente ejemplo muestra todas las propiedades relevantes con sus valores por defecto y descripción.
 
 ```xml
+<!-- pom.xml del PRODUCTOR -->
 <build>
     <plugins>
         <plugin>
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-contract-maven-plugin</artifactId>
-            <version>${spring-cloud.version}</version>
+            <!-- La versión la gestiona el BOM de Spring Cloud -->
             <extensions>true</extensions>
             <configuration>
-                <!-- Directorio donde se buscan los contratos -->
-                <contractsDirectory>
-                    ${project.basedir}/src/test/resources/contracts
-                </contractsDirectory>
-                <!-- Clase base fallback si ningún mapping coincide -->
-                <baseClassForTests>
-                    com.example.producer.DefaultBaseTest
-                </baseClassForTests>
-                <!-- Mappings por directorio de contratos (regex → clase base) -->
+                <!--
+                  contractsDslDir: directorio donde el plugin busca los contratos.
+                  DEFAULT: src/test/resources/contracts
+                  Se puede cambiar si los contratos están en otro directorio.
+                -->
+                <contractsDslDir>${project.basedir}/src/test/resources/contracts</contractsDslDir>
+
+                <!--
+                  baseClassForTests: clase base que extienden TODOS los tests generados.
+                  Se usa cuando todos los contratos comparten la misma clase base.
+                  NO se puede combinar con baseClassMappings.
+                -->
+                <baseClassForTests>com.example.BaseContractTest</baseClassForTests>
+
+                <!--
+                  baseClassMappings: permite mapear distintos contratos a distintas
+                  clases base según el paquete/directorio del contrato (regex sobre el nombre del contrato).
+                  Tiene prioridad sobre baseClassForTests.
+                -->
+                <!--
                 <baseClassMappings>
                     <baseClassMapping>
-                        <contractPackageRegex>.*user.*</contractPackageRegex>
-                        <baseClassFQN>com.example.producer.UserBaseTest</baseClassFQN>
-                    </baseClassMapping>
-                    <baseClassMapping>
                         <contractPackageRegex>.*order.*</contractPackageRegex>
-                        <baseClassFQN>com.example.producer.OrderBaseTest</baseClassFQN>
+                        <baseClassFQN>com.example.order.BaseOrderTest</baseClassFQN>
                     </baseClassMapping>
                     <baseClassMapping>
-                        <contractPackageRegex>.*reactive.*</contractPackageRegex>
-                        <baseClassFQN>com.example.producer.ReactiveBaseTest</baseClassFQN>
+                        <contractPackageRegex>.*payment.*</contractPackageRegex>
+                        <baseClassFQN>com.example.payment.BasePaymentTest</baseClassFQN>
                     </baseClassMapping>
                 </baseClassMappings>
-                <!-- Paquete base de los tests generados -->
-                <basePackageForTests>com.example.producer.contracts</basePackageForTests>
-                <!-- Sufijo del nombre de la clase generada (por defecto: Test) -->
-                <nameSuffixForTests>ContractTest</nameSuffixForTests>
-                <!-- Ficheros a excluir (soporta ant-style patterns) -->
+                -->
+
+                <!--
+                  generatedTestSourcesDir: directorio donde se generan los tests.
+                  DEFAULT: ${project.build.directory}/generated-test-sources/contracts
+                -->
+                <generatedTestSourcesDir>
+                    ${project.build.directory}/generated-test-sources/contracts
+                </generatedTestSourcesDir>
+
+                <!--
+                  testFramework: framework para los tests generados.
+                  Valores: JUNIT5 (default), SPOCK, JUNIT (JUnit 4 — [LEGACY])
+                -->
+                <testFramework>JUNIT5</testFramework>
+
+                <!--
+                  outputDirectory: directorio donde se empaquetan los stubs WireMock.
+                  DEFAULT: ${project.build.directory}/stubs
+                -->
+                <outputDirectory>${project.build.directory}/stubs</outputDirectory>
+
+                <!--
+                  excludedFiles: patrones de contratos a excluir del procesamiento.
+                -->
                 <excludedFiles>
-                    <param>**/experimental/**</param>
-                    <param>**/deprecated/**</param>
+                    <excludedFile>**/draft/**</excludedFile>
                 </excludedFiles>
-                <!-- testMode para todos los contratos (MOCKMVC por defecto) -->
+
+                <!--
+                  testMode: MOCKMVC (default), EXPLICIT (RestTemplate real), WEBTESTCLIENT (reactivo)
+                -->
                 <testMode>MOCKMVC</testMode>
             </configuration>
         </plugin>
     </plugins>
 </build>
+
+<!-- Dependencias necesarias en el productor -->
+<dependencies>
+    <dependency>
+        <groupId>org.springframework.cloud</groupId>
+        <artifactId>spring-cloud-starter-contract-verifier</artifactId>
+        <scope>test</scope>
+    </dependency>
+    <!--
+      spring-cloud-contract-wiremock: módulo estándar del stub runner en SC 4.x.
+      Incluye WireMock como motor de stubs. Es la dependencia que provee
+      @AutoConfigureWireMock y el soporte de ejecución de stubs WireMock.
+      NOTA: spring-cloud-contract-wiremock ≠ Spring Cloud Contract completo;
+      es el módulo específico de WireMock del ecosistema SCC.
+    -->
+    <dependency>
+        <groupId>org.springframework.cloud</groupId>
+        <artifactId>spring-cloud-contract-wiremock</artifactId>
+        <scope>test</scope>
+    </dependency>
+</dependencies>
 ```
 
-**Clases base específicas por dominio:**
+> [CONCEPTO] `baseClassMappings` tiene prioridad sobre `baseClassForTests`. Cuando un proyecto tiene contratos de distintos dominios (orders, payments, notifications), cada grupo puede mapear a su propia clase base con una regex sobre el directorio del contrato. Esto es más flexible que una única clase base global.
 
-```java
-package com.example.producer;
+## Fases del ciclo de vida Maven
 
-import com.example.producer.controller.UserController;
-import io.restassured.module.mockmvc.RestAssuredMockMvc;
-import org.junit.jupiter.api.BeforeEach;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
+El plugin se enlaza a dos fases del ciclo de vida Maven que se ejecutan automáticamente durante `mvn verify`.
 
-@SpringBootTest
-public abstract class UserBaseTest {
+```
+mvn verify ejecuta en orden:
+──────────────────────────────────────────────────────────────
+generate-test-sources  →  generateTests
+                           Lee contratos de contractsDslDir
+                           Genera clases JUnit 5 en generatedTestSourcesDir
+                           Las clases generadas extienden baseClassForTests
 
-    @Autowired
-    private UserController userController;
+test-compile           →  Compila las clases generadas junto con las clases base
 
-    @BeforeEach
-    public void setup() {
-        RestAssuredMockMvc.standaloneSetup(userController);
-    }
-}
+test                   →  Ejecuta los tests generados
+                           Si algún test falla → el build falla → NO se publican stubs
+
+package                →  generateStubs
+                           Empaqueta los stubs WireMock en un JAR clasificador 'stubs'
+                           Ubica el JAR en outputDirectory (target/stubs por defecto)
+──────────────────────────────────────────────────────────────
 ```
 
-```java
-package com.example.producer;
+> [ADVERTENCIA] El JAR de stubs solo se genera si `mvn package` o `mvn install` se ejecutan correctamente. En un pipeline CI típico se usa `mvn install` para que el JAR de stubs quede en el repositorio Maven local (útil para `StubsMode.LOCAL`) o `mvn deploy` para publicarlo en Nexus/Artifactory.
 
-import com.example.producer.controller.OrderController;
-import io.restassured.module.mockmvc.RestAssuredMockMvc;
-import org.junit.jupiter.api.BeforeEach;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
+## Configuración del plugin Gradle
 
-@SpringBootTest
-public abstract class OrderBaseTest {
-
-    @Autowired
-    private OrderController orderController;
-
-    @BeforeEach
-    public void setup() {
-        RestAssuredMockMvc.standaloneSetup(orderController);
-    }
-}
-```
-
-```java
-package com.example.producer;
-
-import com.example.producer.controller.ReactiveProductController;
-import io.restassured.module.webtestclient.RestAssuredWebTestClient;
-import org.junit.jupiter.api.BeforeEach;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-
-@SpringBootTest
-public abstract class ReactiveBaseTest {
-
-    @Autowired
-    private ReactiveProductController productController;
-
-    @BeforeEach
-    public void setup() {
-        RestAssuredWebTestClient.standaloneSetup(productController);
-    }
-}
-```
-
-**Equivalente en build.gradle:**
+La configuración equivalente en Gradle usa el plugin `spring-cloud-contract` que se aplica al `build.gradle` del productor.
 
 ```groovy
+// build.gradle del PRODUCTOR
+plugins {
+    id 'groovy'
+    id 'org.springframework.cloud.contract' version "${springCloudContractVersion}"
+}
+
 contracts {
-    // Directorio de contratos
-    contractsDslDir = file("${project.rootDir}/src/test/resources/contracts")
+    // contractsDslDir: directorio de los contratos
+    // DEFAULT: src/test/resources/contracts
+    contractsDslDir = file("src/test/resources/contracts")
 
-    // Clase base fallback
-    baseClassForTests = 'com.example.producer.DefaultBaseTest'
+    // baseClassForTests: clase base global para todos los tests generados
+    baseClassForTests = "com.example.BaseContractTest"
 
-    // Mappings por regex de paquete
-    baseClassMappings {
-        baseClassMapping('.*user.*', 'com.example.producer.UserBaseTest')
-        baseClassMapping('.*order.*', 'com.example.producer.OrderBaseTest')
-        baseClassMapping('.*reactive.*', 'com.example.producer.ReactiveBaseTest')
-    }
+    // baseClassMappings: mapeo de contratos a clases base por regex
+    // baseClassMappings {
+    //     baseClassMapping(".*order.*", "com.example.order.BaseOrderTest")
+    //     baseClassMapping(".*payment.*", "com.example.payment.BasePaymentTest")
+    // }
 
-    // Paquete de los tests generados
-    basePackageForTests = 'com.example.producer.contracts'
+    // generatedTestSourcesDir: directorio de tests generados
+    generatedTestSourcesDir = project.file("${project.buildDir}/generated-test-sources/contracts")
 
-    // Sufijo del nombre de test generado
-    nameSuffixForTests = 'ContractTest'
+    // testFramework: JUNIT5 (default) o SPOCK
+    testFramework = TestFramework.JUNIT5
 
-    // Exclusiones
-    excludedFiles = ['**/experimental/**', '**/deprecated/**']
-
-    // testMode
+    // testMode: MOCKMVC (default), EXPLICIT, WEBTESTCLIENT
     testMode = 'MOCKMVC'
+}
+
+dependencies {
+    testImplementation 'org.springframework.cloud:spring-cloud-starter-contract-verifier'
+    testImplementation 'org.springframework.cloud:spring-cloud-contract-wiremock'
 }
 ```
 
-**Estructura de directorios resultante:**
+## Tabla de propiedades del plugin
 
+Las propiedades del plugin son el conocimiento más frecuente en preguntas de examen relacionadas con el lado productor de Spring Cloud Contract.
+
+| Propiedad Maven | Propiedad Gradle | Default | Descripción |
+|---|---|---|---|
+| `contractsDslDir` | `contractsDslDir` | `src/test/resources/contracts` | Directorio de contratos |
+| `baseClassForTests` | `baseClassForTests` | — | Clase base para todos los tests generados |
+| `baseClassMappings` | `baseClassMappings {}` | — | Mapeo regex → clase base (múltiples) |
+| `generatedTestSourcesDir` | `generatedTestSourcesDir` | `target/generated-test-sources/contracts` | Destino de tests generados |
+| `testFramework` | `testFramework` | `JUNIT5` | Framework: JUNIT5, SPOCK |
+| `outputDirectory` | — | `target/stubs` | Destino de stubs WireMock |
+| `excludedFiles` | `excludedFiles` | — | Patrones de contratos a excluir |
+| `testMode` | `testMode` | `MOCKMVC` | Modo de test: MOCKMVC, EXPLICIT, WEBTESTCLIENT |
+
+> [EXAMEN] La propiedad `contractsDslDir` tiene como valor por defecto `src/test/resources/contracts`. Este es uno de los datos más frecuentes en el examen. El directorio `generatedTestSourcesDir` por defecto es `target/generated-test-sources/contracts` (Maven) — no confundir con `outputDirectory` (target/stubs) que es donde van los stubs.
+
+## spring-cloud-contract-wiremock
+
+`spring-cloud-contract-wiremock` es el módulo de Spring Cloud Contract que integra WireMock como motor de stubs. Es la dependencia estándar del stub runner en Spring Cloud Contract 4.x (2025.x) y provee `@AutoConfigureWireMock` para levantar un servidor WireMock en tests.
+
+```java
+// Ejemplo de uso de @AutoConfigureWireMock (provisto por spring-cloud-contract-wiremock)
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.cloud.contract.wiremock.AutoConfigureWireMock;
+import static com.github.tomakehurst.wiremock.client.WireMock.*;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@AutoConfigureWireMock(port = 0)  // puerto aleatorio
+public class WireMockTest {
+
+    @Test
+    void shouldConfigureWireMockStub() {
+        // Configura un stub WireMock directamente (sin contrato SCC)
+        stubFor(get(urlEqualTo("/external/api"))
+            .willReturn(aResponse()
+                .withStatus(200)
+                .withBody("{\"result\": \"ok\"}")));
+    }
+}
 ```
-src/test/resources/contracts/
-├── user/
-│   ├── shouldReturnUser.groovy
-│   └── shouldReturnAllUsers.groovy
-├── order/
-│   ├── shouldCreateOrder.groovy
-│   └── shouldCancelOrder.groovy
-└── reactive/
-    └── shouldStreamProducts.groovy
 
-build/generated-test-sources/
-└── com/example/producer/contracts/
-    ├── UserContractTest.java     ← extiende UserBaseTest
-    ├── OrderContractTest.java    ← extiende OrderBaseTest
-    └── ReactiveContractTest.java ← extiende ReactiveBaseTest
-```
-
-**application.yml del producer:**
-
-```yaml
-spring:
-  application:
-    name: multi-domain-service
-
-# No se requiere configuración de Spring Cloud Contract en application.yml
-# Toda la configuración está en pom.xml / build.gradle
-```
-
-## Tabla de elementos clave
-
-La siguiente tabla recoge todas las propiedades de personalización del plugin con su valor por defecto y el impacto de una configuración incorrecta.
-
-| Propiedad | Maven | Gradle | Default | Descripción |
-|-----------|-------|--------|---------|-------------|
-| `contractsDirectory` | `<contractsDirectory>` | `contractsDslDir` | `src/test/resources/contracts` | Directorio raíz donde el plugin busca contratos DSL |
-| `baseClassForTests` | `<baseClassForTests>` | `baseClassForTests` | Ninguno (obligatorio) | FQN de la clase base para todos los tests generados |
-| `baseClassMappings` | `<baseClassMappings>` | `baseClassMappings { }` | Vacío | Regex de paquete → FQN de clase base; tiene prioridad sobre `baseClassForTests` |
-| `basePackageForTests` | `<basePackageForTests>` | `basePackageForTests` | `org.springframework.cloud.contract.verifier.tests` | Paquete Java de las clases generadas |
-| `nameSuffixForTests` | `<nameSuffixForTests>` | `nameSuffixForTests` | `Test` | Sufijo del nombre de la clase generada |
-| `excludedFiles` | `<excludedFiles>` | `excludedFiles` | Vacío | Patrones ant-style de contratos a ignorar |
-| `testMode` | `<testMode>` | `testMode` | `MOCKMVC` | Modo de test: MOCKMVC, WEBTESTCLIENT, RESTASSURED, EXPLICIT |
-| `contractsRepositoryUrl` | `<contractsRepositoryUrl>` | `contractsRepositoryUrl` | Vacío | URL del repositorio remoto de contratos (si no están en el proyecto) |
-| `stubsSuffix` | `<stubsSuffix>` | `stubsSuffix` | `stubs` | Classifier del Stub JAR generado |
-| `contractsPath` | `<contractsPath>` | `contractsPath` | Directorio del proyecto | Subdirectorio dentro del repositorio remoto de contratos |
+> [ADVERTENCIA] `spring-cloud-contract-wiremock` es el módulo que incluye WireMock como motor de stubs en el ecosistema SCC. No confundir con Spring Cloud Contract completo. El stub runner usa `spring-cloud-contract-wiremock` internamente, pero ambos son módulos distintos con responsabilidades distintas.
 
 ## Buenas y malas prácticas
 
-**Hacer:**
+**Buenas prácticas**:
+- Usar `baseClassMappings` en proyectos con contratos de múltiples dominios para no tener una única clase base monolítica.
+- Mantener el directorio de contratos bajo `src/test/resources/contracts` (default) para evitar configuración adicional.
+- Verificar que `mvn verify` pasa localmente antes de crear un PR — los tests generados deben pasar en el build.
+- Usar `testMode = WEBTESTCLIENT` para productores reactivos (WebFlux).
 
-- Usar `baseClassMappings` en proyectos con múltiples dominios de API para asignar la clase base correcta a cada grupo de contratos; evita errores de compilación por usar MockMvc en contratos que necesitan WebTestClient.
-- Definir `basePackageForTests` explícitamente para que los tests generados se ubiquen en el paquete del proyecto (ej: `com.example.producer.contracts`) y no en el paquete por defecto del framework; facilita la navegación en el IDE.
-- Usar `excludedFiles` para excluir contratos experimentales o en proceso de desarrollo del ciclo de build sin borrarlos físicamente del proyecto; permite trabajar en contratos nuevos sin que rompan el pipeline.
-- Validar los patrones `baseClassMappings` con `mvn spring-cloud-contract:generateTests` en local antes de commitear; un regex incorrecto hace que todos los contratos caigan al fallback `baseClassForTests`.
-- Documentar en el README del proyecto la convención de directorios de contratos y el mapeo a clases base; sin esta documentación, los desarrolladores nuevos generan contratos en el lugar incorrecto y el plugin los ignora silenciosamente.
+**Malas prácticas**:
+- Usar `baseClassForTests` y `baseClassMappings` simultáneamente — `baseClassMappings` tiene prioridad y `baseClassForTests` se ignora.
+- Commitear los tests generados (`generatedTestSourcesDir`) al repositorio — son artefactos generados, no código fuente.
+- Cambiar `outputDirectory` a un directorio no estándar sin documentarlo — el Stub Runner puede no encontrar los stubs.
 
-**Evitar:**
+## Verificación y práctica
 
-- Evitar usar la misma clase base para contratos que requieren `MockMvc` y contratos que requieren `WebTestClient`: los tests generados heredan de una sola superclase y el uso mixto provoca `IllegalStateException` en tiempo de ejecución al intentar configurar el contexto de test.
-- Evitar usar `contractsDirectory` apuntando a `src/main/resources`: los contratos quedan incluidos en el JAR de producción, lo que expone detalles de testing en el artefacto desplegado.
-- Evitar dejar `nameSuffixForTests` en el valor por defecto `Test` si el proyecto ya tiene clases de test con ese sufijo en el mismo paquete: puede causar conflictos de naming o sobreescritura accidental de clases existentes.
-- Evitar configurar `contractsRepositoryUrl` sin autenticación correcta en el entorno CI: el build falla con un error de resolución de artefacto difícil de distinguir de un fallo de red.
-- Evitar mezclar versiones del plugin entre módulos de un proyecto multi-módulo: si `module-a` usa la versión `4.1.0` y `module-b` usa `4.2.0`, los stubs generados pueden tener formatos de mapping WireMock incompatibles.
+> [EXAMEN] 1. ¿Cuál es el valor por defecto de `contractsDslDir` en el `spring-cloud-contract-maven-plugin`?
 
-## Comparación: estrategias de organización de contratos
+> [EXAMEN] 2. ¿Cuál es la diferencia entre `baseClassForTests` y `baseClassMappings` en la configuración del plugin?
 
-| Estrategia | Estructura | `baseClassMappings` necesario | Complejidad |
-|-----------|-----------|------------------------------|-------------|
-| Plana (todos en `/contracts`) | Un solo directorio con todos los contratos | No (una sola clase base) | Baja; válida para proyectos pequeños |
-| Por dominio (`/contracts/user`, `/contracts/order`) | Un directorio por dominio de API | Sí (regex por dominio) | Media; recomendada para proyectos medianos |
-| Por tecnología (`/contracts/mvc`, `/contracts/reactive`) | Separación por tecnología de test | Sí (regex por tecnología) | Media; necesaria si el producer mezcla MVC y WebFlux |
-| Por equipo consumer | Un directorio por consumer que define contratos | Sí (regex por consumer) | Alta; útil para contratos propiedad del consumer en repositorio compartido |
+> [EXAMEN] 3. ¿En qué fase del ciclo de vida Maven se generan los tests automáticos a partir de los contratos?
 
-> [EXAMEN] Pregunta de entrevista: "¿Qué ocurre si `baseClassMappings` no tiene ningún regex que coincida con el paquete de un contrato?" — El plugin usa `baseClassForTests` como fallback. Si `baseClassForTests` tampoco está configurado, el test generado hereda de `Object` y no compila porque no tiene los métodos de setup necesarios.
+> [EXAMEN] 4. ¿Qué propiedad del plugin controla el framework de test que se usará para los tests generados, y cuáles son los valores posibles?
 
-> [ADVERTENCIA] Los patrones de `excludedFiles` en Maven usan sintaxis ant-style (`**/experimental/**`) pero en Gradle usan la notación de Gradle `FileTree` glob. Copiar un patrón de pom.xml a build.gradle sin adaptarlo puede hacer que el exclusion no funcione silenciosamente.
+> [EXAMEN] 5. ¿Qué módulo de Spring Cloud Contract integra WireMock como motor de stubs y qué anotación provee para tests?
 
 ---
 
-← [10.3.1 Plugin Maven/Gradle — goals, tasks y testMode](sc-contract-plugin.md) | [Índice](README.md) | [10.4.1 DSL Groovy/YAML — estructura base de contratos HTTP](sc-contract-dsl.md) →
+← [10.4 Contratos Mensajería](sc-contract-mensajeria.md) | [Índice](README.md) | [10.6 Clases Base Productor](sc-contract-base-class.md) →

@@ -1,174 +1,193 @@
-# 4.2 Declaración de @FeignClient — interfaz, atributos y mapeo de métodos HTTP
+# 3.1 Cliente declarativo básico con OpenFeign
 
-<- [4.1 Setup y bootstrap](sc-feign-setup.md) | [Índice](README.md) | [4.3 Configuración por clase Java](sc-feign-configuracion-java.md) ->
+← [2.14 Testing de aplicaciones con Eureka](sc-eureka-testing.md) | [Índice](README.md) | [3.2.1 Configuración por clase Java](sc-feign-configuracion-java.md) →
 
 ---
 
 ## Introducción
 
-La declaración de un cliente Feign es el acto de traducir un contrato HTTP externo a tipos Java. En lugar de construir manualmente la petición HTTP, el desarrollador escribe una interfaz anotada donde cada método describe un endpoint: el verbo HTTP, la ruta, los parámetros de query, las cabeceras y el cuerpo. Feign genera el proxy en tiempo de arranque y convierte cada invocación al método en la petición HTTP correspondiente.
+Spring Cloud OpenFeign convierte una interfaz Java anotada en un cliente HTTP totalmente funcional, sin necesidad de escribir código de implementación. El problema que resuelve es la verbosidad y el boilerplate que implica usar `RestTemplate` o `WebClient` para cada llamada remota: URLs hardcodeadas, manejo manual de serialización, y lógica de error dispersa. Feign centraliza todo ese contrato en una interfaz con anotaciones de Spring MVC, haciendo que llamar a un servicio remoto sea tan legible como invocar un método local. Se necesita cuando tienes microservicios que se llaman entre sí de forma síncrona y quieres que el código del consumidor sea limpio, testeable y mantenible.
 
-Sin esta capa declarativa, cada punto de integración entre servicios requiere código de infraestructura repetitivo y propenso a errores: construcción de URLs, serialización manual, gestión de `PathVariable` en strings, etc. Con `@FeignClient`, la interfaz Java es el único artefacto de integración; el contrato es visible, testeable y refactorizable.
+> [PREREQUISITO] Antes de este módulo debes conocer cómo funciona Spring Cloud Eureka (registro de servicios) y tener claro qué es `lb://` como esquema de URL con balanceo de carga.
 
-> [PREREQUISITO] El módulo debe estar inicializado con `@EnableFeignClients` según se describe en 4.1. Sin ese paso, las interfaces `@FeignClient` no se registran como beans de Spring.
+## Arquitectura del cliente declarativo
 
----
-
-## Diagrama: anatomía de una interfaz @FeignClient
-
-El siguiente diagrama muestra la correspondencia entre los elementos de la interfaz Feign y la petición HTTP que genera el proxy.
+Feign opera como un proxy dinámico: en tiempo de arranque Spring registra un bean proxy para cada interfaz anotada con `@FeignClient`. Cuando se invoca un método del proxy, Feign construye un `RequestTemplate`, aplica los interceptores registrados, delega la ejecución HTTP al cliente subyacente (por defecto `java.net.HttpURLConnection`), y finalmente decodifica la respuesta con el `Decoder` configurado.
 
 ```
-@FeignClient(
-  name        = "inventory-service",   ←── nombre lógico (Eureka/LoadBalancer)
-  path        = "/api/inventory",      ←── prefijo de ruta para todos los métodos
-  configuration = FeignAuthConfig.class, ←── beans custom: Encoder, Interceptor…
-  fallback    = InventoryFallback.class, ←── clase de fallback (requiere CB activo)
-  contextId   = "inventoryFeign"       ←── ID único (necesario con 2+ clientes al mismo name)
-)
-public interface InventoryClient {
-
-  @GetMapping("/{productId}")          ←── verbo + ruta relativa al path del cliente
-  InventoryResponse getInventory(
-      @PathVariable("productId") String id,   ←── segmento de ruta
-      @RequestParam("warehouse") String wh    ←── parámetro de query string
-  );
-
-  @PostMapping("/reserve")
-  void reserve(@RequestBody ReservationRequest request);  ←── cuerpo JSON
-
-  @DeleteMapping("/{productId}")
-  ResponseEntity<Void> release(
-      @PathVariable("productId") String id,
-      @RequestHeader("X-Correlation-Id") String correlationId  ←── cabecera HTTP
-  );
-}
+  Llamada Java
+       │
+       ▼
+ ┌─────────────────────────┐
+ │   Proxy dinámico Feign  │
+ │  (generado en arranque) │
+ └────────────┬────────────┘
+              │ construye
+              ▼
+      ┌───────────────────┐
+      │  RequestTemplate  │  ← RequestInterceptors aplicados aquí
+      └────────┬──────────┘
+               │ ejecuta
+               ▼
+      ┌───────────────────┐
+      │  HTTP Client      │  (default / OkHttp / Apache HC5)
+      └────────┬──────────┘
+               │ respuesta HTTP
+               ▼
+      ┌───────────────────┐
+      │  Decoder / Error  │
+      │  Decoder          │
+      └───────────────────┘
+               │
+               ▼
+         Objeto Java
 ```
-
----
 
 ## Ejemplo central
 
-El siguiente ejemplo muestra un cliente Feign completo para un servicio de catálogo de productos. Cubre los casos de uso más frecuentes: GET con `@PathVariable` y `@RequestParam`, POST con `@RequestBody`, DELETE con `@RequestHeader`, y el uso de `contextId` para dos clientes al mismo servicio con configuraciones distintas.
+El siguiente ejemplo muestra el mínimo necesario para declarar y usar un cliente Feign en una aplicación Spring Boot: habilitación con `@EnableFeignClients`, declaración de la interfaz con `@FeignClient` y uso del cliente en un servicio.
 
 ```java
-package com.example.orderservice.client;
+// 1. Habilitar Feign en la aplicación
+package com.example.orders;
 
-import com.example.orderservice.config.FeignAuthConfig;
-import com.example.orderservice.config.FeignReadOnlyConfig;
-import com.example.orderservice.dto.ProductDto;
-import com.example.orderservice.dto.ReservationRequest;
-import org.springframework.cloud.openfeign.FeignClient;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cloud.openfeign.EnableFeignClients;
 
-import java.util.List;
-
-/**
- * Cliente de escritura: usa configuración con autenticación (FeignAuthConfig).
- * contextId diferencia este bean del cliente de solo lectura al mismo servicio.
- */
-@FeignClient(
-        name        = "catalog-service",
-        path        = "/api/products",
-        configuration = FeignAuthConfig.class,
-        contextId   = "catalogWrite"
-)
-public interface CatalogWriteClient {
-
-    @PostMapping("/reserve")
-    ResponseEntity<Void> reserve(@RequestBody ReservationRequest request);
-
-    @DeleteMapping("/{productId}/reservation")
-    void cancelReservation(
-            @PathVariable("productId") String productId,
-            @RequestHeader("X-Idempotency-Key") String idempotencyKey
-    );
+@SpringBootApplication
+@EnableFeignClients(basePackages = "com.example.orders.clients")
+public class OrdersApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(OrdersApplication.class, args);
+    }
 }
+```
 
-/**
- * Cliente de solo lectura: sin autenticación, timeouts más cortos (FeignReadOnlyConfig).
- * Mismo name que CatalogWriteClient pero contextId distinto → dos beans independientes.
- */
+```java
+// 2. Declarar el cliente Feign (en paquete com.example.orders.clients)
+package com.example.orders.clients;
+
+import com.example.orders.dto.InventoryResponse;
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestParam;
+
 @FeignClient(
-        name        = "catalog-service",
-        path        = "/api/products",
-        configuration = FeignReadOnlyConfig.class,
-        contextId   = "catalogRead",
-        decode404   = true            // 404 se decodifica como null en lugar de FeignException
+    name = "inventory-service",           // serviceId en Eureka → resuelto como lb://inventory-service
+    path = "/api/v1"                      // prefijo de ruta común a todos los métodos
 )
-public interface CatalogReadClient {
+public interface InventoryClient {
 
-    @GetMapping("/{productId}")
-    ProductDto getProduct(@PathVariable("productId") String productId);
+    @GetMapping("/items/{id}")
+    InventoryResponse getItem(@PathVariable("id") Long itemId);
 
-    @GetMapping
-    List<ProductDto> listProducts(
-            @RequestParam("category") String category,
-            @RequestParam(value = "page", defaultValue = "0") int page,
-            @RequestParam(value = "size", defaultValue = "20") int size
+    @GetMapping("/items")
+    java.util.List<InventoryResponse> searchItems(
+        @RequestParam("category") String category,
+        @RequestParam(value = "page", defaultValue = "0") int page
     );
 }
 ```
 
-> [CONCEPTO] `contextId` es obligatorio cuando dos interfaces `@FeignClient` tienen el mismo atributo `name`. Sin él, Spring detecta dos `FeignClientFactoryBean` con el mismo nombre de bean y lanza `BeanDefinitionOverrideException` en arranque.
+```java
+// 3. DTO de respuesta
+package com.example.orders.dto;
 
-> [ADVERTENCIA] `decode404 = true` hace que una respuesta HTTP 404 sea procesada por el `Decoder` en lugar de por el `ErrorDecoder`. El método devolverá `null` si el tipo de retorno es un objeto, o una lista vacía si es `Collection`. Usar solo cuando el 404 es un resultado semántico válido del negocio, no un error.
+public record InventoryResponse(Long id, String name, int stock) {}
+```
 
----
+```java
+// 4. Servicio que usa el cliente Feign
+package com.example.orders.service;
+
+import com.example.orders.clients.InventoryClient;
+import com.example.orders.dto.InventoryResponse;
+import org.springframework.stereotype.Service;
+
+@Service
+public class OrderService {
+
+    private final InventoryClient inventoryClient;
+
+    public OrderService(InventoryClient inventoryClient) {
+        this.inventoryClient = inventoryClient;
+    }
+
+    public boolean hasStock(Long itemId, int required) {
+        InventoryResponse item = inventoryClient.getItem(itemId);
+        return item.stock() >= required;
+    }
+}
+```
+
+```yaml
+# 5. application.yml — el serviceId debe coincidir con spring.application.name del servicio remoto
+spring:
+  application:
+    name: orders-service
+  cloud:
+    openfeign:
+      client:
+        config:
+          inventory-service:
+            connectTimeout: 2000
+            readTimeout: 5000
+```
 
 ## Tabla de elementos clave
 
-Los atributos de `@FeignClient` y las anotaciones de mapeo que un senior debe dominar para entrevista.
+Los atributos de `@FeignClient` determinan el comportamiento del cliente. A continuación se describen los más importantes:
 
-| Elemento | Tipo | Default | Descripción |
-|---|---|---|---|
-| `name` | `String` | — | Nombre lógico del servicio; resuelto por LoadBalancer/Eureka |
-| `url` | `String` | — | URL fija; desactiva la resolución por LoadBalancer |
-| `path` | `String` | `""` | Prefijo de ruta aplicado a todos los métodos del cliente |
-| `configuration` | `Class[]` | `FeignClientsConfiguration` | Clase(s) `@Configuration` locales del cliente |
-| `fallback` | `Class` | `void.class` | Clase de fallback estática; requiere `feign.circuitbreaker.enabled=true` |
-| `fallbackFactory` | `Class` | `void.class` | `FallbackFactory<T>` para fallback con acceso a la causa |
-| `contextId` | `String` | valor de `name` | ID único del bean; obligatorio con múltiples clientes al mismo `name` |
-| `decode404` | `boolean` | `false` | Si `true`, trata 404 como respuesta decodificable, no como error |
-| `@GetMapping` / `@PostMapping` … | anotación | — | Mapeo de método al verbo HTTP y ruta relativa |
-| `@PathVariable` | anotación | — | Vincula parámetro al segmento `{variable}` de la ruta |
-| `@RequestParam` | anotación | — | Añade parámetro de query string a la URL |
-| `@RequestHeader` | anotación | — | Añade cabecera HTTP a la petición |
-| `@RequestBody` | anotación | — | Serializa el parámetro como cuerpo de la petición (JSON por defecto) |
+| Atributo | Tipo | Descripción |
+|---|---|---|
+| `name` / `value` | String | Nombre lógico del servicio; si Eureka está activo se usa como serviceId para `lb://` |
+| `url` | String | URL base fija; si se especifica, Eureka y LoadBalancer se ignoran |
+| `path` | String | Prefijo de ruta añadido a todas las llamadas del cliente |
+| `configuration` | Class | Clase de configuración específica para este cliente (Encoder, Decoder, etc.) |
+| `fallback` | Class | Clase que implementa la interfaz y provee respuestas por defecto ante fallos |
+| `fallbackFactory` | Class | Fábrica de fallback con acceso al `Throwable` que causó el fallo |
+| `qualifiers` | String[] | Nombres de bean alternativos cuando hay varios clientes con el mismo nombre |
+| `dismiss404` | boolean | Si `true`, un 404 no lanza excepción sino que devuelve `null` o `Optional.empty()` |
 
----
+## Conceptos fundamentales
+
+`@FeignClient` es la anotación núcleo que marca una interfaz como cliente HTTP declarativo. Cada anotación genera un bean proxy en el contexto de Spring, con un sub-contexto (ApplicationContext hijo) propio para la configuración del cliente.
+
+`@EnableFeignClients` activa el escaneo de interfaces `@FeignClient` en los paquetes indicados. Sin esta anotación, el contexto no registra ningún proxy Feign aunque existan las interfaces. El atributo `defaultConfiguration` permite definir una configuración base para todos los clientes.
+
+`lb://serviceId` es el esquema de URL que Spring Cloud LoadBalancer interpreta para resolver el nombre lógico del servicio a una instancia concreta. Feign genera este esquema automáticamente a partir del atributo `name` cuando no se especifica `url`.
+
+`SpringMvcContract` es el `Contract` que Feign usa por defecto en Spring Cloud. Permite usar anotaciones de Spring MVC (`@GetMapping`, `@PostMapping`, `@RequestParam`, `@PathVariable`, `@RequestBody`, `@RequestHeader`) en las interfaces Feign, en lugar de las anotaciones propias de Feign (`@RequestLine`, `@Param`, etc.).
 
 ## Buenas y malas prácticas
 
-**Hacer:**
-- Añadir `contextId` siempre que dos clientes apunten al mismo `name`, aunque hoy solo haya uno. Si en el futuro se añade un segundo con otra configuración, no se necesita refactorización ni hay riesgo de arranque fallido.
-- Usar `path` en `@FeignClient` para el prefijo común de todos los endpoints del servicio en lugar de repetirlo en cada método. Reduce el surface de cambio cuando el API del servicio remoto cambia de versión (`/api/v1/` → `/api/v2/`).
-- Declarar el tipo de retorno como `ResponseEntity<T>` cuando se necesita acceder a cabeceras o al código de estado HTTP exacto de la respuesta. Para el caso común (solo cuerpo), `T` directo es más legible.
+**Buenas prácticas:**
+- Usar `name` con el `spring.application.name` del servicio remoto para aprovechar la resolución dinámica vía Eureka.
+- Especificar `path` en `@FeignClient` para evitar repetir el prefijo en cada método.
+- Agrupar los clientes Feign en un paquete dedicado (`clients` o `feign`) y usar `basePackages` en `@EnableFeignClients`.
+- Anotar **todos** los parámetros del método: un parámetro sin anotación se convierte en el cuerpo de la petición (solo uno puede ser cuerpo).
 
-**Evitar:**
-- Omitir el nombre del parámetro en `@PathVariable("id")` cuando el nombre del parámetro Java no coincide exactamente con el placeholder de la ruta. Con compilación sin `-parameters`, Feign no puede inferir el nombre y lanza `IllegalStateException` en arranque.
-- Anotar la interfaz `@FeignClient` con `@Component` o incluirla en el `@ComponentScan` de la aplicación. Feign gestiona su propio ciclo de registro; la doble anotación puede crear dos instancias del mismo cliente con comportamientos divergentes.
-- Poner lógica de transformación dentro de la interfaz `@FeignClient` mediante métodos `default`. Esa lógica no pasa por el pipeline de Feign (Encoder, Interceptor, Logger) y genera inconsistencia en el comportamiento observable.
+**Malas prácticas:**
+- Usar `url` con una URL hardcodeada en producción: elimina la capacidad de resolución dinámica y el balanceo de carga.
+- Poner `@EnableFeignClients` sin `basePackages` en proyectos grandes: escanea todo el classpath innecesariamente.
+- Declarar el cliente Feign en el mismo paquete que la clase `@SpringBootApplication` sin configurar `basePackages`: puede funcionar pero es frágil ante refactorizaciones.
 
----
+> [ADVERTENCIA] Un parámetro de método Feign sin anotación (`@RequestParam`, `@PathVariable`, `@RequestBody`, `@RequestHeader`) es tratado como cuerpo de la petición. Si hay dos parámetros sin anotar se produce un error en tiempo de arranque.
 
-## Comparación: `@FeignClient` vs RestClient / WebClient
+## Verificación y práctica
 
-Para un senior que evalúa cuándo usar Feign frente a las alternativas del ecosistema Spring.
+> [EXAMEN] **1.** ¿Qué anotación es imprescindible en la clase principal de Spring Boot para que los beans `@FeignClient` sean detectados y registrados en el contexto?
 
-| Aspecto | `@FeignClient` | `RestClient` (Spring 6.1+) | `WebClient` |
-|---|---|---|---|
-| Estilo | Declarativo (interfaz) | Imperativo (builder) | Imperativo / reactivo |
-| Integración LoadBalancer | Automática | Manual con `@LoadBalanced` | Manual con `@LoadBalanced` |
-| Integración Circuit Breaker | Nativa vía `feign.circuitbreaker.enabled` | Manual | Manual |
-| Soporte reactivo | Experimental (Mono/Flux) | No | Nativo |
-| Testing | `@MockBean` de la interfaz | Mock del `RestClient.Builder` | `MockWebServer` / `ExchangeFunction` |
-| Verbosidad para múltiples endpoints | Baja (un método = un endpoint) | Alta | Alta |
-| Recomendado para | Comunicación síncrona entre microservicios | Llamadas HTTP puntuales | Comunicación reactiva / streaming |
+> [EXAMEN] **2.** Si `@FeignClient(name = "product-service")` y el servicio se registra en Eureka con `spring.application.name=product-service`, ¿qué URL interna genera Feign para las llamadas? ¿Qué componente resuelve esa URL?
 
-> [EXAMEN] En entrevista: "¿Cuándo usarías `RestClient` en lugar de Feign?" La respuesta modelo: cuando la llamada HTTP es puntual y no justifica declarar una interfaz completa, cuando se necesita control granular del request en tiempo de ejecución (body construido dinámicamente), o cuando la dependencia `spring-cloud-starter-openfeign` no está en el proyecto por política de arquitectura.
+> [EXAMEN] **3.** ¿Cuál es la diferencia entre el atributo `url` y el atributo `name` en `@FeignClient`? ¿Cuándo usarías cada uno?
+
+> [EXAMEN] **4.** Tienes un método Feign `ProductResponse findProduct(Long id)` sin ninguna anotación en el parámetro. ¿Qué ocurrirá cuando Feign intente construir la petición HTTP?
+
+> [EXAMEN] **5.** ¿Por qué `SpringMvcContract` es importante en Spring Cloud OpenFeign y qué ocurre si se cambia por `feign.Contract.Default`?
 
 ---
 
-<- [4.1 Setup y bootstrap](sc-feign-setup.md) | [Índice](README.md) | [4.3 Configuración por clase Java](sc-feign-configuracion-java.md) ->
+← [2.14 Testing de aplicaciones con Eureka](sc-eureka-testing.md) | [Índice](README.md) | [3.2.1 Configuración por clase Java](sc-feign-configuracion-java.md) →

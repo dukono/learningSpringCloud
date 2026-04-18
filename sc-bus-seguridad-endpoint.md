@@ -1,214 +1,219 @@
-# 7.6 Seguridad del endpoint actuator de Spring Cloud Bus
+# 7.7 Spring Cloud Bus — Seguridad de endpoints del Bus
 
-← [7.5 Eventos personalizados de Spring Cloud Bus](sc-bus-eventos-personalizados.md) | [Índice](README.md) | [7.7 Tracing y observabilidad de Spring Cloud Bus](sc-bus-observabilidad.md) →
+← [7.6 Spring Cloud Bus — Trazabilidad y destination pattern](sc-bus-observabilidad.md) | [Índice](README.md) | [7.8 Spring Cloud Bus — Endpoint busenv y cambio en caliente](sc-bus-busenv.md) →
+
+---
 
 ## Introducción
 
-El endpoint `/actuator/busrefresh` es uno de los más peligrosos de cualquier microservicio: un único `POST` sin autenticación permite a cualquier actor externo forzar la re-instanciación de todos los beans con `@RefreshScope` en todos los nodos del clúster simultáneamente. En producción con cien instancias, esto genera cien peticiones concurrentes al Config Server, puede provocar timeouts en cascada si el Config Server no está dimensionado para ese pico, y puede usarse como vector de denegación de servicio. El control de acceso a este endpoint tiene dos dimensiones: la exposición (qué endpoints son accesibles vía HTTP) y la autorización (quién puede llamarlos). Ambas deben configurarse explícitamente porque Spring Boot 4.x no expone ni protege los endpoints de actuator por defecto en producción.
+Los endpoints `/actuator/bus-refresh` y `/actuator/bus-env` son extremadamente sensibles en producción: un actor no autorizado podría disparar un refresh masivo de configuración en todos los microservicios o modificar propiedades críticas del entorno en tiempo de ejecución. Spring Cloud Bus no incluye seguridad propia; delega en Spring Security y en el modelo de seguridad de Spring Boot Actuator para proteger estos endpoints.
 
-> [ADVERTENCIA] No exponer `/actuator/busrefresh` en el mismo puerto que la API de negocio si el servicio es accesible desde internet. Configurar `management.server.port` a un puerto separado accesible solo desde la red interna o VPN.
+> [ADVERTENCIA] Por defecto, Spring Boot Actuator expone los endpoints sin autenticación en el puerto de gestión si no se configura Spring Security. En producción, NUNCA se deben exponer `/actuator/bus-refresh` ni `/actuator/bus-env` sin autenticación y autorización.
 
-## Representación visual
+## Modelo de seguridad de Spring Boot Actuator
 
-El diagrama siguiente muestra las tres capas de defensa para el endpoint de Bus y cómo se relacionan entre sí.
+Spring Boot Actuator 3.x integra la seguridad de endpoints mediante `SecurityFilterChain`. Los endpoints de Actuator están protegidos por el mismo mecanismo de Spring Security que el resto de la aplicación.
 
-```
-Internet / CI-CD Pipeline
-        │
-        │  POST /actuator/busrefresh
-        ▼
-┌─────────────────────────────────────────────────────┐
-│  Capa 1: Exposición                                 │
-│  management.endpoints.web.exposure.include          │
-│  → solo endpoints declarados son accesibles         │
-│  → si busrefresh no está en la lista, retorna 404   │
-└──────────────────────┬──────────────────────────────┘
-                       │ (endpoint expuesto)
-┌──────────────────────▼──────────────────────────────┐
-│  Capa 2: Spring Security FilterChain                │
-│  .requestMatchers("/actuator/busrefresh")           │
-│    .hasRole("BUS_ADMIN")                            │
-│  → credenciales inválidas → 401/403                 │
-│  → credenciales válidas → continúa                  │
-└──────────────────────┬──────────────────────────────┘
-                       │ (autorizado)
-┌──────────────────────▼──────────────────────────────┐
-│  Capa 3: Puerto separado (opcional pero recomendado)│
-│  management.server.port=8081                        │
-│  → puerto 8081 no expuesto en el load balancer      │
-│  → solo accesible desde red interna                 │
-└──────────────────────┬──────────────────────────────┘
-                       │
-               BusAutoConfiguration
-               publica RefreshRemoteApplicationEvent
-```
+Las propiedades de control de exposición y habilitación de endpoints son:
 
-## Ejemplo central
+| Propiedad | Descripción |
+|-----------|-------------|
+| `management.endpoints.web.exposure.include` | Lista de endpoints expuestos por HTTP; no exponer sin revisión |
+| `management.endpoints.web.exposure.exclude` | Lista de endpoints explícitamente excluidos de la exposición |
+| `management.endpoint.bus-refresh.enabled` | `true`/`false`; deshabilita el endpoint a nivel de funcionamiento |
+| `management.endpoint.bus-env.enabled` | `true`/`false`; deshabilita el endpoint de bus-env |
 
-El ejemplo siguiente configura la protección completa del endpoint de Bus con Spring Security, incluyendo credenciales para llamadas automatizadas desde webhooks de Git y la separación del puerto de management.
+> [CONCEPTO] Deshabilitar un endpoint con `management.endpoint.bus-refresh.enabled=false` es diferente de no exponerlo. Un endpoint deshabilitado no está disponible en absoluto (no puede invocarse ni siquiera internamente). Un endpoint no expuesto existe pero no es accesible por HTTP.
+
+## Estrategias de protección con Spring Security
+
+Existen tres estrategias principales para proteger los endpoints del Bus, ordenadas de menor a mayor seguridad:
+
+**Estrategia 1: Puerto de gestión separado (más sencilla en entornos privados)**
+
+Configurar los endpoints de Actuator en un puerto diferente al de la aplicación y restringir ese puerto a la red interna mediante firewall o políticas de red.
+
+**Estrategia 2: Autenticación HTTP Basic (común en entornos internos)**
+
+Requiere credenciales para acceder a los endpoints del Bus. Adecuada para entornos donde el Bus es accedido por otros servicios de infraestructura.
+
+**Estrategia 3: Autenticación con roles específicos (recomendada en producción)**
+
+Requiere que el usuario tenga un rol específico (`ACTUATOR`, `ADMIN` u otro definido) para acceder a los endpoints del Bus.
+
+## Ejemplo central — Configuración completa de seguridad
+
+El siguiente ejemplo muestra la configuración de seguridad recomendada para producción con Spring Security 6.x, protegiendo los endpoints del Bus con autenticación y autorización por roles.
 
 ```xml
-<!-- pom.xml -->
-<dependencies>
-    <dependency>
-        <groupId>org.springframework.cloud</groupId>
-        <artifactId>spring-cloud-starter-bus-kafka</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-actuator</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-security</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-web</artifactId>
-    </dependency>
-</dependencies>
-```
-
-```yaml
-# application.yml
-spring:
-  application:
-    name: config-server
-  cloud:
-    bus:
-      enabled: true
-      id: ${spring.application.name}:${spring.profiles.active:default}:${random.value}
-  kafka:
-    bootstrap-servers: kafka:9092
-  security:
-    user:
-      name: busadmin
-      password: ${BUS_ADMIN_PASSWORD:changeme-in-production}
-      roles: BUS_ADMIN
-
-# Puerto separado para actuator: no expuesto en el load balancer externo
-management:
-  server:
-    port: 8081
-  endpoints:
-    web:
-      exposure:
-        include: busrefresh, busenv, health, info
-  endpoint:
-    health:
-      show-details: when-authorized
+<!-- pom.xml — dependencia de Spring Security -->
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-security</artifactId>
+</dependency>
 ```
 
 ```java
-// src/main/java/com/example/config/security/ActuatorSecurityConfig.java
-package com.example.config.security;
+// ActuatorSecurityConfig.java — configuración de seguridad para endpoints del Bus
+package com.example.configclient.security;
 
 import org.springframework.boot.actuate.autoconfigure.security.servlet.EndpointRequest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
-import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.userdetails.User;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.provisioning.InMemoryUserDetailsManager;
 import org.springframework.security.web.SecurityFilterChain;
 
 @Configuration
 @EnableWebSecurity
 public class ActuatorSecurityConfig {
 
-    // SecurityFilterChain para los endpoints de actuator
-    // Se aplica al puerto de management (8081 en este ejemplo)
     @Bean
-    public SecurityFilterChain actuatorSecurityFilterChain(HttpSecurity http)
-            throws Exception {
-
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
-            .securityMatcher(EndpointRequest.toAnyEndpoint())
             .authorizeHttpRequests(authorize -> authorize
-                // busrefresh y busenv requieren rol BUS_ADMIN
-                .requestMatchers(
-                    EndpointRequest.to("busrefresh", "busenv")
-                ).hasRole("BUS_ADMIN")
-                // health e info son públicos
-                .requestMatchers(
-                    EndpointRequest.to("health", "info")
-                ).permitAll()
-                // cualquier otro endpoint de actuator requiere autenticación
-                .anyRequest().authenticated()
+                // Endpoints del Bus requieren rol ACTUATOR
+                .requestMatchers(EndpointRequest.to("bus-refresh", "bus-env"))
+                    .hasRole("ACTUATOR")
+                // Health e info accesibles sin autenticación
+                .requestMatchers(EndpointRequest.to("health", "info"))
+                    .permitAll()
+                // Cualquier otro endpoint de actuator requiere autenticación
+                .requestMatchers(EndpointRequest.toAnyEndpoint())
+                    .authenticated()
+                // El resto de la aplicación: su propia lógica
+                .anyRequest()
+                    .permitAll()
             )
-            // Autenticación básica para llamadas automatizadas desde webhook
-            .httpBasic(basic -> {})
-            // Sin sesión: cada petición lleva sus propias credenciales
-            .sessionManagement(session ->
-                session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+            .httpBasic(httpBasic -> httpBasic
+                .realmName("Spring Cloud Bus Management")
             )
-            // CSRF deshabilitado para endpoints de API (REST)
-            .csrf(csrf -> csrf.disable());
+            .csrf(csrf -> csrf
+                // Deshabilitar CSRF para los endpoints de Actuator
+                // (son invocados por sistemas externos/webhooks, no por browsers)
+                .ignoringRequestMatchers(EndpointRequest.toAnyEndpoint())
+            );
 
         return http.build();
     }
 
-    // SecurityFilterChain para el tráfico de negocio (puerto 8080)
     @Bean
-    public SecurityFilterChain appSecurityFilterChain(HttpSecurity http)
-            throws Exception {
-        http
-            .authorizeHttpRequests(authorize -> authorize
-                .requestMatchers("/api/**").authenticated()
-                .anyRequest().permitAll()
-            )
-            .httpBasic(basic -> {});
+    public UserDetailsService userDetailsService(PasswordEncoder passwordEncoder) {
+        return new InMemoryUserDetailsManager(
+            User.withUsername("bus-admin")
+                .password(passwordEncoder.encode("${BUS_ADMIN_PASSWORD}"))
+                .roles("ACTUATOR", "ADMIN")
+                .build()
+        );
+    }
 
-        return http.build();
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
     }
 }
 ```
 
-La llamada desde el webhook de GitHub queda así con autenticación básica:
+```yaml
+# application.yml — propiedades de exposición y habilitación de endpoints del Bus
+spring:
+  application:
+    name: config-client
+  security:
+    user:
+      name: ${BUS_ADMIN_USER:bus-admin}
+      password: ${BUS_ADMIN_PASSWORD:changeme}
+      roles: ACTUATOR
 
-```bash
-# Webhook de GitHub configurado con:
-# Payload URL: http://config-server:8081/actuator/busrefresh
-# Content-Type: application/json
-# Secret: (configurar HMAC si se usa GitHub App o Actions)
-# Para tests manuales:
-curl -X POST http://config-server:8081/actuator/busrefresh \
-  -u busadmin:changeme-in-production \
-  -H "Content-Type: application/json"
-
-# Refresh selectivo autenticado:
-curl -X POST "http://config-server:8081/actuator/busrefresh/pricing-service:**" \
-  -u busadmin:changeme-in-production
+management:
+  endpoints:
+    web:
+      exposure:
+        # Exponer SOLO los endpoints necesarios, nunca '*' en producción
+        include: bus-refresh, bus-env, health, info
+      base-path: /actuator
+  endpoint:
+    bus-refresh:
+      enabled: true    # Cambiar a false para deshabilitar completamente
+    bus-env:
+      enabled: true
+  # Puerto de gestión separado (opcional, más seguro en entornos con red interna)
+  server:
+    port: 9090         # Solo accesible en red interna/management network
 ```
 
-## Tabla de elementos clave
+Con esta configuración, una llamada al endpoint del Bus requiere autenticación:
 
-La tabla siguiente recoge las propiedades de seguridad relevantes para el endpoint de Bus.
+```bash
+# Llamada sin autenticación → 401 Unauthorized
+curl -X POST http://localhost:8080/actuator/bus-refresh
 
-| Parámetro | Tipo | Default | Descripción |
-|---|---|---|---|
-| `management.endpoints.web.exposure.include` | String list | `health,info` | Endpoints expuestos vía HTTP. Debe incluir `busrefresh` explícitamente. |
-| `management.endpoints.web.exposure.exclude` | String list | — | Endpoints explícitamente excluidos. Tiene precedencia sobre `include`. |
-| `management.server.port` | Int | mismo que `server.port` | Puerto del servidor de management. Separar de negocio en producción. |
-| `management.server.address` | String | — | Dirección de escucha de management. Puede restringirse a la red interna. |
-| `spring.security.user.name` | String | `user` | Usuario de autenticación básica para actuator. |
-| `spring.security.user.password` | String | (generado) | Password del usuario de actuator. Fijar en producción con variable de entorno. |
-| `spring.security.user.roles` | String list | `USER` | Roles del usuario de actuator. Debe incluir `BUS_ADMIN` si se usa ese rol. |
+# Llamada con autenticación correcta → 204 No Content (éxito)
+curl -X POST http://localhost:8080/actuator/bus-refresh \
+     -u bus-admin:changeme
+
+# Llamada a puerto de gestión separado (si se configuró)
+curl -X POST http://localhost:9090/actuator/bus-refresh \
+     -u bus-admin:changeme
+```
+
+## Tabla de estrategias de seguridad
+
+Las estrategias de protección de los endpoints del Bus se comparan según su adecuación a diferentes entornos:
+
+| Estrategia | Seguridad | Complejidad | Recomendado para |
+|------------|-----------|-------------|------------------|
+| Puerto de gestión separado | Media | Baja | Entornos con red interna controlada |
+| HTTP Basic + roles | Alta | Media | Entornos internos, CI/CD pipelines |
+| OAuth2/JWT | Muy alta | Alta | Producción con SSO corporativo |
+| Endpoint deshabilitado | Máxima | Mínima | Servicios que no necesitan bus-refresh externo |
+
+## Deshabilitar endpoints del Bus
+
+Cuando un servicio no necesita recibir llamadas externas al endpoint de Bus (por ejemplo, si el refresh se dispara desde otro servicio interno), la opción más segura es deshabilitar el endpoint completamente:
+
+```yaml
+management:
+  endpoint:
+    bus-refresh:
+      enabled: false   # El endpoint no existe; no es invocable
+    bus-env:
+      enabled: false   # El endpoint de bus-env tampoco
+```
+
+> [CONCEPTO] Deshabilitar el endpoint con `enabled=false` no impide que la instancia **reciba** eventos del Bus desde el broker. La instancia sigue siendo un consumidor del Bus; solo deja de exponer el disparador HTTP para generar nuevos eventos.
 
 ## Buenas y malas prácticas
 
-**Hacer:**
+**Buenas prácticas:**
 
-- Configurar `management.server.port` diferente al puerto de la aplicación y no exponerlo en el balanceador de carga externo. En Kubernetes, el Service de management debe ser de tipo `ClusterIP` (no `LoadBalancer` ni `NodePort`) para que solo sea accesible desde dentro del clúster.
-- Usar variables de entorno o secretos de Kubernetes para la contraseña de actuator. Hardcodear credenciales en `application.yml` expone el acceso al endpoint en el repositorio Git del Config Server, que es precisamente el sistema que el endpoint controla.
-- Validar el secreto HMAC del webhook de GitHub antes de procesar la petición. GitHub envía un header `X-Hub-Signature-256` que permite verificar que la petición viene realmente de GitHub y no de un atacante que conoce la URL del endpoint.
+- Usar siempre una lista explícita en `management.endpoints.web.exposure.include` en lugar de `*`. Exponer solo lo necesario.
+- En entornos de producción con Kubernetes, restringir el puerto de gestión a la red del cluster usando NetworkPolicies.
+- Deshabilitar `bus-env` si no se usa activamente el cambio de propiedades en caliente. Es un vector de ataque adicional sin beneficio si no se usa.
 
-**Evitar:**
+**Malas prácticas:**
 
-- No exponer `/actuator/busrefresh` sin autenticación incluso en entornos internos. Un atacante con acceso a la red interna puede usarlo para generar denegación de servicio en el Config Server. La autenticación básica con credenciales fuertes es el mínimo aceptable.
-- No usar las mismas credenciales del endpoint de negocio para el endpoint de actuator. La separación de credenciales permite rotar las del bus sin afectar a los usuarios de la API de negocio, y viceversa.
-- No confiar en el firewall como única capa de seguridad. El firewall puede tener reglas incorrectas, y un servicio comprometido dentro del perímetro puede llamar al endpoint sin restricciones. Spring Security añade una capa de defensa en profundidad que no depende de la configuración de red.
-- No deshabilitar CSRF para toda la aplicación si los formularios web usan la misma SecurityFilterChain que los endpoints de actuator. La configuración mostrada en el ejemplo usa `securityMatcher` para aplicar la deshabilitación de CSRF solo a los endpoints de actuator, manteniendo la protección CSRF en el resto de la aplicación.
+- Usar `management.endpoints.web.exposure.include=*` en producción. Expone endpoints como `/actuator/env`, `/actuator/heapdump` y `/actuator/shutdown`.
+- No configurar Spring Security y confiar solo en firewall para proteger los endpoints. La defensa en profundidad requiere múltiples capas de seguridad.
+- Hardcodear contraseñas en `application.yml`. Siempre usar variables de entorno o un secrets manager.
+
+## Verificación y práctica
+
+> [EXAMEN] **1.** ¿Qué propiedad deshabilita completamente el endpoint `/actuator/bus-refresh`, impidiendo su invocación?
+
+> [EXAMEN] **2.** ¿Cuál es la diferencia entre "endpoint deshabilitado" y "endpoint no expuesto" en Spring Boot Actuator?
+
+> [EXAMEN] **3.** ¿Qué clase de Spring Security se usa para configurar reglas de autorización específicas para endpoints de Actuator?
+
+> [EXAMEN] **4.** ¿Por qué se debe deshabilitar CSRF para los endpoints de Actuator cuando son invocados por webhooks externos?
+
+> [EXAMEN] **5.** Si se configura `management.server.port=9090`, ¿en qué puerto estará disponible `/actuator/bus-refresh`?
 
 ---
 
-← [7.5 Eventos personalizados de Spring Cloud Bus](sc-bus-eventos-personalizados.md) | [Índice](README.md) | [7.7 Tracing y observabilidad de Spring Cloud Bus](sc-bus-observabilidad.md) →
+← [7.6 Spring Cloud Bus — Trazabilidad y destination pattern](sc-bus-observabilidad.md) | [Índice](README.md) | [7.8 Spring Cloud Bus — Endpoint busenv y cambio en caliente](sc-bus-busenv.md) →

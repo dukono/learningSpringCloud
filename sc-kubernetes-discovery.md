@@ -1,105 +1,74 @@
-# 9.6 KubernetesDiscoveryClient — descubrimiento de servicios
+# 9.4 Spring Cloud Kubernetes — Service Discovery con KubernetesDiscoveryClient
 
-← [9.5 Namespace awareness y RBAC](sc-kubernetes-namespace-rbac.md) | [Índice (README.md)](README.md) | [9.7 Reactive DiscoveryClient y variantes de implementación](sc-kubernetes-discovery-reactive.md) →
+← [9.3 Secrets como PropertySource](sc-kubernetes-secrets.md) | [Índice](README.md) | [9.5 Starters: Fabric8 vs Cliente Oficial](sc-kubernetes-starters.md) →
 
 ---
 
 ## Introducción
 
-En un cluster Kubernetes, los servicios ya son descubribles vía DNS (el CoreDNS del cluster resuelve `nombre-servicio.namespace.svc.cluster.local`). Sin embargo, Spring Cloud Gateway, OpenFeign y Spring Cloud LoadBalancer trabajan con la abstracción `DiscoveryClient` de Spring Cloud Commons, que devuelve una lista de `ServiceInstance` con metadatos ricos (puertos, namespace, etiquetas, estado de readiness). `KubernetesDiscoveryClient` implementa esa abstracción consultando la Kubernetes Services API en lugar de Eureka o Consul, permitiendo que el resto del ecosistema Spring Cloud funcione sin cambios de código al ejecutarse en Kubernetes. Sin este bridge, un microservicio desplegado en Kubernetes que usa `@LoadBalanced` o `@FeignClient` tendría que usar DNS directamente y perdería la integración con Spring Cloud LoadBalancer.
+`KubernetesDiscoveryClient` es la implementación de la interfaz `DiscoveryClient` de Spring Cloud que descubre instancias de servicios usando la API de Kubernetes en lugar de un registro externo como Eureka. En lugar de consultar a un servidor Eureka, el cliente interroga directamente los recursos `Service` y `Endpoints` del clúster para obtener la lista de instancias disponibles. Esta integración permite que el código de aplicación que usa `@LoadBalanced RestTemplate`, `WebClient` o `FeignClient` funcione sin modificaciones al migrar de Eureka a Kubernetes.
 
-> **[PREREQUISITO]** Configurar el RBAC con permisos `get`/`list`/`watch` sobre `services`, `endpoints` y `pods` antes de activar el DiscoveryClient. Ver [9.5 Namespace awareness y RBAC](sc-kubernetes-namespace-rbac.md). Sin esos permisos, el DiscoveryClient devuelve una lista vacía o lanza 403 en el arranque.
+## Diagrama de descubrimiento
 
-## Representación visual
-
-El diagrama muestra cómo `KubernetesDiscoveryClient` consulta la Kubernetes API para construir la lista de `ServiceInstance` que Spring Cloud LoadBalancer y otros clientes consumen.
+El siguiente diagrama muestra cómo `KubernetesDiscoveryClient` resuelve un nombre de servicio lógico en instancias concretas comparado con Eureka.
 
 ```
-Aplicación Spring Cloud
-    │
-    ├── OpenFeign / @LoadBalanced RestClient
-    │         │
-    │         ▼
-    │   Spring Cloud LoadBalancer
-    │         │  getInstances("nombre-servicio")
-    │         ▼
-    │   KubernetesDiscoveryClient
-    │         │
-    │         ▼
-    │   Kubernetes API Server
-    │   GET /api/v1/namespaces/default/services/nombre-servicio
-    │   GET /api/v1/namespaces/default/endpoints/nombre-servicio
-    │         │
-    │         ▼
-    │   ServiceInstance {
-    │     serviceId: "nombre-servicio"
-    │     host: "10.96.0.5"  ← ClusterIP del Service K8s
-    │     port: 8080
-    │     metadata: {namespace: "default", label.app: "nombre-servicio"}
-    │   }
-    │
-    └── Kubernetes Service (ClusterIP) ─► Pod(s) destino
+Eureka (pila clásica):
+  FeignClient("order-service")
+       │
+       ▼ DiscoveryClient.getInstances("order-service")
+  Eureka Server → [10.0.0.1:8080, 10.0.0.2:8080]
+
+Kubernetes:
+  FeignClient("order-service")
+       │
+       ▼ KubernetesDiscoveryClient.getInstances("order-service")
+  K8s API Server → GET /api/v1/namespaces/default/endpoints/order-service
+                 → [Pod IP 1:8080, Pod IP 2:8080]
 ```
 
-> **[CONCEPTO]** Un Kubernetes `Service` de tipo `ClusterIP` es el recurso K8s que SCK expone como `ServiceInstance`. SCK resuelve la IP del Service (ClusterIP) o los IPs de los pods (via Endpoints API en modo POD del LoadBalancer). La definición del Service es responsabilidad del equipo de plataforma; SCK solo lo consulta.
+> [CONCEPTO] `KubernetesDiscoveryClient` implementa exactamente la misma interfaz `DiscoveryClient` que `EurekaDiscoveryClient`. Esto significa que toda la lógica de balanceo de carga de Spring Cloud LoadBalancer, que consume `DiscoveryClient`, funciona sin cambios en el código de aplicación.
 
-> **[CONCEPTO]** `KubernetesInformerDiscoveryClient` (disponible con el starter `kubernetes-client` oficial) usa informers nativos de Kubernetes para mantener un cache local sincronizado con el API server, reduciendo la carga en el API server en clusters con muchos servicios. Ver [9.7 Reactive DiscoveryClient y variantes de implementación](sc-kubernetes-discovery-reactive.md) para comparación.
+> [CONCEPTO] Cuando se trabaja con headless services (ClusterIP: None en el manifiesto del Service K8s), `KubernetesDiscoveryClient` devuelve las IPs individuales de cada pod en lugar de la IP del Service. Esto es útil para bases de datos distribuidas o caches que requieren conexión directa a pods específicos.
+
+> [PREREQUISITO] El ServiceAccount del pod necesita los verbos `get`, `watch` y `list` sobre los recursos `services` y `endpoints` en el namespace correspondiente.
 
 ## Ejemplo central
 
-El siguiente ejemplo muestra una aplicación que usa `KubernetesDiscoveryClient` para listar servicios y un cliente `@FeignClient` que resuelve instancias vía el DiscoveryClient de Kubernetes.
-
-**pom.xml**:
+El siguiente ejemplo muestra la configuración completa para usar `KubernetesDiscoveryClient` con un `FeignClient` y filtrado por labels, incluyendo el descubrimiento en todos los namespaces.
 
 ```xml
-<dependencies>
-  <dependency>
+<!-- pom.xml -->
+<dependency>
     <groupId>org.springframework.cloud</groupId>
-    <artifactId>spring-cloud-starter-kubernetes-fabric8-all</artifactId>
-  </dependency>
-  <dependency>
+    <artifactId>spring-cloud-starter-kubernetes-client-all</artifactId>
+</dependency>
+<dependency>
     <groupId>org.springframework.cloud</groupId>
     <artifactId>spring-cloud-starter-openfeign</artifactId>
-  </dependency>
-  <dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-web</artifactId>
-  </dependency>
-</dependencies>
+</dependency>
 ```
 
-**application.yml**:
-
 ```yaml
+# src/main/resources/application.yml
 spring:
   application:
-    name: inventario-service
-  config:
-    import: "kubernetes:configmap/inventario-config"
-
-spring:
+    name: api-gateway
   cloud:
     kubernetes:
       discovery:
         enabled: true
-        all-namespaces: false
-        namespaces:
-          - produccion
+        all-namespaces: false           # true para buscar en todos los namespaces
         service-labels:
-          tier: backend              # Solo descubre servicios con esta etiqueta
+          monitored: "true"             # solo servicios con este label
         include-not-ready-addresses: false
-    openfeign:
-      client:
-        config:
-          default:
-            connect-timeout: 2000
-            read-timeout: 5000
+    loadbalancer:
+      enabled: true
 ```
 
-**Clase principal con @EnableDiscoveryClient y @EnableFeignClients**:
-
 ```java
-package com.ejemplo.inventario;
+// src/main/java/com/example/ApiGatewayApplication.java
+package com.example;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -109,108 +78,109 @@ import org.springframework.cloud.openfeign.EnableFeignClients;
 @SpringBootApplication
 @EnableDiscoveryClient
 @EnableFeignClients
-public class InventarioServiceApplication {
-
+public class ApiGatewayApplication {
     public static void main(String[] args) {
-        SpringApplication.run(InventarioServiceApplication.class, args);
+        SpringApplication.run(ApiGatewayApplication.class, args);
     }
 }
 ```
 
-**FeignClient que usa KubernetesDiscoveryClient via Spring Cloud LoadBalancer**:
-
 ```java
-package com.ejemplo.inventario.client;
+// src/main/java/com/example/client/OrderClient.java
+package com.example.client;
 
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import java.util.List;
 
-// "catalogo-service" es el nombre del Kubernetes Service en el namespace
-@FeignClient(name = "catalogo-service")
-public interface CatalogoClient {
+// "order-service" es el nombre del Service de Kubernetes
+@FeignClient(name = "order-service")
+public interface OrderClient {
 
-    @GetMapping("/api/productos/{id}")
-    ProductoDto getProducto(@PathVariable("id") Long id);
+    @GetMapping("/orders")
+    List<String> getOrders();
 
-    @GetMapping("/api/productos")
-    List<ProductoDto> listarProductos();
+    @GetMapping("/orders/{id}")
+    String getOrder(@PathVariable("id") Long id);
 }
 ```
 
-**Uso directo del DiscoveryClient** (para diagnóstico o lógica de routing):
-
 ```java
-package com.ejemplo.inventario.service;
+// src/main/java/com/example/DiscoveryController.java
+package com.example;
 
 import org.springframework.cloud.client.ServiceInstance;
 import org.springframework.cloud.client.discovery.DiscoveryClient;
-import org.springframework.stereotype.Service;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 
-@Service
-public class ServicioDiagnostico {
+@RestController
+public class DiscoveryController {
 
     private final DiscoveryClient discoveryClient;
 
-    public ServicioDiagnostico(DiscoveryClient discoveryClient) {
+    public DiscoveryController(DiscoveryClient discoveryClient) {
         this.discoveryClient = discoveryClient;
     }
 
-    public List<String> listarServiciosDescubiertos() {
+    @GetMapping("/services")
+    public List<String> services() {
         return discoveryClient.getServices();
     }
 
-    public List<ServiceInstance> obtenerInstancias(String servicioId) {
-        List<ServiceInstance> instancias = discoveryClient.getInstances(servicioId);
-        instancias.forEach(inst ->
-            System.out.printf("Servicio: %s, Host: %s, Puerto: %d, Metadata: %s%n",
-                inst.getServiceId(), inst.getHost(), inst.getPort(), inst.getMetadata())
-        );
-        return instancias;
+    @GetMapping("/services/{name}")
+    public List<ServiceInstance> instances(@PathVariable String name) {
+        return discoveryClient.getInstances(name);
     }
 }
 ```
 
-**Metadatos DTO**:
+## Tabla de propiedades de Discovery
 
-```java
-package com.ejemplo.inventario.client;
+La siguiente tabla resume las propiedades más relevantes para configurar el descubrimiento de servicios.
 
-public record ProductoDto(Long id, String nombre, Double precio) {}
-```
+| Propiedad | Valor por defecto | Descripción |
+|---|---|---|
+| `spring.cloud.kubernetes.discovery.enabled` | `true` | Activa `KubernetesDiscoveryClient` |
+| `spring.cloud.kubernetes.discovery.all-namespaces` | `false` | Descubre servicios en todos los namespaces; requiere ClusterRole |
+| `spring.cloud.kubernetes.discovery.service-labels` | — | Mapa de etiquetas para filtrar servicios |
+| `spring.cloud.kubernetes.discovery.include-not-ready-addresses` | `false` | Incluye pods no listos en la lista de instancias |
+| `spring.cloud.kubernetes.discovery.namespaces` | — | Lista explícita de namespaces donde buscar (alternativa a `all-namespaces`) |
 
-> **[EXAMEN]** Pregunta frecuente: "¿Qué contiene el `metadata` de un `ServiceInstance` devuelto por `KubernetesDiscoveryClient`?" Contiene las etiquetas (`labels`) del Kubernetes Service, el namespace, los puertos nombrados del Service, y opcionalmente las anotaciones. Estos metadatos permiten implementar estrategias de routing avanzadas (selección por versión, canary deployments) sin modificar el código de la aplicación.
+## Headless Services vs ClusterIP
 
-## Tabla de elementos clave
-
-| Propiedad | Tipo | Default | Descripción |
-|---|---|---|---|
-| `spring.cloud.kubernetes.discovery.enabled` | boolean | `true` | Activa KubernetesDiscoveryClient |
-| `spring.cloud.kubernetes.discovery.service-name` | String | — | Nombre del Service K8s a usar como serviceId en Spring Cloud |
-| `spring.cloud.kubernetes.discovery.all-namespaces` | boolean | `false` | Descubre servicios en todos los namespaces (requiere ClusterRole) |
-| `spring.cloud.kubernetes.discovery.namespaces` | List | — | Lista explícita de namespaces donde buscar servicios |
-| `spring.cloud.kubernetes.discovery.service-labels` | Map | — | Filtra servicios por etiquetas K8s (solo devuelve los que coincidan) |
-| `spring.cloud.kubernetes.discovery.include-not-ready-addresses` | boolean | `false` | Incluye pods no ready como instancias disponibles |
-| `spring.cloud.kubernetes.discovery.metadata.add-labels` | boolean | `true` | Incluye labels del Service en el metadata del ServiceInstance |
-| `spring.cloud.kubernetes.discovery.metadata.add-annotations` | boolean | `false` | Incluye anotaciones del Service en el metadata |
+Cuando un Service de Kubernetes tiene `clusterIP: None` (headless), el DNS devuelve directamente los registros A de los pods individuales en lugar de la IP del Service. `KubernetesDiscoveryClient` detecta este tipo de service y devuelve las IPs individuales de los pods, lo que permite que Spring Cloud LoadBalancer balancee directamente a nivel de pod. Con un Service de ClusterIP normal, la lista de instancias contiene una única entrada con la IP del Service, y el balanceo ocurre dentro de kube-proxy.
 
 ## Buenas y malas prácticas
 
-**Hacer:**
+**Buenas prácticas:**
+- Usar `service-labels` para filtrar qué servicios son visibles para el DiscoveryClient, evitando que la aplicación intente balancear hacia servicios de infraestructura no aptos.
+- Activar `all-namespaces: true` solo cuando realmente se necesita descubrimiento cross-namespace; requiere ClusterRole que amplía los permisos del pod.
+- Usar `@EnableDiscoveryClient` aunque la auto-configuración lo registre automáticamente: mejora la legibilidad y documenta la intención.
+- Ver la integración con Istio antes de activar discovery en entornos con service mesh (ver sc-kubernetes-istio.md).
 
-- Usar `service-labels` para filtrar el conjunto de servicios descubiertos en clusters grandes: sin filtrado, el DiscoveryClient carga todos los Services del namespace en memoria, lo que puede ser costoso.
-- Mantener `include-not-ready-addresses=false` (default) en producción: incluir pods no-ready en el pool de balanceo provoca errores 503 cuando el LoadBalancer selecciona esas instancias.
-- Asegurarse de que el nombre del `@FeignClient` coincide exactamente con el nombre del Kubernetes Service: el nombre se usa como serviceId para consultar el DiscoveryClient y luego el LoadBalancer.
-- Activar `metadata.add-labels=true` para habilitar routing por versión o canary: las etiquetas `version: v2` en el Service son accesibles como metadatos del ServiceInstance.
+**Malas prácticas:**
+- Usar `all-namespaces: true` con un ClusterRole irrestricto: un pod comprometido podría descubrir todos los servicios del clúster, incluidos los de administración.
+- Incluir `include-not-ready-addresses: true` en producción sin lógica de retry: puede enviar tráfico a pods en estado de inicialización.
+- Depender de la IP del pod (headless) sin considerar que las IPs cambian cuando K8s recrea el pod.
 
-**Evitar:**
+> [ADVERTENCIA] `spring.cloud.kubernetes.discovery.all-namespaces=true` requiere un ClusterRole (no Role con scope de namespace) con verbos `list` y `watch` sobre `services` y `endpoints` en todo el clúster. Verificar con el equipo de plataforma antes de usar esta opción en producción.
 
-- Usar `all-namespaces=true` sin necesidad: requiere ClusterRoleBinding (scope de cluster) y carga todos los Services de todos los namespaces, incluyendo los de sistema (`kube-system`).
-- Confundir el KubernetesDiscoveryClient con el DNS de Kubernetes: SCK no reemplaza el DNS; lo complementa. Un acceso directo `http://catalogo-service/api` funciona via DNS incluso sin SCK. SCK añade la integración con Spring Cloud LoadBalancer y metadatos de instancia.
-- Usar Project Reactor (Flux/Mono) con el DiscoveryClient imperativo en aplicaciones WebFlux: para entornos reactivos usar `KubernetesReactiveDiscoveryClient` que devuelve `Flux<ServiceInstance>` (ver [9.7](sc-kubernetes-discovery-reactive.md)).
+## Verificación y práctica
+
+> [EXAMEN] 1. ¿Qué interfaz implementa `KubernetesDiscoveryClient` y cuál es la implicación para el código que ya usa `@FeignClient` con Eureka?
+
+> [EXAMEN] 2. ¿Qué ocurre cuando `KubernetesDiscoveryClient` consulta un headless Service (clusterIP: None) comparado con un Service de ClusterIP normal?
+
+> [EXAMEN] 3. ¿Qué permisos RBAC adicionales requiere activar `spring.cloud.kubernetes.discovery.all-namespaces=true` y por qué?
+
+> [EXAMEN] 4. ¿Cómo se filtra `KubernetesDiscoveryClient` para que solo descubra servicios que tengan el label `monitored=true`?
+
+> [EXAMEN] 5. ¿En qué escenario conviene desactivar `KubernetesDiscoveryClient` completamente y delegar todo el routing a otro componente del stack?
 
 ---
 
-← [9.5 Namespace awareness y RBAC](sc-kubernetes-namespace-rbac.md) | [Índice (README.md)](README.md) | [9.7 Reactive DiscoveryClient y variantes de implementación](sc-kubernetes-discovery-reactive.md) →
+← [9.3 Secrets como PropertySource](sc-kubernetes-secrets.md) | [Índice](README.md) | [9.5 Starters: Fabric8 vs Cliente Oficial](sc-kubernetes-starters.md) →

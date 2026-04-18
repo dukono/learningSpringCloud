@@ -1,284 +1,175 @@
-# 5.3 API programática de Spring Cloud Circuit Breaker y Customizer
+# 4.3 Circuit Breaker — Uso con anotaciones y API programática
 
-← [5.2 Setup: dependencias y autoconfiguración de Resilience4j](sc-circuitbreaker-setup.md) | [Índice](README.md) | [5.4 Configuración YAML avanzada del Circuit Breaker](sc-circuitbreaker-config.md) →
+← [4.2 Configuración completa](sc-circuitbreaker-configuracion.md) | [Índice](README.md) | [4.4 Retry — Configuración y uso](sc-circuitbreaker-retry.md) →
+
+---
 
 ## Introducción
 
-La API programática de Spring Cloud Circuit Breaker proporciona una abstracción sobre Resilience4j (y otras implementaciones) mediante las interfaces `CircuitBreakerFactory` y `CircuitBreaker`. Esta abstracción tiene un objetivo concreto: el código de negocio que protege llamadas remotas no depende de las clases de Resilience4j directamente, lo que permite cambiar de proveedor de Circuit Breaker sin modificar los servicios que lo usan.
+Conocer los estados y la configuración del Circuit Breaker es necesario, pero el uso cotidiano ocurre a través de dos vías: la anotación declarativa `@CircuitBreaker` para integración sencilla con Spring AOP, y la API programática con `CircuitBreakerRegistry` y `CircuitBreaker.executeSupplier()` para casos donde se necesita control fino o donde las anotaciones no son aplicables (lambdas, clases no gestionadas por Spring). Este fichero documenta ambas vías, las reglas de firma del `fallbackMethod` y la combinación de YAML con el builder programático.
 
-El mecanismo `Customizer` es la pieza que conecta la abstracción con la configuración específica de Resilience4j: permite definir configuraciones por nombre de instancia o una configuración por defecto que se aplica a todas las instancias no configuradas explícitamente. Este patrón es especialmente útil cuando se configuran muchos servicios con comportamientos similares pero con pequeñas variaciones.
+> [PREREQUISITO] Requiere conocimiento de [4.2 Configuración completa](sc-circuitbreaker-configuracion.md) para entender los parámetros de configuración referenciados.
 
-> [PREREQUISITO] Los conceptos de estados y transiciones se explican en 5.1. Las propiedades YAML se explican en 5.4; los Customizers de este fichero son la alternativa programática a esas propiedades YAML.
+## La anotación @CircuitBreaker
 
-## Representación visual
+La anotación `@CircuitBreaker` es el punto de entrada más común. Se aplica sobre métodos de beans Spring y activa un proxy AOP que intercepta la llamada, aplica el circuito con el nombre especificado y, si el circuito está abierto o la llamada falla, invoca el `fallbackMethod`. Las reglas de firma son estrictas y su violación produce errores en tiempo de inicio o en la primera invocación.
 
-El flujo de creación y uso de una instancia de Circuit Breaker a través de la API de Spring Cloud es el siguiente:
+Las reglas de firma del `fallbackMethod`:
 
+1. Debe estar en la misma clase que el método protegido.
+2. Debe tener el mismo tipo de retorno o un supertipo compatible.
+3. Debe aceptar exactamente los mismos parámetros que el método protegido, más un parámetro final de tipo `Throwable` o una subclase específica.
+4. Puede haber múltiples métodos fallback con el mismo nombre pero diferente tipo de excepción (Resilience4j selecciona el más específico).
+
+```java
+package com.example.order;
+
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import org.springframework.stereotype.Service;
+
+@Service
+public class OrderService {
+
+    // Fallback genérico: acepta cualquier Throwable
+    @CircuitBreaker(name = "orderService", fallbackMethod = "createOrderFallback")
+    public Order createOrder(OrderRequest request) {
+        // llamada al servicio downstream
+        return externalOrderClient.create(request);
+    }
+
+    // Fallback específico para IOException — seleccionado antes que el genérico
+    public Order createOrderFallback(OrderRequest request, java.io.IOException ex) {
+        return Order.degraded("Network error: " + ex.getMessage());
+    }
+
+    // Fallback genérico — seleccionado si no hay fallback más específico
+    public Order createOrderFallback(OrderRequest request, Throwable ex) {
+        return Order.degraded("Service unavailable");
+    }
+}
 ```
-Startup de la aplicación:
-──────────────────────────────────────────────────────────
-  @Bean Customizer<Resilience4JCircuitBreakerFactory>
-  ─────────────────────────────────────────────────────
-  | configure("paymentService", CircuitBreakerConfig)  |
-  | configure("default", CircuitBreakerConfig)         |
-  └─────────────────────┬───────────────────────────────┘
-                        │ registra configuraciones
-                        ▼
-              Resilience4JCircuitBreakerFactory
-              (bean autoconfigursd en contexto Spring)
 
-En tiempo de ejecución (llamada de negocio):
-──────────────────────────────────────────────────────────
-  factory.create("paymentService")
-         │
-         ▼
-  CircuitBreaker (Spring Cloud abstraction)
-         │
-         ▼
-  cb.run(
-    () -> restClient.get().uri(...).body(Response.class),  ← supplier
-    ex -> fallbackResponse(ex)                              ← fallback
-  )
-         │
-         ├─ CLOSED: ejecuta supplier normalmente
-         ├─ OPEN:   lanza CallNotPermittedException → ejecuta fallback
-         └─ HALF_OPEN: ejecuta supplier como prueba
-```
-
-| Método API                          | Descripción                                                                 |
-|-------------------------------------|-----------------------------------------------------------------------------|
-| `factory.create(id)`                | Obtiene o crea una instancia de CB por nombre                               |
-| `cb.run(supplier)`                  | Ejecuta el supplier; lanza excepción si circuito OPEN                       |
-| `cb.run(supplier, fallback)`        | Ejecuta supplier; invoca fallback con la excepción si falla o OPEN          |
-| `Customizer.forBean(type, fn)`      | Aplica una función de configuración al bean de la fábrica                   |
-| `factory.configureDefault(fn)`      | Registra configuración aplicada a instancias sin configuración específica   |
-| `factory.configure(fn, id...)`      | Registra configuración para instancias específicas por nombre               |
+> [CONCEPTO] La selección del fallback es por especificidad de excepción: Resilience4j busca el fallback cuyo parámetro de excepción sea del tipo más específico que coincida con la excepción lanzada. Si hay empate, usa el primero encontrado por reflexión.
 
 ## Ejemplo central
 
-Un servicio de pagos que protege dos llamadas remotas con configuraciones distintas: una para el servicio de tarjetas (alta criticidad, umbral bajo) y otra para el servicio de notificaciones (baja criticidad, umbral alto). Ambas usan la API programática de Spring Cloud con `CircuitBreakerFactory` y `Customizer`.
-
-```xml
-<!-- pom.xml -->
-<dependencies>
-    <dependency>
-        <groupId>org.springframework.cloud</groupId>
-        <artifactId>spring-cloud-starter-circuitbreaker-resilience4j</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-web</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-actuator</artifactId>
-    </dependency>
-</dependencies>
-
-<dependencyManagement>
-    <dependencies>
-        <dependency>
-            <groupId>org.springframework.cloud</groupId>
-            <artifactId>spring-cloud-dependencies</artifactId>
-            <version>2025.1.1</version>
-            <type>pom</type>
-            <scope>import</scope>
-        </dependency>
-    </dependencies>
-</dependencyManagement>
-```
-
-```yaml
-# application.yml — mínimo necesario (Actuator)
-spring:
-  application:
-    name: payment-service
-
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health,circuitbreakers,circuitbreakerevents
-  health:
-    circuitbreakers:
-      enabled: true
-```
+El ejemplo muestra el uso completo de `CircuitBreakerRegistry` para acceso programático: crear una instancia con configuración específica, decorar una llamada con `executeSupplier`, y registrar un listener de estado:
 
 ```java
-// CircuitBreakerCustomizerConfig.java — configuración de las instancias
-package com.example.payment.config;
+package com.example.product;
 
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
-import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig.SlidingWindowType;
-import org.springframework.cloud.circuitbreaker.resilience4j.Resilience4JCircuitBreakerFactory;
-import org.springframework.cloud.circuitbreaker.resilience4j.Resilience4JConfigBuilder;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.cloud.client.circuitbreaker.Customizer;
-import java.time.Duration;
-
-@Configuration
-public class CircuitBreakerCustomizerConfig {
-
-    /**
-     * Configuración por defecto: aplica a todas las instancias no configuradas
-     * explícitamente. Umbral conservador para servicios de baja prioridad.
-     */
-    @Bean
-    public Customizer<Resilience4JCircuitBreakerFactory> defaultCustomizer() {
-        return factory -> factory.configureDefault(id ->
-                new Resilience4JConfigBuilder(id)
-                        .circuitBreakerConfig(CircuitBreakerConfig.custom()
-                                .slidingWindowType(SlidingWindowType.COUNT_BASED)
-                                .slidingWindowSize(20)
-                                .minimumNumberOfCalls(5)
-                                .failureRateThreshold(60)
-                                .waitDurationInOpenState(Duration.ofSeconds(30))
-                                .permittedNumberOfCallsInHalfOpenState(3)
-                                .automaticTransitionFromOpenToHalfOpenEnabled(true)
-                                .build())
-                        .build()
-        );
-    }
-
-    /**
-     * Configuración específica para el servicio de tarjetas:
-     * umbral de fallo bajo (30%) porque cualquier error en pagos es crítico.
-     */
-    @Bean
-    public Customizer<Resilience4JCircuitBreakerFactory> cardServiceCustomizer() {
-        return factory -> factory.configure(
-                builder -> builder.circuitBreakerConfig(
-                        CircuitBreakerConfig.custom()
-                                .slidingWindowType(SlidingWindowType.TIME_BASED)
-                                .slidingWindowSize(10)
-                                .minimumNumberOfCalls(3)
-                                .failureRateThreshold(30)
-                                .slowCallRateThreshold(50)
-                                .slowCallDurationThreshold(Duration.ofSeconds(1))
-                                .waitDurationInOpenState(Duration.ofSeconds(60))
-                                .permittedNumberOfCallsInHalfOpenState(2)
-                                .automaticTransitionFromOpenToHalfOpenEnabled(true)
-                                .recordExceptions(
-                                        java.io.IOException.class,
-                                        org.springframework.web.client.HttpServerErrorException.class
-                                )
-                                .build()
-                ).build(),
-                "cardService"   // nombre de la instancia
-        );
-    }
-}
-```
-
-```java
-// PaymentService.java — uso de la API programática
-package com.example.payment.service;
-
-import org.springframework.cloud.client.circuitbreaker.CircuitBreaker;
-import org.springframework.cloud.client.circuitbreaker.CircuitBreakerFactory;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClient;
-import com.example.payment.model.CardAuthResponse;
-import com.example.payment.model.NotificationResult;
+import java.time.Duration;
+import java.util.function.Supplier;
 
 @Service
-public class PaymentService {
+public class ProductCatalogService {
 
-    private final CircuitBreakerFactory<?, ?> circuitBreakerFactory;
-    private final RestClient restClient;
+    private final CircuitBreaker circuitBreaker;
+    private final ExternalCatalogClient catalogClient;
 
-    public PaymentService(
-            CircuitBreakerFactory<?, ?> circuitBreakerFactory,
-            RestClient.Builder builder) {
-        this.circuitBreakerFactory = circuitBreakerFactory;
-        this.restClient = builder.build();
+    public ProductCatalogService(CircuitBreakerRegistry registry,
+                                  ExternalCatalogClient catalogClient) {
+        // Obtiene o crea la instancia "catalogService" usando config del registry
+        this.circuitBreaker = registry.circuitBreaker("catalogService");
+        this.catalogClient = catalogClient;
+
+        // Registrar listener de transición de estado
+        this.circuitBreaker.getEventPublisher()
+            .onStateTransition(event ->
+                System.out.printf("CB '%s' transitioned: %s -> %s%n",
+                    event.getCircuitBreakerName(),
+                    event.getStateTransition().getFromState(),
+                    event.getStateTransition().getToState()));
     }
 
-    public CardAuthResponse authorizeCard(String cardToken, long amountCents) {
-        // La instancia "cardService" usa la configuración específica del Customizer
-        CircuitBreaker cardCb = circuitBreakerFactory.create("cardService");
+    public Product getProduct(Long id) {
+        // executeSupplier aplica el CB sobre el Supplier y propaga excepciones
+        Supplier<Product> decoratedSupplier = CircuitBreaker.decorateSupplier(
+            circuitBreaker,
+            () -> catalogClient.fetchProduct(id));
 
-        return cardCb.run(
-                () -> restClient.post()
-                        .uri("http://card-service/api/authorize")
-                        .body(new CardAuthRequest(cardToken, amountCents))
-                        .retrieve()
-                        .body(CardAuthResponse.class),
-                ex -> CardAuthResponse.declined("Circuit breaker abierto: " + ex.getClass().getSimpleName())
-        );
+        try {
+            return decoratedSupplier.get();
+        } catch (CallNotPermittedException ex) {
+            // CB está en estado OPEN
+            return Product.unavailable(id, "Circuit open");
+        } catch (Exception ex) {
+            return Product.unavailable(id, ex.getMessage());
+        }
     }
 
-    public NotificationResult sendPaymentNotification(String userId, String message) {
-        // La instancia "notificationService" usa la configuración por defecto
-        CircuitBreaker notifCb = circuitBreakerFactory.create("notificationService");
-
-        return notifCb.run(
-                () -> restClient.post()
-                        .uri("http://notification-service/api/notify")
-                        .body(new NotificationRequest(userId, message))
-                        .retrieve()
-                        .body(NotificationResult.class),
-                ex -> NotificationResult.skipped()
-        );
+    // Configuración de una instancia adicional con config custom
+    public static CircuitBreaker createCustomCB(CircuitBreakerRegistry registry) {
+        CircuitBreakerConfig config = CircuitBreakerConfig.custom()
+            .slidingWindowSize(10)
+            .minimumNumberOfCalls(5)
+            .failureRateThreshold(40f)
+            .waitDurationInOpenState(Duration.ofSeconds(20))
+            .build();
+        // Si "customService" ya existe en el registry, devuelve la instancia existente
+        return registry.circuitBreaker("customService", config);
     }
 }
 ```
 
-```java
-// Modelos auxiliares necesarios para compilar el ejemplo
-package com.example.payment.model;
+Configuración YAML correspondiente para el bean registry:
 
-public record CardAuthRequest(String cardToken, long amountCents) {}
-
-public record CardAuthResponse(String status, String reason) {
-    public static CardAuthResponse declined(String reason) {
-        return new CardAuthResponse("DECLINED", reason);
-    }
-}
-
-public record NotificationRequest(String userId, String message) {}
-
-public record NotificationResult(String status) {
-    public static NotificationResult skipped() {
-        return new NotificationResult("SKIPPED");
-    }
-}
+```yaml
+resilience4j:
+  circuitbreaker:
+    instances:
+      catalogService:
+        sliding-window-size: 30
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 20s
 ```
 
 ## Tabla de elementos clave
 
-Los métodos y tipos clave de la API programática de Spring Cloud Circuit Breaker con Resilience4j.
+Los métodos de `CircuitBreaker` más utilizados para decorar código:
 
-| Tipo / Método                                              | Paquete / Import                                                             | Descripción                                                                  |
-|------------------------------------------------------------|------------------------------------------------------------------------------|------------------------------------------------------------------------------|
-| `CircuitBreakerFactory<C,B>`                               | `org.springframework.cloud.client.circuitbreaker`                           | Interfaz base; inyectar como `CircuitBreakerFactory<?,?>`                    |
-| `Resilience4JCircuitBreakerFactory`                        | `org.springframework.cloud.circuitbreaker.resilience4j`                     | Implementación concreta autoconfigured                                       |
-| `ReactiveResilience4JCircuitBreakerFactory`                | `org.springframework.cloud.circuitbreaker.resilience4j`                     | Fábrica reactiva para WebFlux                                                |
-| `factory.create(id)`                                       | —                                                                            | Obtiene o crea una instancia de CB por nombre                                |
-| `factory.configureDefault(Function<String,R>)`             | —                                                                            | Configura la instancia por defecto (aplica a IDs no configurados)            |
-| `factory.configure(Consumer<B>, String...)`                | —                                                                            | Configura instancias específicas por nombre                                  |
-| `CircuitBreaker.run(Supplier<T>)`                          | `org.springframework.cloud.client.circuitbreaker`                           | Ejecuta el supplier protegido; lanza excepción si OPEN                       |
-| `CircuitBreaker.run(Supplier<T>, Function<Throwable,T>)`   | —                                                                            | Ejecuta con fallback; el fallback recibe la excepción                        |
-| `Customizer<Resilience4JCircuitBreakerFactory>`            | `org.springframework.cloud.client.circuitbreaker`                           | Bean que modifica la fábrica antes de que sea usada                          |
-| `Resilience4JConfigBuilder`                                | `org.springframework.cloud.circuitbreaker.resilience4j`                     | Builder para construir la configuración de una instancia                     |
-| `CircuitBreakerConfig`                                     | `io.github.resilience4j.circuitbreaker`                                     | Configuración nativa de Resilience4j                                         |
+| Método | Uso | Tipo de retorno |
+|--------|-----|-----------------|
+| `CircuitBreaker.decorateSupplier(cb, supplier)` | Decora una llamada que devuelve un valor | `Supplier<T>` |
+| `CircuitBreaker.decorateRunnable(cb, runnable)` | Decora una llamada sin valor de retorno | `Runnable` |
+| `CircuitBreaker.decorateCallable(cb, callable)` | Decora una llamada que puede lanzar checked exceptions | `Callable<T>` |
+| `CircuitBreaker.decorateCheckedSupplier(cb, supplier)` | Idem con checked exceptions | `CheckedSupplier<T>` |
+| `circuitBreaker.executeSupplier(supplier)` | Decora y ejecuta en una llamada | `T` |
+| `circuitBreaker.executeRunnable(runnable)` | Decora y ejecuta sin retorno | `void` |
+
+> [CONCEPTO] `CircuitBreakerRegistry` actúa como un repositorio singleton de instancias. Si se llama a `registry.circuitBreaker("myService")` dos veces, se devuelve la misma instancia. Esto es esencial para que el estado del CB sea consistente entre múltiples clientes que llaman al mismo servicio.
 
 ## Buenas y malas prácticas
 
-**Hacer:**
+**Buenas prácticas:**
+- Nombrar las instancias de CircuitBreaker según el servicio downstream que protegen, no según la clase consumidora.
+- Usar `@CircuitBreaker` para la mayoría de casos; reservar la API programática para lambdas, streams y clases no gestionadas por Spring.
+- Siempre capturar `CallNotPermittedException` en el código programático para manejar el estado OPEN explícitamente.
+- Verificar que el `fallbackMethod` no lanza excepciones — si falla, la excepción se propaga sin captura.
 
-- Inyectar `CircuitBreakerFactory<?,?>` (con wildcards) en lugar de `Resilience4JCircuitBreakerFactory` directamente. El punto de la abstracción es que el código de negocio no depende de la implementación concreta.
-- Usar `configureDefault` para establecer un baseline seguro para todos los Circuit Breakers y sobreescribir solo las instancias que requieren umbrales específicos con `configure(...)`.
-- Reutilizar instancias llamando `factory.create(id)` con el mismo ID: Resilience4j devuelve la misma instancia del registry (no crea una nueva en cada llamada), lo que permite compartir el estado entre invocaciones.
-- Documentar internamente el mapa `nombre → servicio remoto → justificación de umbrales`. Sin este mapeo, los valores de `failureRateThreshold` son arbitrarios y difíciles de auditar en producción.
+**Malas prácticas:**
+- Definir el `fallbackMethod` en una clase diferente a la del método protegido: el proxy AOP no lo encuentra.
+- Omitir el parámetro `Throwable` en el `fallbackMethod`: Resilience4j no encontrará el método y lanzará `NoSuchMethodException` en runtime.
+- Llamar a un método anotado con `@CircuitBreaker` desde dentro de la misma clase (self-invocation): el proxy AOP no intercepta la llamada. Ver [4.7 AOP](sc-circuitbreaker-aop.md).
 
-**Evitar:**
+## Verificación y práctica
 
-- No crear múltiples `Customizer` beans con `configureDefault` en distintas clases de configuración. Solo se aplicará uno (el último en orden de beans de Spring) y el otro será silenciosamente ignorado, causando comportamientos inesperados.
-- Evitar llamar a `factory.create(id)` dentro de bucles o en cada request sin reusar la instancia. Aunque Resilience4j hace cache internamente, el lookup tiene coste; preferir almacenar la instancia de `CircuitBreaker` en un campo de la clase.
-- No mezclar configuración YAML (`resilience4j.circuitbreaker.instances.*`) con `Customizer` programático para la misma instancia sin entender la precedencia: los `Customizer` beans tienen precedencia sobre la configuración YAML cuando usan la API `Resilience4JCircuitBreakerFactory`.
+> [EXAMEN] 1. ¿Cuál es la firma correcta del `fallbackMethod` para un método `String getData(Long id, String type)` anotado con `@CircuitBreaker`?
+
+> [EXAMEN] 2. Si `CircuitBreakerRegistry` contiene la instancia "myService" con configuración A, y en otro bean se llama `registry.circuitBreaker("myService", configB)`, ¿qué instancia se devuelve?
+
+> [EXAMEN] 3. ¿Qué excepción lanza `circuitBreaker.executeSupplier(...)` cuando el CB está en estado OPEN?
+
+> [EXAMEN] 4. Hay dos fallbacks: `fallback(Long id, IOException ex)` y `fallback(Long id, Throwable ex)`. Si el método protegido lanza `SocketTimeoutException` (subclase de `IOException`), ¿cuál fallback se invoca?
+
+> [EXAMEN] 5. ¿Por qué falla el siguiente código si `MyService.doWork()` llama internamente a `MyService.protectedMethod()` que está anotada con `@CircuitBreaker`?
 
 ---
 
-← [5.2 Setup: dependencias y autoconfiguración de Resilience4j](sc-circuitbreaker-setup.md) | [Índice](README.md) | [5.4 Configuración YAML avanzada del Circuit Breaker](sc-circuitbreaker-config.md) →
+← [4.2 Configuración completa](sc-circuitbreaker-configuracion.md) | [Índice](README.md) | [4.4 Retry — Configuración y uso](sc-circuitbreaker-retry.md) →

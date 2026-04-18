@@ -1,182 +1,178 @@
-# 7.1 Arquitectura de Spring Cloud Bus
+# 7.1 Spring Cloud Bus — Arquitectura y propósito
 
-← [6.13 Testing / Verificación de Spring Cloud Stream](sc-stream-testing.md) | [Índice](README.md) | [7.2 Setup y dependencias de Spring Cloud Bus](sc-bus-setup.md) →
+← [6.14 Spring Cloud Stream — Testing con TestChannelBinder](sc-stream-testing.md) | [Índice](README.md) | [7.2 Spring Cloud Bus — Setup y auto-configuración](sc-bus-setup.md) →
+
+---
 
 ## Introducción
 
-En un sistema de microservicios con configuración externalizada, propagar un cambio de configuración a cien instancias en producción manualmente es inviable: llamar a `/actuator/refresh` en cada pod genera acoplamiento operacional, introduce ventanas de inconsistencia y no escala. Spring Cloud Bus resuelve este problema añadiendo una capa de broadcast sobre un message broker existente: cuando un nodo publica un `RemoteApplicationEvent`, el bus lo entrega a todos los nodos suscritos simultáneamente sin que el emisor conozca quiénes son los receptores. Bus no sustituye a Spring Cloud Stream; los dos módulos coexisten sobre el mismo broker, pero con propósitos distintos: Bus transporta eventos de infraestructura (refresh de configuración, cambios de entorno), mientras que Stream transporta mensajes de negocio (pedidos, pagos, eventos de dominio). Confundir ambos modelos es el error más frecuente al incorporar Bus en un proyecto que ya usa Stream.
+Spring Cloud Bus implementa un canal de mensajería distribuida que permite propagar eventos a todos los microservicios de un sistema sin configuración punto-a-punto. Actúa como un "bus de eventos" que cualquier nodo puede usar para publicar mensajes que serán recibidos por todos los demás suscriptores de forma automática.
 
-> [PREREQUISITO] Este fichero asume conocimiento de Spring Cloud Config (sc-config-refresh.md) y de los conceptos básicos de Spring Cloud Stream (sc-stream-bindings.md).
+> [CONCEPTO] Spring Cloud Bus no es un broker de mensajería propio: delega el transporte en Spring Cloud Stream, que a su vez usa RabbitMQ o Apache Kafka como broker subyacente.
 
-## Representación visual
+## Arquitectura del Bus — Diagrama de flujo
 
-La topología de Spring Cloud Bus coloca a todos los nodos como consumidores del mismo topic o exchange. El diagrama siguiente muestra el flujo completo desde el disparo del endpoint hasta la re-instanciación de los beans con `@RefreshScope`.
+Spring Cloud Bus define una arquitectura de publicación-suscripción donde cada microservicio actúa simultáneamente como publicador y suscriptor de eventos del Bus. La capa de transporte es abstraída completamente por Spring Cloud Stream, de modo que el mismo código funciona con RabbitMQ o Kafka sin cambios.
 
 ```
-  Git Repository
-       │ push
-       ▼
-  Config Server  ──POST /actuator/busrefresh──►  springCloudBus topic/exchange
-       │                                              │
-       │                                    ┌─────────┴──────────┐
-       │                                    ▼                    ▼
-       │                            Service-A:inst-1    Service-A:inst-2
-       │                            Service-B:inst-1    Service-C:inst-1
-       │                                    │
-       │                         RefreshRemoteApplicationEvent
-       │                                    │
-       │                         EnvironmentChangeEvent
-       │                                    │
-       │                         @RefreshScope beans re-instanciados
-       │
-       └─► Config Server puede también suscribirse para auto-actualizar su caché
+                   ┌─────────────────────────────────────────────────────┐
+                   │              BROKER (RabbitMQ / Kafka)              │
+                   │         Topic/Exchange: springCloudBus               │
+                   └──────────┬───────────────────────┬──────────────────┘
+                              │                       │
+               ┌──────────────▼──────────┐  ┌────────▼─────────────────┐
+               │  Microservicio A        │  │  Microservicio B          │
+               │  ┌───────────────────┐  │  │  ┌───────────────────┐   │
+               │  │ SC Stream Output  │  │  │  │ SC Stream Input    │   │
+               │  │ (Bus publica)     │  │  │  │ (Bus consume)      │   │
+               │  └───────────────────┘  │  │  └───────────────────┘   │
+               │  ┌───────────────────┐  │  │  ┌───────────────────┐   │
+               │  │ BusAutoConfig     │  │  │  │ BusAutoConfig      │   │
+               │  └───────────────────┘  │  │  └───────────────────┘   │
+               └─────────────────────────┘  └──────────────────────────┘
+                              │
+               ┌──────────────▼──────────┐
+               │  Microservicio C (N)     │
+               │  ┌───────────────────┐  │
+               │  │ SC Stream Input   │  │
+               │  └───────────────────┘  │
+               └─────────────────────────┘
 ```
 
-La tabla siguiente contrasta Bus y Stream para evitar confusiones habituales:
+## Spring Cloud Stream como capa de transporte
 
-| Dimensión | Spring Cloud Bus | Spring Cloud Stream |
-|---|---|---|
-| Propósito | Eventos de infraestructura (refresh, env change) | Mensajes de negocio entre microservicios |
-| Clase base | `RemoteApplicationEvent` | `Message<T>` genérico |
-| Topic por defecto | `springCloudBus` (único) | Definido por el desarrollador por binding |
-| Receptor previsto | Todos los nodos del clúster | Consumidores específicos del canal |
-| Configuración | `spring.cloud.bus.*` | `spring.cloud.stream.bindings.*` |
-| API de envío | `ApplicationEventPublisher` | `StreamBridge` o función reactiva |
+Spring Cloud Bus no contiene lógica de transporte propia: delega completamente en Spring Cloud Stream. Al añadir la dependencia `spring-cloud-starter-bus-amqp` o `spring-cloud-starter-bus-kafka`, se incluye automáticamente el binder correspondiente de Spring Cloud Stream.
+
+> [CONCEPTO] Los canales internos del Bus se llaman `springCloudBusInput` y `springCloudBusOutput`. Son bindings de Spring Cloud Stream configurados automáticamente por `BusAutoConfiguration`.
+
+El Bus define dos bindings en Spring Cloud Stream:
+
+| Binding | Dirección | Propósito |
+|---------|-----------|-----------|
+| `springCloudBusOutput` | SALIDA | Publicar eventos RemoteApplicationEvent al broker |
+| `springCloudBusInput` | ENTRADA | Consumir eventos RemoteApplicationEvent del broker |
+
+## Brokers soportados
+
+Spring Cloud Bus soporta dos brokers de mensajería, cada uno con características de transporte distintas.
+
+**RabbitMQ (AMQP)** utiliza un exchange de tipo `fanout` llamado `springCloudBus`. Cada instancia crea una cola anónima y única ligada a dicho exchange. Esto garantiza que cada instancia recibe todos los mensajes publicados en el exchange. El exchange fanout replica el mensaje a todas las colas suscritas.
+
+**Apache Kafka** utiliza un topic llamado `springCloudBus`. Cada instancia del mismo servicio debe pertenecer a un consumer group diferente para recibir todos los mensajes. Si múltiples instancias del mismo servicio comparten el mismo consumer group en Kafka, solo una de ellas recibirá cada mensaje.
+
+> [ADVERTENCIA] Con Kafka, si no se configura `spring.cloud.stream.bindings.springCloudBusInput.group` con un valor único por instancia, se producirán mensajes duplicados o mensajes perdidos dependiendo de la topología de consumer groups.
 
 ## Ejemplo central
 
-El siguiente ejemplo muestra una aplicación Spring Boot 4.0.x mínima que actúa como nodo participante en un bus Kafka. Al recibir un `RefreshRemoteApplicationEvent`, Spring re-instancia todos los beans anotados con `@RefreshScope`.
+El siguiente ejemplo muestra la configuración completa de un microservicio que usa Spring Cloud Bus con RabbitMQ. Incluye las dependencias Maven, la configuración YAML mínima y la clase principal habilitada para Bus.
 
 ```xml
-<!-- pom.xml -->
-<dependencies>
-    <dependency>
-        <groupId>org.springframework.cloud</groupId>
-        <artifactId>spring-cloud-starter-bus-kafka</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-actuator</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.cloud</groupId>
-        <artifactId>spring-cloud-starter-config</artifactId>
-    </dependency>
-</dependencies>
-
-<dependencyManagement>
-    <dependencies>
-        <dependency>
-            <groupId>org.springframework.cloud</groupId>
-            <artifactId>spring-cloud-dependencies</artifactId>
-            <version>2025.1.1</version>
-            <type>pom</type>
-            <scope>import</scope>
-        </dependency>
-    </dependencies>
-</dependencyManagement>
+<!-- pom.xml - dependencias -->
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-bus-amqp</artifactId>
+</dependency>
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-actuator</artifactId>
+</dependency>
 ```
 
 ```yaml
 # application.yml
 spring:
   application:
-    name: inventory-service
+    name: order-service
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: guest
+    password: guest
   cloud:
     bus:
       enabled: true
-      id: ${spring.application.name}:${spring.profiles.active:default}:${random.value}
-    config:
-      uri: http://config-server:8888
-  kafka:
-    bootstrap-servers: kafka:9092
+      destination: springCloudBus      # nombre del exchange fanout
+      id: ${spring.application.name}:${spring.profiles.active:default}:${server.port:8080}
 
 management:
   endpoints:
     web:
       exposure:
-        include: busrefresh, busenv, refresh, health, info
+        include: bus-refresh, bus-env, health, info
+  endpoint:
+    bus-refresh:
+      enabled: true
 ```
 
 ```java
-// src/main/java/com/example/inventory/InventoryApplication.java
-package com.example.inventory;
+// OrderServiceApplication.java
+package com.example.orderservice;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.cloud.context.config.annotation.RefreshScope;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Component;
 
 @SpringBootApplication
-public class InventoryApplication {
+public class OrderServiceApplication {
+
     public static void main(String[] args) {
-        SpringApplication.run(InventoryApplication.class, args);
-    }
-}
-
-// Bean que se re-instancia al recibir RefreshRemoteApplicationEvent
-@Component
-@RefreshScope
-class InventoryConfig {
-
-    private final String warehouseLocation;
-
-    public InventoryConfig(@Value("${warehouse.location:default-location}") String warehouseLocation) {
-        this.warehouseLocation = warehouseLocation;
-        System.out.println("InventoryConfig instanciado con location: " + warehouseLocation);
-    }
-
-    public String getWarehouseLocation() {
-        return warehouseLocation;
+        SpringApplication.run(OrderServiceApplication.class, args);
     }
 }
 ```
 
-Con esta configuración, al enviar `POST /actuator/busrefresh` a cualquier nodo del clúster, todos los nodos reciben el evento y re-instancian `InventoryConfig` con los valores actualizados del Config Server.
+La auto-configuración `BusAutoConfiguration` detecta la presencia del starter en el classpath y configura automáticamente los canales de Stream, el listener de eventos y el publisher de eventos. No es necesaria ninguna anotación adicional.
 
 ## Tabla de elementos clave
 
-Los parámetros siguientes controlan el comportamiento fundamental de Spring Cloud Bus y son los que aparecen con mayor frecuencia en entrevistas técnicas.
+Los elementos fundamentales de la arquitectura del Bus son los siguientes. Cada uno cumple un rol específico en el ciclo de publicación-recepción de eventos.
 
-| Parámetro | Tipo | Default | Descripción |
-|---|---|---|---|
-| `spring.cloud.bus.enabled` | Boolean | `true` | Activa o desactiva completamente el bus. Útil para deshabilitar en tests sin broker. |
-| `spring.cloud.bus.id` | String | `${spring.application.name}:${spring.profiles.active}:${random.uuid}` | Identificador único del nodo en el bus. Colisiones causan que un nodo descarte sus propios eventos. |
-| `spring.cloud.bus.destination` | String | `springCloudBus` | Nombre del topic Kafka o exchange RabbitMQ donde se publican los eventos. |
-| `spring.cloud.bus.trace.enabled` | Boolean | `false` | Registra cada evento propagado por el bus en el log de la aplicación. |
-| `spring.cloud.bus.ack.enabled` | Boolean | `false` | Cada nodo confirma la recepción del evento publicando un `AckRemoteApplicationEvent`. |
-| `spring.cloud.bus.refresh.enabled` | Boolean | `true` | Habilita el listener de `RefreshRemoteApplicationEvent` en este nodo. |
-| `spring.cloud.bus.env.enabled` | Boolean | `true` | Habilita el listener de `EnvironmentChangeRemoteApplicationEvent` en este nodo. |
+| Elemento | Tipo | Descripción |
+|----------|------|-------------|
+| `BusAutoConfiguration` | Auto-configuración | Activa el Bus al detectar la dependencia en classpath |
+| `springCloudBusInput` | Binding Stream (entrada) | Canal por el que llegan eventos del broker al nodo actual |
+| `springCloudBusOutput` | Binding Stream (salida) | Canal por el que el nodo actual publica eventos al broker |
+| `RemoteApplicationEvent` | Clase base abstracta | Superclase de todos los eventos propagados por el Bus |
+| `ServiceMatcher` | Componente | Evalúa si un evento entrante está destinado a esta instancia |
+| `spring.cloud.bus.destination` | Propiedad | Nombre del topic/exchange del broker (default: `springCloudBus`) |
 
 ## Buenas y malas prácticas
 
-**Hacer:**
+**Buenas prácticas:**
 
-- Fijar `spring.cloud.bus.id` explícitamente en entornos Kubernetes usando `$(POD_NAME)` o una combinación de `${spring.application.name}:${spring.profiles.active}:${random.value}`. El default automático puede repetirse entre pods del mismo Deployment si `random.value` no está disponible al arranque, causando que un nodo descarte los eventos que él mismo envió.
-- Separar el topic de Bus del resto de topics de negocio configurando `spring.cloud.bus.destination=infrastructure.bus` para aislar el tráfico de infraestructura del de negocio en sistemas de alta carga.
-- Anotar con `@RefreshScope` únicamente los beans que leen propiedades de configuración en su constructor. Anotar todos los beans indiscriminadamente genera re-instanciaciones innecesarias que pueden provocar latencia visible en cada refresh.
-- Verificar que el módulo Bus está activo comprobando el log de inicio: `BusAutoConfiguration` debe aparecer entre las autoconfiguraciones activas.
+- Usar Spring Cloud Bus únicamente para eventos de infraestructura (refresh, cambio de configuración) o eventos de dominio muy ligeros. No usarlo como sustituto de un sistema de mensajería de negocio completo.
+- Configurar explícitamente `spring.cloud.bus.id` en entornos de contenedores para garantizar identificadores únicos y estables por instancia.
+- Exponer solo los endpoints necesarios del Actuator (`bus-refresh`, `bus-env`) y protegerlos con autenticación en producción.
 
-**Evitar:**
+**Malas prácticas:**
 
-- No mezclar la lógica de mensajería de negocio con eventos de Bus en el mismo topic. Si el topic `springCloudBus` recibe mensajes de dominio por error, los nodos intentarán deserializarlos como `RemoteApplicationEvent` y producirán errores de deserialización en cascada.
-- No asumir que Bus garantiza exactamente una entrega. Con RabbitMQ en modo fanout, si un nodo está caído durante el broadcast, el evento se pierde para ese nodo. El diseño debe tolerar configuraciones temporalmente desactualizadas.
-- No invocar `/actuator/busrefresh` directamente en producción sin autenticación. Este endpoint dispara operaciones en todos los nodos del clúster simultáneamente y debe estar protegido (ver sc-bus-seguridad-endpoint.md).
+- [LEGACY] Usar `@EnableBus` — esta anotación no existe en Spring Cloud 3.x. La activación es completamente automática mediante auto-configuración.
+- Publicar mensajes de negocio de alta frecuencia por el Bus. El Bus está diseñado para eventos de control de baja frecuencia, no para flujos de datos.
+- Compartir el mismo consumer group entre múltiples instancias del mismo servicio en Kafka sin entender las implicaciones de particionado.
 
-## Comparación: Bus sobre RabbitMQ vs Bus sobre Kafka
+## Comparación: Bus vs mensajería directa con Stream
 
-La elección del broker afecta el comportamiento de entrega y la retención de eventos. Si el proyecto ya usa uno de los dos, la decisión es trivial: Bus usa el mismo broker sin coste adicional.
+Spring Cloud Bus y Spring Cloud Stream son complementarios, pero sirven propósitos distintos.
 
-| Criterio | Bus sobre RabbitMQ | Bus sobre Kafka |
-|---|---|---|
-| Starter | `spring-cloud-starter-bus-amqp` | `spring-cloud-starter-bus-kafka` |
-| Tipo de intercambiador | Fanout exchange `springCloudBus` | Topic `springCloudBus` (1 partición) |
-| Retención de eventos | No (mensaje se descarta si no hay consumidor) | Sí (configurable con `retention.ms`) |
-| Nodo que arranca tarde | No recibe eventos anteriores | Puede recuperar eventos si retention > 0 |
-| Configuración adicional | `spring.rabbitmq.*` | `spring.kafka.bootstrap-servers` |
-| Adecuado para | Entornos ya con RabbitMQ; baja retención necesaria | Entornos ya con Kafka; audit de cambios útil |
+| Aspecto | Spring Cloud Bus | Spring Cloud Stream directo |
+|---------|-----------------|----------------------------|
+| Propósito | Eventos de control del sistema (refresh, config) | Mensajería de negocio entre servicios |
+| Configuración | Auto-configurada con starter | Requiere definir Suppliers/Consumers/Functions |
+| Tipo de mensaje | `RemoteApplicationEvent` (broadcast) | Cualquier tipo (punto-a-punto o pub-sub) |
+| Frecuencia esperada | Baja (operaciones admin) | Alta (flujos de negocio) |
+| Destino típico | Todos los nodos o un subset | Un servicio consumidor específico |
+
+## Verificación y práctica
+
+> [EXAMEN] **1.** ¿Qué componente de Spring Cloud actúa como capa de transporte del Bus y qué brokers soporta?
+
+> [EXAMEN] **2.** ¿Cuáles son los nombres de los bindings de Spring Cloud Stream que usa el Bus internamente?
+
+> [EXAMEN] **3.** ¿Por qué con Apache Kafka es necesario configurar un consumer group único por instancia para el Bus, y qué problema ocurre si no se hace?
+
+> [EXAMEN] **4.** ¿Qué auto-configuración activa Spring Cloud Bus y qué condición debe cumplirse para que se active?
+
+> [EXAMEN] **5.** ¿Cuál es la diferencia principal entre usar Spring Cloud Bus y usar Spring Cloud Stream directamente para comunicación entre microservicios?
 
 ---
 
-← [6.13 Testing / Verificación de Spring Cloud Stream](sc-stream-testing.md) | [Índice](README.md) | [7.2 Setup y dependencias de Spring Cloud Bus](sc-bus-setup.md) →
+← [6.14 Spring Cloud Stream — Testing con TestChannelBinder](sc-stream-testing.md) | [Índice](README.md) | [7.2 Spring Cloud Bus — Setup y auto-configuración](sc-bus-setup.md) →

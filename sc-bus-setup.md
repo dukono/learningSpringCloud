@@ -1,222 +1,220 @@
-# 7.2 Setup y dependencias de Spring Cloud Bus
+# 7.2 Spring Cloud Bus — Setup y auto-configuración
 
-← [7.1 Arquitectura de Spring Cloud Bus](sc-bus-arquitectura.md) | [Índice](README.md) | [7.3 Configuración del broker subyacente para Spring Cloud Bus](sc-bus-broker-config.md) →
+← [7.1 Spring Cloud Bus — Arquitectura y propósito](sc-bus-arquitectura.md) | [Índice](README.md) | [7.3 Spring Cloud Bus — Refresh distribuido de configuración](sc-bus-refresh-distribuido.md) →
+
+---
 
 ## Introducción
 
-Añadir Spring Cloud Bus a un proyecto es engañosamente sencillo: basta un starter para que `BusAutoConfiguration` registre todos los beans necesarios. Sin embargo, la simplicidad del setup oculta dos decisiones críticas que impactan directamente en producción: la elección del broker (RabbitMQ vs Kafka) y la configuración explícita del `spring.cloud.bus.id`. En entornos contenedorizados con varias instancias del mismo servicio, el `bus.id` automático puede generar colisiones silenciosas que hacen que un nodo descarte los propios eventos que él mismo publicó, produciendo un síntoma que parece un bug del broker pero es un problema de identidad del nodo.
+Configurar Spring Cloud Bus es un proceso de muy bajo esfuerzo gracias a la auto-configuración de Spring Boot. Añadir el starter adecuado junto con las propiedades mínimas del broker es suficiente para que `BusAutoConfiguration` configure los canales de Spring Cloud Stream, registre los listeners de eventos y exponga los endpoints de Actuator.
 
-> [PREREQUISITO] Es necesario tener un broker Kafka o RabbitMQ accesible y la dependencia de Spring Cloud Config si se quiere usar el refresh distribuido. Consulta sc-bus-broker-config.md para la configuración detallada del broker.
+> [PREREQUISITO] Antes de añadir Spring Cloud Bus es necesario tener Spring Boot Actuator en el classpath, ya que los endpoints `/actuator/bus-refresh` y `/actuator/bus-env` se construyen sobre la infraestructura de Actuator.
 
-## Representación visual
+## Dependencias — Maven y Gradle
 
-El árbol siguiente muestra la relación entre los starters disponibles, la autoconfiguración que activan y los beans que registran.
+La elección del starter determina qué broker se usa. Ambos starters incluyen transitivamente `spring-cloud-bus`, el binder correspondiente de Spring Cloud Stream, y el cliente del broker.
 
-```
-spring-cloud-starter-bus-amqp
-  └── spring-cloud-bus (núcleo)
-  │     ├── BusAutoConfiguration
-  │     │     ├── BusConsumerProperties
-  │     │     ├── BusProperties (spring.cloud.bus.*)
-  │     │     ├── RefreshListener (si spring-cloud-context en classpath)
-  │     │     └── EnvironmentChangeListener
-  │     └── RemoteApplicationEventScan (escanea @RemoteApplicationEvent)
-  └── spring-cloud-stream-binder-rabbit
-        └── Bindings: springCloudBusInput / springCloudBusOutput
-
-spring-cloud-starter-bus-kafka
-  └── spring-cloud-bus (núcleo, idéntico)
-  └── spring-cloud-stream-binder-kafka
-        └── Bindings: springCloudBusInput / springCloudBusOutput
-```
-
-La tabla siguiente compara los dos starters para facilitar la elección:
-
-| Criterio | bus-amqp | bus-kafka |
-|---|---|---|
-| Dependencia transitiva | spring-cloud-stream-binder-rabbit | spring-cloud-stream-binder-kafka |
-| Broker requerido | RabbitMQ 3.x+ | Apache Kafka 2.x+ |
-| Propiedad de conexión | `spring.rabbitmq.host` | `spring.kafka.bootstrap-servers` |
-| Tipo de canal | Fanout exchange | Topic (1 partición por defecto) |
-
-## Ejemplo central
-
-El ejemplo siguiente configura un servicio `order-service` con Bus sobre Kafka, incluye la gestión de dependencias BOM correcta y una configuración de `bus.id` robusta para entornos Kubernetes.
+Las dependencias Maven para cada broker son las siguientes:
 
 ```xml
-<!-- pom.xml -->
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
-                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
-    <modelVersion>4.0.0</modelVersion>
-    <groupId>com.example</groupId>
-    <artifactId>order-service</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
-    <packaging>jar</packaging>
-
-    <parent>
+<!-- pom.xml — opción A: RabbitMQ (AMQP) -->
+<dependencies>
+    <dependency>
+        <groupId>org.springframework.cloud</groupId>
+        <artifactId>spring-cloud-starter-bus-amqp</artifactId>
+    </dependency>
+    <dependency>
         <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-parent</artifactId>
-        <version>4.0.0</version>
-    </parent>
+        <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+</dependencies>
 
-    <dependencyManagement>
-        <dependencies>
-            <dependency>
-                <groupId>org.springframework.cloud</groupId>
-                <artifactId>spring-cloud-dependencies</artifactId>
-                <version>2025.1.1</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
-
-    <dependencies>
-        <!-- Bus sobre Kafka -->
-        <dependency>
-            <groupId>org.springframework.cloud</groupId>
-            <artifactId>spring-cloud-starter-bus-kafka</artifactId>
-        </dependency>
-        <!-- Alternativa para RabbitMQ:
-        <dependency>
-            <groupId>org.springframework.cloud</groupId>
-            <artifactId>spring-cloud-starter-bus-amqp</artifactId>
-        </dependency>
-        -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-actuator</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.cloud</groupId>
-            <artifactId>spring-cloud-starter-config</artifactId>
-        </dependency>
-    </dependencies>
-</project>
+<!-- pom.xml — opción B: Apache Kafka -->
+<dependencies>
+    <dependency>
+        <groupId>org.springframework.cloud</groupId>
+        <artifactId>spring-cloud-starter-bus-kafka</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+</dependencies>
 ```
 
+Las dependencias equivalentes en Gradle son:
+
+```groovy
+// build.gradle — opción A: RabbitMQ
+dependencies {
+    implementation 'org.springframework.cloud:spring-cloud-starter-bus-amqp'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+}
+
+// build.gradle — opción B: Kafka
+dependencies {
+    implementation 'org.springframework.cloud:spring-cloud-starter-bus-kafka'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+}
+```
+
+> [CONCEPTO] No se puede usar ambos starters simultáneamente en el mismo proyecto sin configuración adicional. Si se necesita soporte para múltiples brokers, hay que configurar múltiples binders de Spring Cloud Stream manualmente.
+
+## BusAutoConfiguration y activación automática
+
+`BusAutoConfiguration` es la clase de auto-configuración principal del Bus. Se activa cuando detecta `spring-cloud-bus` en el classpath y la propiedad `spring.cloud.bus.enabled` es `true` (valor por defecto).
+
+Las responsabilidades de `BusAutoConfiguration` son:
+
+| Responsabilidad | Descripción |
+|----------------|-------------|
+| Crear `BusProperties` | Lee y valida todas las propiedades `spring.cloud.bus.*` |
+| Configurar `ServiceMatcher` | Construye el comparador de destinos a partir de `spring.cloud.bus.id` |
+| Registrar `BusRefreshEndpoint` | Expone `/actuator/bus-refresh` si está habilitado |
+| Registrar `BusEnvironmentEndpoint` | Expone `/actuator/bus-env` si está habilitado |
+| Crear el publisher de eventos | Configura el canal de salida de Stream para publicar eventos |
+
+## Ejemplo central — Configuración completa con RabbitMQ y Kafka
+
+El siguiente ejemplo muestra la configuración completa de dos variantes de `application.yml`, una para RabbitMQ y otra para Kafka, con todos los parámetros relevantes explicados.
+
 ```yaml
-# application.yml
+# application.yml — configuración con RabbitMQ
 spring:
   application:
-    name: order-service
+    name: config-client
   profiles:
-    active: production
+    active: dev
+
+  # Conexión al broker RabbitMQ
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: guest
+    password: guest
+    virtual-host: /
 
   cloud:
     bus:
       enabled: true
-      # bus.id explícito: evita colisiones en Kubernetes con múltiples réplicas
-      # En K8s, usar el nombre del pod como parte del id:
-      # id: ${spring.application.name}:${spring.profiles.active}:${HOSTNAME:localhost}
-      # En entornos no-K8s, random.value garantiza unicidad:
-      id: ${spring.application.name}:${spring.profiles.active:default}:${random.value}
-    config:
-      uri: http://config-server:8888
-
-  kafka:
-    bootstrap-servers: kafka-broker:9092
+      # Nombre del exchange fanout en RabbitMQ
+      destination: springCloudBus
+      # Identificador único de esta instancia: appName:profile:port
+      id: ${spring.application.name}:${spring.profiles.active:default}:${server.port:8080}
+      refresh:
+        enabled: true    # habilita /actuator/bus-refresh
+      env:
+        enabled: true    # habilita /actuator/bus-env
 
 management:
   endpoints:
     web:
       exposure:
-        include: busrefresh, busenv, health, info, refresh
+        include: bus-refresh, bus-env, health, info, refresh
   endpoint:
-    health:
-      show-details: always
+    bus-refresh:
+      enabled: true
+    bus-env:
+      enabled: true
 ```
 
-```java
-// src/main/java/com/example/order/OrderApplication.java
-package com.example.order;
+```yaml
+# application.yml — configuración con Apache Kafka
+spring:
+  application:
+    name: config-client
+  profiles:
+    active: dev
 
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
+  cloud:
+    stream:
+      kafka:
+        binder:
+          brokers: localhost:9092
+      bindings:
+        # Consumer group único por instancia para evitar mensajes duplicados
+        springCloudBusInput:
+          group: ${spring.application.name}-${random.uuid}
+    bus:
+      enabled: true
+      destination: springCloudBus    # nombre del topic Kafka
+      id: ${spring.application.name}:${spring.profiles.active:default}:${server.port:8080}
+      refresh:
+        enabled: true
+      env:
+        enabled: true
 
-@SpringBootApplication
-public class OrderApplication {
-    public static void main(String[] args) {
-        SpringApplication.run(OrderApplication.class, args);
-    }
-}
+management:
+  endpoints:
+    web:
+      exposure:
+        include: bus-refresh, bus-env, health, info
 ```
 
-```java
-// src/main/java/com/example/order/config/OrderProperties.java
-package com.example.order.config;
+> [ADVERTENCIA] Con Kafka es imprescindible configurar un consumer group único por instancia en `spring.cloud.stream.bindings.springCloudBusInput.group`. Si todas las instancias del mismo servicio comparten el mismo consumer group, Kafka solo entregará cada mensaje a una instancia del grupo, impidiendo el broadcast.
 
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.cloud.context.config.annotation.RefreshScope;
-import org.springframework.stereotype.Component;
+## Tabla de propiedades spring.cloud.bus.*
 
-@Component
-@RefreshScope
-public class OrderProperties {
+Las propiedades del namespace `spring.cloud.bus` controlan todos los aspectos del comportamiento del Bus.
 
-    private final int maxOrderItems;
-    private final String processingMode;
+| Propiedad | Valor por defecto | Descripción |
+|-----------|-------------------|-------------|
+| `spring.cloud.bus.enabled` | `true` | Activa o desactiva el Bus completamente |
+| `spring.cloud.bus.destination` | `springCloudBus` | Nombre del topic Kafka o exchange RabbitMQ |
+| `spring.cloud.bus.id` | Auto-generado | Identificador único de la instancia (`appName:profiles:index`) |
+| `spring.cloud.bus.refresh.enabled` | `true` | Habilita el endpoint `/actuator/bus-refresh` |
+| `spring.cloud.bus.env.enabled` | `true` | Habilita el endpoint `/actuator/bus-env` |
 
-    public OrderProperties(
-            @Value("${order.max-items:100}") int maxOrderItems,
-            @Value("${order.processing-mode:sync}") String processingMode) {
-        this.maxOrderItems = maxOrderItems;
-        this.processingMode = processingMode;
-    }
+## Verificar la activación del Bus
 
-    public int getMaxOrderItems() {
-        return maxOrderItems;
-    }
+Una vez configurado el Bus, es posible verificar su activación de varias formas. La primera es observar los logs de arranque, donde `BusAutoConfiguration` registra los bindings de Stream.
 
-    public String getProcessingMode() {
-        return processingMode;
-    }
-}
+La segunda es consultar el endpoint de Actuator para ver los endpoints disponibles:
+
+```bash
+# Listar endpoints Actuator disponibles
+curl http://localhost:8080/actuator | jq '.["_links"] | keys[]' | grep bus
+
+# Resultado esperado:
+# "bus-env"
+# "bus-refresh"
 ```
 
-Para verificar que `BusAutoConfiguration` está activa, busca en el log de inicio:
+La tercera es verificar los bindings activos de Spring Cloud Stream:
 
+```bash
+# Ver bindings activos del Bus en Actuator
+curl http://localhost:8080/actuator/bindings | jq .
+
+# Se deben ver springCloudBusInput y springCloudBusOutput activos
 ```
-INFO o.s.c.b.BusAutoConfiguration : Registering beans for Spring Cloud Bus
-INFO o.s.c.stream.binder.kafka.KafkaMessageChannelBinder : Binding [springCloudBusInput]
-INFO o.s.c.stream.binder.kafka.KafkaMessageChannelBinder : Binding [springCloudBusOutput]
-```
-
-## Tabla de elementos clave
-
-La tabla siguiente recoge los parámetros que un senior debe conocer de memoria al configurar Bus desde cero.
-
-| Parámetro | Tipo | Default | Descripción |
-|---|---|---|---|
-| `spring.cloud.bus.enabled` | Boolean | `true` | Activa o desactiva el bus completo. Poner a `false` en tests sin broker. |
-| `spring.cloud.bus.id` | String | `${app}:${profile}:${random.uuid}` | Identidad única del nodo. Colisiones causan auto-descarte de eventos. |
-| `spring.cloud.bus.destination` | String | `springCloudBus` | Nombre del topic/exchange en el broker. |
-| `spring.cloud.bus.refresh.enabled` | Boolean | `true` | Habilita el listener de `RefreshRemoteApplicationEvent`. |
-| `spring.cloud.bus.env.enabled` | Boolean | `true` | Habilita el listener de `EnvironmentChangeRemoteApplicationEvent`. |
-| `spring.cloud.bus.trace.enabled` | Boolean | `false` | Activa log de traza de eventos Bus. Útil en diagnóstico. |
-| `spring.cloud.bus.ack.enabled` | Boolean | `false` | Cada nodo publica un `AckRemoteApplicationEvent` al recibir un evento. |
 
 ## Buenas y malas prácticas
 
-**Hacer:**
+**Buenas prácticas:**
 
-- Fijar `spring.cloud.bus.id` usando `${HOSTNAME}` en entornos Kubernetes. Kubernetes garantiza que el nombre del pod es único dentro del namespace, eliminando el riesgo de colisión. Sin esto, dos pods con el mismo `random.value` descartarán mutuamente sus eventos porque cada nodo ignora los eventos cuya fuente tiene el mismo `bus.id`.
-- Verificar el binding de Bus consultando el endpoint `/actuator/bindings` (si Spring Cloud Stream Actuator está habilitado). Si `springCloudBusInput` y `springCloudBusOutput` no aparecen, el bus no está conectado al broker.
-- Incluir `busrefresh` en `management.endpoints.web.exposure.include` explícitamente. Desde Spring Boot 3.x, todos los endpoints de actuator excepto `health` e `info` están deshabilitados por defecto.
-- Deshabilitar Bus en perfiles de test con `spring.cloud.bus.enabled=false` para evitar la necesidad de un broker en CI.
+- Configurar `spring.cloud.bus.id` explícitamente en entornos de contenedores (Docker, Kubernetes) donde el nombre del host puede no ser único o estable.
+- Exponer solo los endpoints de Bus necesarios. Usar `management.endpoints.web.exposure.include` con lista explícita en lugar de `*`.
+- En entornos con múltiples perfiles, verificar que el `bus.id` incluye el perfil activo para identificar correctamente la instancia.
 
-**Evitar:**
+**Malas prácticas:**
 
-- No usar `spring-cloud-starter-bus-amqp` y `spring-cloud-starter-bus-kafka` simultáneamente en el mismo módulo. Si ambos están en el classpath, Spring Cloud Stream intentará registrar dos binders para el mismo binding `springCloudBus`, generando un fallo de arranque con un error de binder ambiguo.
-- No confiar en el `bus.id` automático en entornos con orquestadores de contenedores. En Kubernetes, si el pod reinicia rápidamente, puede recibir el mismo `random.value` que un pod anterior aún en proceso de terminación, causando dos nodos con el mismo `bus.id` durante la ventana de transición.
-- No añadir Bus a un servicio que no necesita refresh de configuración ni eventos de infraestructura. Bus añade un consumer group al broker; en sistemas con decenas de microservicios esto multiplica los consumer groups y el overhead de rebalanceo de particiones en Kafka.
+- [LEGACY] Añadir `@EnableBus` — esta anotación no existe en Spring Cloud 3.x. La auto-configuración es suficiente.
+- Usar `management.endpoints.web.exposure.include=*` en producción. Esto expone todos los endpoints de Actuator, incluyendo los sensibles.
+- Omitir la configuración del consumer group en Kafka. Sin un group único, el comportamiento del Bus es impredecible.
+
+## Verificación y práctica
+
+> [EXAMEN] **1.** ¿Qué starter debe añadirse para usar Spring Cloud Bus con RabbitMQ, y qué dependencias incluye transitivamente?
+
+> [EXAMEN] **2.** ¿Qué propiedad permite deshabilitar completamente Spring Cloud Bus sin eliminar la dependencia?
+
+> [EXAMEN] **3.** ¿Por qué es necesario configurar un consumer group único en `springCloudBusInput` cuando se usa Kafka, y qué ocurre si no se hace?
+
+> [EXAMEN] **4.** ¿Qué propiedad debe exponerse en `management.endpoints.web.exposure.include` para que el endpoint `/actuator/bus-refresh` sea accesible por HTTP?
+
+> [EXAMEN] **5.** ¿Cuál es el formato por defecto del `spring.cloud.bus.id` y para qué sirve este identificador?
 
 ---
 
-← [7.1 Arquitectura de Spring Cloud Bus](sc-bus-arquitectura.md) | [Índice](README.md) | [7.3 Configuración del broker subyacente para Spring Cloud Bus](sc-bus-broker-config.md) →
+← [7.1 Spring Cloud Bus — Arquitectura y propósito](sc-bus-arquitectura.md) | [Índice](README.md) | [7.3 Spring Cloud Bus — Refresh distribuido de configuración](sc-bus-refresh-distribuido.md) →

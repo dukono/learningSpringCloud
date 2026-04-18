@@ -1,257 +1,297 @@
-# 7.9 Testing de Spring Cloud Bus
+# 7.9 Spring Cloud Bus — Testing y Troubleshooting
 
-← [7.8 Patrones de fallo y troubleshooting de Spring Cloud Bus](sc-bus-troubleshooting.md) | [Índice (README.md)](README.md) | [8.1 Fundamentos OAuth2 y JWT para microservicios](sc-security-oauth2-fundamentals.md) →
+← [7.8 Spring Cloud Bus — Endpoint busenv y cambio en caliente](sc-bus-busenv.md) | [Índice](README.md) | [8.1 OAuth2 en microservicios — Roles y flujos de autorización](sc-security-oauth2-conceptos-flujos.md) →
 
 ---
 
-Spring Cloud Bus no expone un puerto ni una API propia: su comportamiento se manifiesta como efectos secundarios —actualizaciones de `@RefreshScope`, eventos recibidos en listeners— que solo son observables en un contexto con broker real o simulado. Testear Bus correctamente significa verificar que los eventos se propagan desde el origen hasta los suscriptores y que el estado de los beans se actualiza como se espera; hacerlo mal (solo testear el listener de forma unitaria sin trigger de Bus) da una falsa sensación de cobertura. Existen tres niveles: test unitario del listener de evento en aislamiento, test de integración con `TestChannelBinderConfiguration` (broker simulado), y test de integración con Testcontainers (broker real).
+## Introducción
 
-> [PREREQUISITO] Requiere `spring-cloud-starter-bus-kafka` o `spring-cloud-starter-bus-amqp` en producción. Para tests de integración con broker simulado se necesita `spring-cloud-stream-test-binder`. Para tests con broker real se necesita `org.testcontainers:kafka` o `org.testcontainers:rabbitmq`.
+Testear Spring Cloud Bus implica verificar que los eventos `RemoteApplicationEvent` se publican correctamente en el canal de salida y que los nodos receptores los procesan como se espera. El enfoque recomendado es usar el `TestChannelBinder` de Spring Cloud Stream Test, que simula el broker sin necesitar RabbitMQ ni Kafka reales en el entorno de test. El troubleshooting aborda los problemas más comunes que aparecen en producción y en el examen de certificación.
 
-## Estrategias de testing de Spring Cloud Bus
+> [PREREQUISITO] Para usar `TestChannelBinder` es necesario añadir `spring-cloud-stream-test-binder` al classpath de test. Este binder reemplaza automáticamente a los binders reales (AMQP o Kafka) en el contexto de test.
 
-Las tres estrategias cubren distintos niveles de fidelidad y velocidad. La elección depende de qué se quiere verificar: la lógica del listener, la propagación del mensaje, o el comportamiento end-to-end con un broker real.
+## Testing con TestChannelBinder
 
-| Estrategia | Broker | Velocidad | Fidelidad | Cuándo usar |
-|---|---|---|---|---|
-| 1 — Test unitario del listener | Sin broker | Muy rápida | Baja | Validar lógica del handler de evento |
-| 2 — Test con TestChannelBinder | Simulado | Rápida | Media | Verificar wiring de Bus sin infraestructura |
-| 3 — Test con Testcontainers | Real (Docker) | Lenta | Alta | Verificar propagación real y efectos en @RefreshScope |
+`TestChannelBinder` es un binder de prueba de Spring Cloud Stream que permite capturar y verificar mensajes sin necesidad de un broker externo. En el contexto del Bus, permite interceptar los eventos `RemoteApplicationEvent` que se publican en el canal `springCloudBusOutput`.
 
-## Estrategia 1: Test unitario del listener de `RemoteApplicationEvent`
+Los pasos para testear el Bus con `TestChannelBinder` son:
 
-Un `RemoteApplicationEvent` (como `RefreshRemoteApplicationEvent`) es un POJO: puede instanciarse y publicarse en un `ApplicationEventPublisher` local sin necesidad de broker. Este test verifica que el listener reacciona correctamente al evento.
+1. Añadir `spring-cloud-stream-test-binder` a las dependencias de test.
+2. Usar `@SpringBootTest` para cargar el contexto completo.
+3. Inyectar `OutputDestination` para capturar mensajes publicados.
+4. Inyectar `InputDestination` para simular mensajes entrantes.
+5. Usar `ObjectMapper` para deserializar y verificar el contenido del mensaje.
+
+## Ejemplo central — Tests completos de Bus
+
+El siguiente ejemplo muestra tests para verificar la publicación de `BusRefreshEvent`, la recepción de eventos y el comportamiento del refresh usando `TestChannelBinder`.
 
 ```xml
 <!-- pom.xml — dependencias de test -->
 <dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-test</artifactId>
-    <scope>test</scope>
-</dependency>
-<dependency>
     <groupId>org.springframework.cloud</groupId>
-    <artifactId>spring-cloud-bus</artifactId>
-    <scope>test</scope>
+    <artifactId>spring-cloud-starter-bus-amqp</artifactId>
 </dependency>
-```
-
-```java
-package com.example.bus;
-
-import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.cloud.bus.event.RefreshRemoteApplicationEvent;
-import org.springframework.context.ApplicationEventPublisher;
-
-import static org.assertj.core.api.Assertions.assertThat;
-
-@SpringBootTest(properties = {
-    "spring.cloud.bus.enabled=false",   // Bus deshabilitado: no hay broker
-    "spring.cloud.config.enabled=false" // Config Server no necesario aquí
-})
-class RefreshListenerUnitTest {
-
-    @Autowired
-    private ApplicationEventPublisher publisher;
-
-    @Autowired
-    private MyRefreshAwareService service;
-
-    @Test
-    void whenRefreshEventPublished_thenServiceUpdatesState() {
-        // El ID "test-origin" es arbitrario para tests unitarios
-        RefreshRemoteApplicationEvent event =
-            new RefreshRemoteApplicationEvent(this, "test-origin", null);
-
-        publisher.publishEvent(event);
-
-        assertThat(service.getLastRefreshTimestamp()).isNotNull();
-    }
-}
-```
-
-> [ADVERTENCIA] `spring.cloud.bus.enabled=false` desactiva el bus completo, por lo que este test no prueba la propagación real — solo la lógica del listener al recibir el evento ya instanciado localmente.
-
-## Estrategia 2: Test de integración con `TestChannelBinderConfiguration`
-
-`TestChannelBinderConfiguration` (módulo `spring-cloud-stream-test-binder`) reemplaza el binder real (Kafka/RabbitMQ) por un binder en memoria. Permite verificar que el mensaje de Bus se produce y consume correctamente sin levantar infraestructura externa.
-
-```xml
 <dependency>
     <groupId>org.springframework.cloud</groupId>
     <artifactId>spring-cloud-stream-test-binder</artifactId>
     <scope>test</scope>
 </dependency>
 <dependency>
-    <groupId>org.springframework.cloud</groupId>
-    <artifactId>spring-cloud-starter-bus-kafka</artifactId>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-test</artifactId>
+    <scope>test</scope>
 </dependency>
 ```
 
 ```java
-package com.example.bus;
+// BusRefreshEventPublicationTest.java — verifica que bus-refresh publica el evento
+package com.example.orderservice;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.cloud.stream.binder.test.OutputDestination;
+import org.springframework.messaging.Message;
+import org.springframework.test.web.servlet.MockMvc;
+
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+@SpringBootTest
+@AutoConfigureMockMvc
+class BusRefreshEventPublicationTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Autowired
+    private OutputDestination outputDestination;
+
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    @Test
+    void whenBusRefreshEndpointCalled_thenEventIsPublishedToBroker() throws Exception {
+        // 1. Invocar el endpoint bus-refresh
+        mockMvc.perform(post("/actuator/bus-refresh"))
+                .andExpect(status().isOk());
+
+        // 2. Capturar el mensaje publicado en el canal de salida del Bus
+        Message<byte[]> message = outputDestination.receive(1000, "springCloudBus");
+
+        // 3. Verificar que el mensaje no es nulo (se publicó algo)
+        assertThat(message).isNotNull();
+
+        // 4. Deserializar y verificar el tipo del evento
+        String payload = new String(message.getPayload());
+        Map<?, ?> eventMap = objectMapper.readValue(payload, Map.class);
+
+        assertThat(eventMap).containsKey("type");
+        assertThat(eventMap.get("type").toString()).contains("RefreshRemoteApplicationEvent");
+    }
+}
+```
+
+```java
+// BusCustomEventTest.java — verifica eventos personalizados
+package com.example.orderservice;
+
+import com.example.shared.events.CacheInvalidationEvent;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.cloud.stream.binder.test.InputDestination;
 import org.springframework.cloud.stream.binder.test.OutputDestination;
-import org.springframework.cloud.stream.binder.test.TestChannelBinderConfiguration;
-import org.springframework.context.annotation.Import;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.support.MessageBuilder;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
-@Import(TestChannelBinderConfiguration.class)
-class BusIntegrationTest {
+class BusCustomEventTest {
 
     @Autowired
-    private InputDestination inputDestination;
+    private ApplicationEventPublisher eventPublisher;
 
     @Autowired
     private OutputDestination outputDestination;
 
     @Autowired
-    private MyRefreshAwareService service;
+    private InputDestination inputDestination;
+
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    @Value("${spring.cloud.bus.id:test-service:default:8080}")
+    private String busId;
 
     @Test
-    void whenRefreshEventSentToInputChannel_thenServiceRefreshes() {
-        // Construir el payload del RefreshRemoteApplicationEvent serializado como JSON
-        String payload = """
-            {
-              "type": "RefreshRemoteApplicationEvent",
-              "originService": "test-service:8080",
-              "destinationService": "**"
-            }
-            """;
+    void whenCacheInvalidationEventPublished_thenMessageArrivesOnBus() throws Exception {
+        // 1. Publicar un evento personalizado
+        CacheInvalidationEvent event = new CacheInvalidationEvent(
+                this, busId, "**", "products", "test invalidation"
+        );
+        eventPublisher.publishEvent(event);
 
-        Message<byte[]> message = MessageBuilder
-            .withPayload(payload.getBytes())
-            .build();
+        // 2. Capturar el mensaje publicado
+        Message<byte[]> message = outputDestination.receive(1000, "springCloudBus");
+        assertThat(message).isNotNull();
 
-        // Enviar al canal de entrada del bus (destino por defecto: "springCloudBus")
-        inputDestination.send(message, "springCloudBus");
+        // 3. Verificar el contenido del mensaje
+        String payload = new String(message.getPayload());
+        assertThat(payload).contains("CacheInvalidationEvent");
+        assertThat(payload).contains("products");
+    }
 
-        // Verificar que el servicio procesó el refresh
-        assertThat(service.getLastRefreshTimestamp()).isNotNull();
+    @Test
+    void whenMessageReceivedOnBusInput_thenEventIsProcessed() throws Exception {
+        // 1. Crear un BusRefreshEvent simulado como JSON
+        String busRefreshEventJson = """
+                {
+                  "type": "RefreshRemoteApplicationEvent",
+                  "destinationService": "**",
+                  "originService": "config-server:default:8888",
+                  "id": "test-event-id-123"
+                }
+                """;
+
+        // 2. Publicar el mensaje en el canal de entrada del Bus
+        inputDestination.send(
+                MessageBuilder.withPayload(busRefreshEventJson.getBytes())
+                              .setHeader("contentType", "application/json")
+                              .build(),
+                "springCloudBus"
+        );
+
+        // El procesamiento es asíncrono; verificar efectos secundarios
+        // en un test real se usaría un @EventListener capturador
     }
 }
 ```
 
-> [EXAMEN] `TestChannelBinderConfiguration` importa un binder de test que sustituye TODOS los binders configurados en `spring.cloud.stream.bindings`. Si la app tiene bindings de Stream y Bus simultáneamente, todos quedan sustituidos en el test.
+```yaml
+# application-test.yml — configuración para tests del Bus
+spring:
+  application:
+    name: order-service
+  cloud:
+    bus:
+      enabled: true
+      id: order-service:default:8080
+    # TestChannelBinder se activa automáticamente con spring-cloud-stream-test-binder
+    # No es necesario configurar RabbitMQ ni Kafka para tests
 
-## Estrategia 3: Test con Testcontainers (broker real)
-
-Este nivel verifica el comportamiento end-to-end: el evento viaja por un broker Kafka o RabbitMQ real, llega a los suscriptores, y los beans `@RefreshScope` se re-instancian. Requiere Docker disponible en el entorno de CI.
-
-```xml
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-testcontainers</artifactId>
-    <scope>test</scope>
-</dependency>
-<dependency>
-    <groupId>org.testcontainers</groupId>
-    <artifactId>kafka</artifactId>
-    <scope>test</scope>
-</dependency>
+management:
+  endpoints:
+    web:
+      exposure:
+        include: bus-refresh, bus-env, health
+  endpoint:
+    bus-refresh:
+      enabled: true
 ```
 
-```java
-package com.example.bus;
+## Troubleshooting — Problemas comunes
 
-import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
-import org.springframework.cloud.context.refresh.ContextRefresher;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.KafkaContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
+Los problemas más frecuentes de Spring Cloud Bus en producción y sus soluciones se presentan a continuación. Conocer estos escenarios es relevante para el examen de certificación.
 
-import java.util.concurrent.TimeUnit;
+**Problema 1: El refresh no se propaga a todos los nodos**
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
+La causa más común es que el consumer group del binding `springCloudBusInput` está configurado incorrectamente en Kafka. Si varias instancias del mismo servicio comparten el mismo consumer group, Kafka solo entrega el mensaje a una de ellas.
 
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@Testcontainers
-class BusE2ETest {
+```yaml
+# INCORRECTO — mismo group para todas las instancias en Kafka
+spring:
+  cloud:
+    stream:
+      bindings:
+        springCloudBusInput:
+          group: order-service    # Kafka solo entrega a UNA instancia del grupo
 
-    @Container
-    @ServiceConnection
-    static KafkaContainer kafka =
-        new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.6.0"));
-
-    @Autowired
-    private ContextRefresher contextRefresher;
-
-    @Autowired
-    private MyConfigurableBean configurableBean;
-
-    @Test
-    void whenRefreshTriggered_thenRefreshScopeBeanReinitialized() {
-        // Estado inicial
-        String valueBefore = configurableBean.getConfigValue();
-
-        // Disparar refresh (Bus propaga el evento a todos los nodos del topic)
-        contextRefresher.refresh();
-
-        // Esperar propagación asíncrona (hasta 5 segundos)
-        await()
-            .atMost(5, TimeUnit.SECONDS)
-            .untilAsserted(() ->
-                assertThat(configurableBean.getConfigValue())
-                    .isNotEqualTo(valueBefore)
-            );
-    }
-}
+# CORRECTO — group único por instancia
+spring:
+  cloud:
+    stream:
+      bindings:
+        springCloudBusInput:
+          group: ${spring.application.name}-${random.uuid}
 ```
 
-### Tabla resumen: cuándo usar cada estrategia
+**Problema 2: Mensajes duplicados en las instancias**
 
-| Situación | Estrategia recomendada |
-|---|---|
-| Verificar lógica del listener ante un evento concreto | 1 — Test unitario local |
-| Verificar wiring Bus sin levantar broker en CI | 2 — TestChannelBinderConfiguration |
-| Verificar propagación real y re-instanciación de @RefreshScope | 3 — Testcontainers |
-| Detectar incompatibilidades de serialización de eventos | 3 — Testcontainers |
-| Test rápido en pipeline sin Docker | 2 — TestChannelBinderConfiguration |
+Ocurre cuando en RabbitMQ se configura erróneamente un consumer group compartido, o cuando `spring.cloud.bus.destination` apunta al mismo exchange/topic en múltiples entornos (dev y prod comparten broker).
 
-## Tabla de elementos clave
+```yaml
+# CORRECTO — destination diferente por entorno
+spring:
+  cloud:
+    bus:
+      destination: springCloudBus-${spring.profiles.active}
+      # dev  → springCloudBus-dev
+      # prod → springCloudBus-prod
+```
 
-Los componentes y propiedades que un desarrollador senior necesita reconocer al testear Spring Cloud Bus:
+**Problema 3: bus.id mal configurado — instancias no se reconocen como destino**
 
-| Componente / Propiedad | Tipo | Descripción |
-|---|---|---|
-| `TestChannelBinderConfiguration` | clase | Binder en memoria de spring-cloud-stream-test-binder; reemplaza Kafka/Rabbit en tests |
-| `InputDestination` | bean | Canal de entrada en memoria; permite enviar mensajes al bus simulado |
-| `OutputDestination` | bean | Canal de salida en memoria; permite leer mensajes producidos por el bus |
-| `spring.cloud.bus.enabled` | boolean (true) | Desactivar en tests unitarios que no necesitan broker |
-| `ContextRefresher.refresh()` | método | Dispara un `RefreshRemoteApplicationEvent` y propaga por Bus |
-| `@RefreshScope` | anotación | Marca beans que se re-instancian al recibir `RefreshRemoteApplicationEvent` |
-| `RemoteApplicationEvent` | clase base | Evento de Bus; subclases: `RefreshRemoteApplicationEvent`, `EnvironmentChangeRemoteApplicationEvent` |
+Si el `spring.cloud.bus.id` tiene el formato incorrecto o se duplica entre instancias, `ServiceMatcher` puede ignorar eventos dirigidos a la instancia o procesarlos cuando no debería.
+
+```bash
+# Verificar el bus.id actual de una instancia
+curl http://localhost:8080/actuator/env | jq '.["spring.cloud.bus.id"]'
+
+# O usar el endpoint de env para ver todas las propiedades del Bus
+curl http://localhost:8080/actuator/env | jq '.propertySources[] | select(.name | contains("bus"))'
+```
+
+## Tabla de diagnóstico de problemas comunes
+
+Los síntomas, causas y soluciones de los problemas más frecuentes del Bus son:
+
+| Síntoma | Causa probable | Solución |
+|---------|---------------|----------|
+| Refresh no llega a algunos nodos | Consumer group incorrecto en Kafka | `group: ${app.name}-${random.uuid}` |
+| Mensajes duplicados | Consumer group compartido en Kafka / exchange compartido entre entornos | Group único / destination por entorno |
+| Evento ignorado por el receptor | `@AcceptRemoteApplicationEvent` faltante | Añadir anotación en la clase del evento |
+| `bus-refresh` → 404 Not Found | Endpoint no expuesto en Actuator | Añadir `bus-refresh` a `exposure.include` |
+| `bus-refresh` → 401 Unauthorized | Spring Security protege el endpoint | Autenticar la llamada |
+| Evento publicado pero beans no actualizados | Beans sin `@RefreshScope` | Añadir `@RefreshScope` a los beans |
+| bus.id duplicado entre instancias | Configuración estática del bus.id | Usar `${server.port}` o `${random.uuid}` |
 
 ## Buenas y malas prácticas
 
-**Hacer:**
-- Usar `TestChannelBinderConfiguration` para tests de integración rápidos que no requieren Docker; verifica el wiring completo sin coste de infraestructura.
-- Usar Testcontainers para los tests que verifican efectos en `@RefreshScope`: son los únicos que garantizan que la propagación y la re-instanciación ocurren de verdad.
-- Añadir `awaitility` para esperar la propagación asíncrona en tests con broker real; los asserts síncronos inmediatamente después del trigger siempre fallan.
-- Nombrar explícitamente el `destinationService` en los tests para verificar el enrutamiento selectivo (no siempre `"**"`).
+**Buenas prácticas:**
 
-**Evitar:**
-- Testear solo el listener en aislamiento y declarar que el módulo Bus está "testeado": los tests unitarios no detectan problemas de serialización, wiring o configuración del broker.
-- Usar `@SpringBootTest` con Kafka/RabbitMQ real en los tests de PR sin Testcontainers: requiere infraestructura externa en el agente de CI, lo que produce tests frágiles y difíciles de replicar localmente.
-- Mezclar `TestChannelBinderConfiguration` con tests que también usen `spring-cloud-stream` para mensajería de negocio: el binder de test sustituye todos los canales, lo que puede interferir con la validación de otros bindings.
+- Usar `TestChannelBinder` en todos los tests que involucren el Bus. Nunca usar un broker real en tests unitarios o de integración si puede evitarse.
+- Separar los tests de publicación (verificar que el evento se publica en el canal de salida) de los tests de recepción (verificar que el evento entrante produce el efecto esperado).
+- Incluir tests de troubleshooting en los tests de integración para verificar que la configuración del consumer group es correcta.
+
+**Malas prácticas:**
+
+- Testear el Bus con un broker real (Embedded RabbitMQ o Embedded Kafka) cuando `TestChannelBinder` es suficiente. Aumenta la complejidad y el tiempo de ejecución de los tests sin beneficio para verificar la lógica del Bus.
+- No verificar los mensajes en el `OutputDestination` tras invocar los endpoints del Bus. Es el único modo de confirmar que el Bus publicó el evento correctamente.
+- Ignorar el log de WARN de Spring Cloud Bus durante el arranque. Muchos problemas de configuración se manifiestan como warnings en el log antes de manifestarse como fallos en producción.
+
+## Verificación y práctica
+
+> [EXAMEN] **1.** ¿Qué dependencia de test debe añadirse para usar `TestChannelBinder` y testear el Bus sin broker real?
+
+> [EXAMEN] **2.** ¿Qué clase de Spring Cloud Stream Test se usa para capturar mensajes publicados por el Bus en los tests?
+
+> [EXAMEN] **3.** ¿Por qué múltiples instancias del mismo servicio reciben mensajes duplicados del Bus cuando se usa Kafka con un consumer group compartido?
+
+> [EXAMEN] **4.** ¿Qué anotación falta en la clase de un evento personalizado si el receptor lo ignora sin lanzar excepción?
+
+> [EXAMEN] **5.** Si `POST /actuator/bus-refresh` devuelve 404, ¿cuál es la causa más probable y cómo se soluciona?
 
 ---
 
-← [7.8 Patrones de fallo y troubleshooting de Spring Cloud Bus](sc-bus-troubleshooting.md) | [Índice (README.md)](README.md) | [8.1 Fundamentos OAuth2 y JWT para microservicios](sc-security-oauth2-fundamentals.md) →
+← [7.8 Spring Cloud Bus — Endpoint busenv y cambio en caliente](sc-bus-busenv.md) | [Índice](README.md) | [8.1 OAuth2 en microservicios — Roles y flujos de autorización](sc-security-oauth2-conceptos-flujos.md) →

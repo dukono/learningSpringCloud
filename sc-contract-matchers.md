@@ -1,264 +1,279 @@
-# 10.4.2 Matchers estándar en contratos
+# 10.9 Spring Cloud Contract — Matchers Personalizados
 
-← [10.4.1 DSL Groovy/YAML — estructura base de contratos HTTP](sc-contract-dsl.md) | [Índice](README.md) | [10.4.3 Custom matchers y extensión del DSL](sc-contract-custom-matchers.md) →
+← [10.8 Repositorio de Stubs](sc-contract-stubs-repo.md) | [Índice](README.md) | [10.10 Contratos GraphQL](sc-contract-graphql.md) →
 
 ---
 
 ## Introducción
 
-Un contrato sin matchers es un contrato frágil: cualquier cambio en un UUID, un timestamp o un email generado rompe el test del producer aunque la API sea completamente compatible. Los matchers estándar de Spring Cloud Contract resuelven este problema permitiendo expresar reglas de validación —tipo, formato, rango— en lugar de valores concretos. El lado del producer usa el matcher para verificar que la implementación devuelve datos del tipo correcto; el lado del consumer usa el valor concreto del stub para ejecutar su lógica sin sorpresas. Dominar estos ocho matchers es imprescindible para escribir contratos robustos que sobreviven al ciclo de vida de la API.
+Los matchers en Spring Cloud Contract resuelven el problema de los campos dinámicos en contratos: valores que cambian en cada ejecución, como UUIDs, timestamps o IDs generados. La API `BodyMatchers` permite expresar expectativas sobre el formato o tipo de un campo sin fijar su valor exacto, tanto en el bloque `request` (para validar lo que el productor recibe) como en el bloque `response` (para validar lo que el productor devuelve). Comprender la diferencia entre matchers del lado productor y del lado consumidor es esencial para el examen.
 
-> [CONCEPTO] **BodyMatchers**: bloque del DSL que permite aplicar matchers JsonPath sobre campos específicos del body del response (o request), separando la validación del producer de lo que el consumer recibe en el stub.
+> [PREREQUISITO] Este nodo requiere conocimiento del DSL de contratos de [10.2](sc-contract-dsl.md) y de los contratos HTTP de [10.3](sc-contract-http.md).
 
-> [PREREQUISITO] Conocimiento del DSL base (10.4.1): structure request/response, dynamic values y la distinción producer/consumer.
+## BodyMatchers API: jsonPath + matchers encadenados
 
-## Representación visual
-
-La siguiente tabla-diagrama muestra cómo cada matcher se aplica en el lado del producer (test generado) y qué valor concreto aparece en el stub del consumer.
-
-```
-MATCHER              PRODUCER TEST VERIFICA           CONSUMER STUB RECIBE
-════════════════     ═══════════════════════           ════════════════════════
-anyNonNull()     →   value != null                     "someValue"
-anyAlphaNumeric()→   matches [a-zA-Z0-9]+              "abc123"
-byRegex("...")   →   value.matches(regex)              valor del consumer (o generado)
-byDate()         →   matches YYYY-MM-DD                "2025-04-16"
-byTime()         →   matches HH:mm:ss                  "14:30:00"
-byTimestamp()    →   matches YYYY-MM-DDTHH:mm:ss.SSS   "2025-04-16T14:30:00.000"
-byIso8601...()   →   matches ISO 8601 with offset      "2025-04-16T14:30:00.000+02:00"
-byType()         →   value is Integer/String/etc.      valor del consumer
-byCommand()      →   executes static method (custom)   valor del consumer
-```
-
-## Ejemplo central
-
-El ejemplo muestra un contrato completo usando todos los matchers estándar en el response body, con la sintaxis Groovy DSL y su equivalente YAML con la sección `matchers:`.
-
-**Contrato Groovy con matchers estándar** (`src/test/resources/contracts/order/shouldReturnOrder.groovy`):
+El bloque `bodyMatchers {}` del DSL Groovy permite definir validaciones sobre campos específicos del body usando expresiones jsonPath. Cada validación combina un path con un matcher.
 
 ```groovy
+// src/test/resources/contracts/product/shouldReturnProductWithMatchers.groovy
 import org.springframework.cloud.contract.spec.Contract
 
 Contract.make {
-    description "should return order with all fields validated by matchers"
-
+    description "should return product with dynamic fields validated by matchers"
     request {
         method GET()
-        url '/api/orders/ORD-001'
-        headers {
-            accept(applicationJson())
-        }
+        url "/products/1"
     }
-
     response {
         status OK()
         headers {
             contentType(applicationJson())
         }
+        // body: valores usados en el STUB (lo que recibe el consumidor)
+        // Para campos dinámicos, se pone un valor representativo
         body([
-            // anyNonNull: el campo existe y no es null
-            orderId     : value(producer(anyNonNull()), consumer('ORD-001')),
-
-            // anyAlphaNumeric: solo letras y números
-            referenceCode: value(producer(anyAlphaNumeric()), consumer('REF123ABC')),
-
-            // byRegex: expresión regular personalizada
-            customerEmail: value(producer(regex('[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}')), consumer('alice@example.com')),
-
-            // byDate: formato YYYY-MM-DD
-            orderDate   : value(producer(byDate()), consumer('2025-04-16')),
-
-            // byTime: formato HH:mm:ss
-            deliveryTime: value(producer(byTime()), consumer('14:30:00')),
-
-            // byTimestamp: formato ISO 8601 sin offset
-            createdAt   : value(producer(byTimestamp()), consumer('2025-04-16T10:00:00.000')),
-
-            // byIso8601WithOffset: formato ISO 8601 con offset de timezone
-            updatedAt   : value(producer(byIso8601WithOffset()), consumer('2025-04-16T10:00:00.000+02:00')),
-
-            // byType: tipo Java esperado
-            totalAmount : value(producer(byType { instanceOf(BigDecimal.class) }), consumer(99.99)),
-
-            // Valor concreto sin matcher (campos estables)
-            status      : 'PENDING',
-            currency    : 'EUR'
+            id         : 1,
+            name       : "Laptop Pro",
+            price      : 999.99,
+            uuid       : "550e8400-e29b-41d4-a716-446655440000",
+            createdAt  : "2024-01-15T10:30:00Z",
+            category   : "ELECTRONICS",
+            available  : true,
+            tags       : ["tech", "computer"]
         ])
+        // bodyMatchers: validaciones que el TEST DEL PRODUCTOR aplica sobre el response real
+        // Verifican que el productor devuelve el formato correcto, no el valor exacto del stub
+        bodyMatchers {
+            // byRegex: valida que el campo cumple una expresión regular
+            jsonPath('$.id', byRegex("[0-9]+"))
+
+            // byType: valida que el campo es del tipo especificado
+            jsonPath('$.price', byType())  // cualquier número
+
+            // byUuid: valida que el campo tiene formato UUID estándar
+            jsonPath('$.uuid', byUuid())
+
+            // byTimestamp: valida formato datetime ISO 8601
+            jsonPath('$.createdAt', byTimestamp())
+
+            // byDate: valida formato fecha ISO 8601 (YYYY-MM-DD)
+            // jsonPath('$.birthDate', byDate())
+
+            // byRegex con constante predefinida: isoDateTimeWithMillis()
+            // jsonPath('$.updatedAt', byRegex(isoDateTime()))
+
+            // byCommand: valida usando un método custom de la clase base del test
+            // El método es invocado con el valor real del campo
+            jsonPath('$.category', byCommand('assertCategoryIsValid($it)'))
+
+            // equalToJson: valida que el campo es igual al JSON especificado
+            // Útil para validar objetos anidados completos
+            // jsonPath('$.address', equalToJson('{"city":"Madrid","country":"ES"}'))
+        }
     }
 }
 ```
 
-**Contrato YAML equivalente** (`src/test/resources/contracts/order/shouldReturnOrder.yml`):
+> [CONCEPTO] La diferencia fundamental entre los valores del `body` y los de `bodyMatchers`: el `body` define el **valor que el stub devuelve al consumidor** (fijo, determinista). Los `bodyMatchers` definen las **validaciones que el test del productor aplica sobre el response real** (dinámico, basado en regex/tipo). Son complementarios, no alternativos.
 
-```yaml
-description: "should return order with all fields validated by matchers"
-request:
-  method: GET
-  url: /api/orders/ORD-001
-  headers:
-    Accept: application/json
-response:
-  status: 200
-  headers:
-    Content-Type: application/json
-  body:
-    orderId: ORD-001
-    referenceCode: REF123ABC
-    customerEmail: alice@example.com
-    orderDate: "2025-04-16"
-    deliveryTime: "14:30:00"
-    createdAt: "2025-04-16T10:00:00.000"
-    updatedAt: "2025-04-16T10:00:00.000+02:00"
-    totalAmount: 99.99
-    status: PENDING
-    currency: EUR
-  matchers:
-    body:
-      - path: $.orderId
-        type: by_regex
-        value: ".+"
-      - path: $.referenceCode
-        type: by_regex
-        value: "[a-zA-Z0-9]+"
-      - path: $.customerEmail
-        type: by_regex
-        value: "[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}"
-      - path: $.orderDate
-        type: by_date
-      - path: $.deliveryTime
-        type: by_time
-      - path: $.createdAt
-        type: by_timestamp
-      - path: $.updatedAt
-        type: by_iso8601_with_offset
-      - path: $.totalAmount
-        type: by_type
-```
+## Matchers en el bloque request
 
-**Contrato con matchers en el cuerpo de la petición (request body matchers):**
+Los matchers también se aplican en el bloque `request` para validar qué recibe el productor. En este caso, `bodyMatchers` dentro de `request {}` valida el body entrante.
 
 ```groovy
 import org.springframework.cloud.contract.spec.Contract
 
 Contract.make {
-    description "should create order accepting flexible input"
-
+    description "should accept order creation with validated request body"
     request {
         method POST()
-        url '/api/orders'
+        url "/orders"
         headers {
             contentType(applicationJson())
-            accept(applicationJson())
         }
         body([
-            customerId   : value(consumer('CUST-1'), producer(anyNonNull())),
-            productCode  : value(consumer('PROD-ABC'), producer(anyAlphaNumeric())),
-            requestedDate: value(consumer('2025-06-01'), producer(byDate())),
-            amount       : value(consumer(150.00), producer(byType { instanceOf(BigDecimal.class) }))
+            customerId: 42,
+            amount    : 150.00,
+            currency  : "EUR"
         ])
+        // bodyMatchers en el REQUEST: el stub WireMock usa estas reglas para
+        // decidir si la petición entrante coincide con este stub
         bodyMatchers {
-            jsonPath('$.customerId', byRegex('[A-Z]+-[0-9]+'))
-            jsonPath('$.amount', byType())
+            jsonPath('$.customerId', byRegex("[0-9]+"))
+            jsonPath('$.amount', byRegex("[0-9]+(\\.[0-9]{1,2})?"))
+            jsonPath('$.currency', byRegex("[A-Z]{3}"))
         }
     }
-
     response {
         status CREATED()
-        headers {
-            contentType(applicationJson())
-        }
-        body([
-            orderId : value(producer(byRegex('[A-Z]{3}-[0-9]+')), consumer('ORD-001')),
-            status  : 'CREATED',
-            createdAt: value(producer(byTimestamp()), consumer('2025-04-16T10:00:00.000'))
-        ])
+        body([id: 1, status: "PENDING"])
     }
 }
 ```
 
-**Dependencias Maven** (mismas que en 10.3.1):
+## HeaderMatchers API
 
-```xml
-<dependencies>
-    <dependency>
-        <groupId>org.springframework.cloud</groupId>
-        <artifactId>spring-cloud-starter-contract-verifier</artifactId>
-        <scope>test</scope>
-    </dependency>
-    <dependency>
-        <groupId>io.rest-assured</groupId>
-        <artifactId>spring-mock-mvc</artifactId>
-        <scope>test</scope>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-test</artifactId>
-        <scope>test</scope>
-    </dependency>
-</dependencies>
+`HeaderMatchers` permite validar cabeceras con expresiones regulares en lugar de valores exactos. Se define dentro del bloque `headers {}` usando `matching()` o `$(...)`.
+
+```groovy
+import org.springframework.cloud.contract.spec.Contract
+
+Contract.make {
+    request {
+        method GET()
+        url "/secured/resource"
+        headers {
+            // Header con valor exacto
+            header("Accept", "application/json")
+            // Header con regex: acepta cualquier token Bearer
+            header("Authorization", matching("Bearer [A-Za-z0-9._-]+"))
+            // Header con matcher dinámico
+            header("X-Correlation-Id", $(consumer(anyNonEmptyString()), producer(anyUuid())))
+        }
+    }
+    response {
+        status OK()
+        headers {
+            contentType(applicationJson())
+            // Header en response con regex: el test del productor valida el formato
+            header("X-Request-Id", $(anyUuid()))
+            header("Cache-Control", matching("max-age=[0-9]+"))
+        }
+        body([data: "secured content"])
+    }
+}
 ```
 
-**application.yml:**
+## byCommand() para validación custom
+
+`byCommand()` es el matcher más flexible: permite delegar la validación a un método custom definido en la clase base del test del productor. El método recibe el valor real del campo como argumento (`$it` en el DSL).
+
+```groovy
+// Contrato con byCommand para validación custom
+Contract.make {
+    request {
+        method POST()
+        url "/products"
+        body([name: "Laptop", category: "TECH", price: 999.99])
+    }
+    response {
+        status CREATED()
+        body([id: 1, name: "Laptop", status: "ACTIVE"])
+        bodyMatchers {
+            // byCommand invoca assertStatusIsValid con el valor real de $.status
+            // '$it' es el marcador del valor actual del campo en el DSL
+            jsonPath('$.status', byCommand('assertStatusIsValid($it)'))
+        }
+    }
+}
+```
+
+```java
+// Clase base del productor — debe definir el método referenciado en byCommand
+public abstract class BaseProductTest {
+
+    @BeforeEach
+    public void setup() {
+        RestAssuredMockMvc.standaloneSetup(new ProductController());
+    }
+
+    // Método invocado por byCommand('assertStatusIsValid($it)')
+    // Puede contener cualquier lógica de validación
+    protected void assertStatusIsValid(String status) {
+        assertThat(status).isIn("ACTIVE", "INACTIVE", "PENDING");
+    }
+}
+```
+
+> [CONCEPTO] `byCommand('methodName($it)')` funciona como un hook de validación en la clase base. El framework sustituye `$it` por el valor real del campo durante la ejecución del test del productor. El método debe ser accesible desde la clase base (no privado).
+
+## Matchers en YAML
+
+En YAML, los matchers se declaran en un bloque `matchers` separado bajo `request` o `response`. El campo `type` especifica el tipo de matcher y `value` el patrón o clase.
 
 ```yaml
-spring:
-  application:
-    name: order-service
+response:
+  status: 200
+  body:
+    id: 1
+    uuid: "550e8400-e29b-41d4-a716-446655440000"
+    price: 999.99
+    createdAt: "2024-01-15T10:30:00Z"
+  matchers:
+    body:
+      - path: $.id
+        type: by_regex
+        value: "[0-9]+"
+      - path: $.uuid
+        type: by_regex
+        value: "[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}"
+      - path: $.price
+        type: by_type
+      - path: $.createdAt
+        type: by_timestamp
 ```
 
-## Tabla de elementos clave
+## Tabla de matchers disponibles
 
-La siguiente tabla es la referencia de los matchers estándar que un profesional senior debe conocer de memoria.
+La siguiente tabla recoge todos los matchers de la API `BodyMatchers` con su descripción y caso de uso.
 
-| Matcher | DSL Groovy | YAML type | Pattern verificado |
-|---------|-----------|-----------|-------------------|
-| `anyNonNull()` | `anyNonNull()` | `by_regex: .+` | Cualquier valor no nulo |
-| `anyNonEmptyString()` | `anyNonEmptyString()` | `by_regex: .+` | String no vacío |
-| `anyAlphaNumeric()` | `anyAlphaNumeric()` | `by_regex: [a-zA-Z0-9]+` | Solo letras y dígitos |
-| `anyAlpha()` | `anyAlpha()` | `by_regex: [a-zA-Z]+` | Solo letras |
-| `anyNumber()` | `anyNumber()` | `by_type` | Tipo numérico (Integer, Double, etc.) |
-| `anyInteger()` | `anyInteger()` | `by_type` | Tipo entero (Integer o Long) |
-| `anyPositiveInt()` | `anyPositiveInt()` | `by_regex: [0-9]+` | Entero positivo |
-| `byRegex(pattern)` | `byRegex('[0-9]+')` | `by_regex: [0-9]+` | Coincidencia con expresión regular |
-| `byDate()` | `byDate()` | `by_date` | Formato YYYY-MM-DD |
-| `byTime()` | `byTime()` | `by_time` | Formato HH:mm:ss |
-| `byTimestamp()` | `byTimestamp()` | `by_timestamp` | Formato YYYY-MM-DD'T'HH:mm:ss.SSS |
-| `byIso8601WithOffset()` | `byIso8601WithOffset()` | `by_iso8601_with_offset` | ISO 8601 con timezone offset |
-| `byType()` | `byType { instanceOf(X.class) }` | `by_type` | Tipo Java o JSON |
+| Matcher Groovy | Tipo YAML | Valida | Ejemplo de uso |
+|---|---|---|---|
+| `byRegex("pattern")` | `by_regex` | Cadena que cumple la regex | `byRegex("[0-9]+")` para IDs numéricos |
+| `byType()` | `by_type` | Tipo Java del campo | `byType()` para cualquier número |
+| `byUuid()` | `by_regex` (uuid regex) | Formato UUID estándar | `byUuid()` para IDs UUID |
+| `byTimestamp()` | `by_timestamp` | Datetime ISO 8601 | `byTimestamp()` para campos de fecha-hora |
+| `byDate()` | `by_date` | Fecha ISO 8601 (YYYY-MM-DD) | `byDate()` para fechas sin hora |
+| `byTime()` | `by_time` | Hora ISO 8601 (HH:MM:SS) | `byTime()` para campos de hora |
+| `byCommand("method($it)")` | `by_command` | Delegado a método custom | `byCommand("validate($it)")` |
+| `equalToJson("{ }")` | `by_equality` | Igual al JSON exacto | Para objetos anidados completos |
+
+## Diferencia productor vs consumidor en matchers
+
+El uso del matcher determina qué validación se aplica en cada lado del contrato.
+
+```
+PRODUCTOR (test generado):
+──────────────────────────────────────────────────────────────
+body.price = 999.99 (en el stub)
+bodyMatchers: jsonPath('$.price', byType())
+→ El test llama al productor real y verifica que $.price sea un número
+
+CONSUMIDOR (stub WireMock):
+──────────────────────────────────────────────────────────────
+body.price = 999.99 (valor fijo del stub)
+→ El stub devuelve SIEMPRE 999.99 al consumidor
+→ El consumidor puede asumir que el campo price es un número
+──────────────────────────────────────────────────────────────
+```
+
+> [ADVERTENCIA] Si un campo tiene `byType()` en `bodyMatchers` pero el productor real devuelve una cadena donde se espera un número, el test del productor fallará. El cuerpo del stub (valores fijos en `body`) no afecta este fallo — el fallo ocurre en el test del productor, no en el consumidor.
 
 ## Buenas y malas prácticas
 
-**Hacer:**
+**Buenas prácticas**:
+- Usar `byUuid()`, `byTimestamp()`, `byDate()` para campos de formato conocido en lugar de escribir regex complejos.
+- Usar `byCommand()` solo para validaciones de negocio que no tienen un matcher predefinido.
+- Definir valores representativos en `body` (no vacíos) aunque los matchers los validen dinámicamente — el stub los devuelve al consumidor.
+- Aplicar `bodyMatchers` en el bloque `request` cuando el stub WireMock debe validar el body de la petición entrante.
 
-- Usar `byDate()`, `byTime()` y `byTimestamp()` para todos los campos temporales en lugar de hardcodear fechas: una fecha hardcoded como `"2025-01-01"` convierte el test del producer en un test que falla fuera de esa fecha si la lógica genera la fecha actual.
-- Combinar matchers en el request body (`bodyMatchers { jsonPath(...) }`) cuando el consumer envía datos dinámicos: permite que el test del producer verifique que el endpoint acepta correctamente datos variables, no solo los valores concretos del stub.
-- Usar `byRegex()` con expresiones específicas del dominio para campos como codes, IDs o referencias: `byRegex('[A-Z]{3}-[0-9]+')` es más informativo que `anyNonNull()` y produce mensajes de error más claros cuando falla.
-- Añadir matchers solo a los campos realmente variables; los campos estables (`status`, `currency`) deben permanecer como valores literales para detectar regressions en valores específicos.
-- Verificar que las expresiones regulares son compatibles con Java regex (el backend del matcher); patrones PCRE avanzados (lookbehind variable, `\K`) no están soportados.
+**Malas prácticas**:
+- Omitir `bodyMatchers` para campos UUID, timestamp o IDs dinámicos — los tests del productor fallarán con valores reales.
+- Usar `equalToJson` para campos que tienen subcampos dinámicos — rompe en valores reales.
+- Confundir `byType()` (valida el tipo Java) con `byRegex()` (valida el patrón de la cadena) — `byType()` no valida formato, solo tipo.
 
-**Evitar:**
+## Verificación y práctica
 
-- Evitar usar `anyNonNull()` en campos que deben tener un formato específico: si `orderId` debe seguir el patrón `ORD-[0-9]+`, un `anyNonNull()` acepta `"hello"` como válido en el test del producer, dejando pasar una implementación incorrecta.
-- Evitar usar `byType()` sin especificar el tipo esperado (`instanceOf(Integer.class)`): el matcher acepta cualquier tipo JSON (string, number, boolean), haciendo la verificación inútil para contratos de tipos estrictos.
-- Evitar mezclar matchers en YAML con la sintaxis Groovy (`$(producer(...), consumer(...))` no existe en YAML): en YAML los matchers siempre van en la sección `matchers:` separada del body.
-- Evitar `byRegex()` con expresiones que usan Java-style escaping en YAML sin el escape correcto: en YAML, `\\d+` debe escribirse como `\\d+` (double backslash) en strings sin comillas; en strings con comillas simples se pierde el escape.
-- Evitar usar `byTimestamp()` para campos `date-only`: el matcher espera la forma completa `YYYY-MM-DDTHH:mm:ss.SSS` y rechazará un valor como `"2025-04-16"` aunque sea una fecha válida.
+> [EXAMEN] 1. ¿Cuál es la diferencia entre el valor del campo en `body` y la validación en `bodyMatchers` en un contrato Spring Cloud Contract?
 
-## Comparación: matchers disponibles por categoría
+> [EXAMEN] 2. ¿Qué matcher se usa para validar que un campo UUID tiene el formato estándar en el response del productor?
 
-| Categoría | Matchers disponibles | Caso de uso típico |
-|-----------|---------------------|-------------------|
-| Nulidad | `anyNonNull()`, `anyNonEmptyString()` | IDs, tokens, campos obligatorios |
-| Tipo alfanumérico | `anyAlphaNumeric()`, `anyAlpha()`, `anyNumber()`, `anyInteger()`, `anyPositiveInt()` | Códigos de producto, contadores |
-| Expresión regular | `byRegex(pattern)` | Emails, teléfonos, referencias con formato propio |
-| Temporal | `byDate()`, `byTime()`, `byTimestamp()`, `byIso8601WithOffset()` | Fechas de creación, timestamps de auditoría |
-| Tipo Java | `byType { instanceOf(X.class) }` | Decimales, booleanos, arrays |
-| Custom | `byCommand('methodName')` | Validaciones de negocio propias (ver 10.4.3) |
+> [EXAMEN] 3. ¿Cómo funciona `byCommand('assertValid($it)')` y dónde se debe definir el método `assertValid`?
 
-> [EXAMEN] Pregunta de entrevista: "¿Qué diferencia hay entre `byTimestamp()` y `byIso8601WithOffset()` en Spring Cloud Contract?" — `byTimestamp()` valida el formato `YYYY-MM-DDTHH:mm:ss.SSS` sin offset de timezone (UTC implícito). `byIso8601WithOffset()` valida el formato ISO 8601 completo con offset explícito (`+02:00`, `Z`). Para APIs que devuelven fechas con timezone, usar `byIso8601WithOffset()` para no hacer pasar valores en UTC que deberían llevar offset.
+> [EXAMEN] 4. ¿Cómo se expresa un matcher `byType()` en un contrato YAML?
 
-> [ADVERTENCIA] Los matchers de la sección `bodyMatchers { jsonPath(...) }` en el DSL Groovy son para el response body del producer. Si se necesita validar el request body en el producer, se usa también `bodyMatchers` dentro del bloque `request`. No confundir con el `body()` del bloque `request`, que define el valor que el consumer enviará en el stub.
+> [EXAMEN] 5. ¿En qué bloque se colocan los `bodyMatchers` cuando se quiere validar el body del request (no del response) en un contrato HTTP?
 
 ---
 
-← [10.4.1 DSL Groovy/YAML — estructura base de contratos HTTP](sc-contract-dsl.md) | [Índice](README.md) | [10.4.3 Custom matchers y extensión del DSL](sc-contract-custom-matchers.md) →
+← [10.8 Repositorio de Stubs](sc-contract-stubs-repo.md) | [Índice](README.md) | [10.10 Contratos GraphQL](sc-contract-graphql.md) →

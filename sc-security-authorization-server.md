@@ -1,78 +1,200 @@
-# 8.10 Spring Authorization Server — configuración base
+# 8.2 Spring Authorization Server — Configuración y registro de clientes
 
-← [8.9 Propagación de identidad en contextos asíncronos y mensajería](sc-security-propagation-async.md) | [Índice (README.md)](README.md) | [8.11 Spring Authorization Server — personalización avanzada y OIDC](sc-security-authorization-server-advanced.md) →
+← [8.1 OAuth2 en microservicios — Roles y flujos de autorización](sc-security-oauth2-conceptos-flujos.md) | [Índice](README.md) | [8.3 Resource Server — Validación de JWT en microservicios](sc-security-resource-server.md) →
 
 ---
 
-Spring Authorization Server (SAS) 1.x es la implementación de Authorization Server de Spring que reemplaza al antiguo Spring Security OAuth2 (deprecado desde 2019). Implementa OAuth2.1, OpenID Connect 1.0 y los endpoints estándar: `/oauth2/authorize`, `/oauth2/token`, `/oauth2/jwks`, `/oauth2/introspect`, `/oauth2/revoke` y `/.well-known/openid-configuration`. La configuración base establece los tres pilares: los `RegisteredClient` (clientes OAuth2 registrados), el `JWKSource` (claves de firma de tokens), y la `SecurityFilterChain` de autorización. Sin estos tres componentes el servidor no puede emitir tokens válidos.
+## Introducción
 
-> [PREREQUISITO] Requiere `spring-security-oauth2-authorization-server` (incluido en el BOM `spring-boot-dependencies`). Este fichero cubre la configuración mínima funcional; la personalización avanzada (claims personalizados, OIDC, flujos adicionales) está en el fichero 8.11.
+Spring Authorization Server es la implementación oficial de un Authorization Server OAuth2/OIDC construida sobre Spring Security. Resuelve el problema de proporcionar un Authorization Server propio dentro del ecosistema Spring sin depender de plataformas externas como Keycloak o Auth0. Es la pieza que emite los tokens JWT que consumen los Resource Servers del sistema. En arquitecturas de microservicios con Spring Cloud, es habitual tener un servicio dedicado que actúe como Authorization Server centralizado para toda la plataforma.
 
-## Arquitectura del Authorization Server
+> [PREREQUISITO] Este nodo asume conocimiento del flujo OAuth2 (8.1). Se usa Spring Authorization Server 1.x (parte de Spring Cloud 2025.1.1 / Spring Boot 3.x). La antigua librería `spring-security-oauth2` con `@EnableAuthorizationServer` es [LEGACY] y no compatible con Spring Boot 3.
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  Spring Authorization Server (SAS 1.x)                           │
-│                                                                   │
-│  Endpoints OAuth2 / OIDC                                         │
-│  ├── POST /oauth2/token          ← emitir tokens                 │
-│  ├── GET  /oauth2/authorize      ← flujo Authorization Code      │
-│  ├── GET  /oauth2/jwks           ← claves públicas para verify   │
-│  ├── POST /oauth2/introspect     ← validar token opaco           │
-│  ├── POST /oauth2/revoke         ← revocar token                 │
-│  └── GET  /.well-known/openid-configuration ← discovery         │
-│                                                                   │
-│  Componentes configurables                                        │
-│  ├── RegisteredClientRepository ← clientes registrados          │
-│  ├── AuthorizationServerSettings ← URLs de los endpoints        │
-│  ├── JWKSource                  ← clave RSA/EC para firmar JWT   │
-│  └── OAuth2TokenCustomizer      ← añadir claims custom al JWT   │
-└──────────────────────────────────────────────────────────────────┘
-```
+## Dependencia y auto-configuración
 
-## Ejemplo central: Authorization Server mínimo funcional
+Spring Authorization Server se integra en un proyecto Spring Boot mediante el starter oficial. Esta dependencia auto-configura los endpoints OAuth2/OIDC estándar y expone el endpoint JWKS para que los Resource Servers puedan verificar los tokens sin llamar al AS en cada petición.
 
-### Dependencias Maven
+La dependencia Maven que habilita toda la infraestructura del Authorization Server es:
 
 ```xml
-<dependencyManagement>
-    <dependencies>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-dependencies</artifactId>
-            <version>4.0.0</version>
-            <type>pom</type>
-            <scope>import</scope>
-        </dependency>
-    </dependencies>
-</dependencyManagement>
-
-<dependencies>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-web</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-security</artifactId>
-    </dependency>
-    <!-- Authorization Server -->
-    <dependency>
-        <groupId>org.springframework.security</groupId>
-        <artifactId>spring-security-oauth2-authorization-server</artifactId>
-    </dependency>
-    <!-- JPA para persistir tokens y clients (producción) -->
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-data-jpa</artifactId>
-    </dependency>
-</dependencies>
+<!-- pom.xml -->
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-oauth2-authorization-server</artifactId>
+</dependency>
+<!-- spring-boot-starter-security se incluye transitivamente -->
 ```
 
-### SecurityConfig — tres SecurityFilterChains requeridas
+Tras añadir la dependencia, Spring Boot auto-configura los siguientes endpoints bajo el path `/oauth2/`:
+
+| Endpoint | Path por defecto | Propósito |
+|---|---|---|
+| Authorization | `/oauth2/authorize` | Punto de entrada del flujo Authorization Code |
+| Token | `/oauth2/token` | Intercambio de code por tokens; Client Credentials |
+| Token Introspection | `/oauth2/introspect` | Validación de tokens opacos (RFC 7662) |
+| Token Revocation | `/oauth2/revoke` | Revocación de tokens |
+| JWKS | `/oauth2/jwks` | Claves públicas para verificar JWTs |
+| OIDC Discovery | `/.well-known/openid-configuration` | Metadatos del proveedor OIDC |
+| AS Metadata | `/.well-known/oauth-authorization-server` | Metadatos OAuth2 estándar (RFC 8414) |
+
+> [CONCEPTO] El endpoint `/.well-known/openid-configuration` permite a los Resource Servers descubrir automáticamente el `jwks-uri` usando solo el `issuer-uri`. Spring Boot auto-configura `JwtDecoder` usando este endpoint cuando se especifica `spring.security.oauth2.resourceserver.jwt.issuer-uri`.
+
+## RegisteredClient y RegisteredClientRepository
+
+`RegisteredClient` es la entidad central del Authorization Server: representa a un cliente OAuth2 registrado con todos sus atributos de configuración. `RegisteredClientRepository` es el repositorio donde se almacenan estos clientes.
+
+Cada `RegisteredClient` configura exactamente cómo puede ese cliente obtener tokens: qué métodos de autenticación acepta, qué grant types puede usar, a qué URIs puede redirigir, y qué scopes puede solicitar.
 
 ```java
-package com.example.authserver;
+// AuthorizationServerConfig.java
+package com.example.authserver.config;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.oauth2.core.AuthorizationGrantType;
+import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
+import org.springframework.security.oauth2.core.oidc.OidcScopes;
+import org.springframework.security.oauth2.server.authorization.client.InMemoryRegisteredClientRepository;
+import org.springframework.security.oauth2.server.authorization.client.RegisteredClient;
+import org.springframework.security.oauth2.server.authorization.client.RegisteredClientRepository;
+import org.springframework.security.oauth2.server.authorization.settings.ClientSettings;
+import org.springframework.security.oauth2.server.authorization.settings.TokenSettings;
+
+import java.time.Duration;
+import java.util.UUID;
+
+@Configuration
+public class AuthorizationServerConfig {
+
+    @Bean
+    public RegisteredClientRepository registeredClientRepository() {
+        // Cliente 1: app web con Authorization Code + PKCE
+        RegisteredClient webClient = RegisteredClient.withId(UUID.randomUUID().toString())
+                .clientId("web-app")
+                .clientSecret("{noop}secret-web")            // {noop} = sin cifrado (solo dev)
+                .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_BASIC)
+                .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
+                .authorizationGrantType(AuthorizationGrantType.REFRESH_TOKEN)
+                .redirectUri("http://localhost:8080/login/oauth2/code/web-app")
+                .postLogoutRedirectUri("http://localhost:8080/")
+                .scope(OidcScopes.OPENID)
+                .scope(OidcScopes.PROFILE)
+                .scope("orders:read")
+                .scope("orders:write")
+                .clientSettings(ClientSettings.builder()
+                        .requireAuthorizationConsent(true)   // muestra pantalla de consentimiento
+                        .requireProofKey(true)               // PKCE obligatorio
+                        .build())
+                .tokenSettings(TokenSettings.builder()
+                        .accessTokenTimeToLive(Duration.ofMinutes(30))
+                        .refreshTokenTimeToLive(Duration.ofDays(1))
+                        .reuseRefreshTokens(false)           // rota el refresh token en cada uso
+                        .build())
+                .build();
+
+        // Cliente 2: microservicio con Client Credentials (sin usuario)
+        RegisteredClient serviceClient = RegisteredClient.withId(UUID.randomUUID().toString())
+                .clientId("order-service")
+                .clientSecret("{noop}secret-order")
+                .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_BASIC)
+                .authorizationGrantType(AuthorizationGrantType.CLIENT_CREDENTIALS)
+                .scope("inventory:read")
+                .tokenSettings(TokenSettings.builder()
+                        .accessTokenTimeToLive(Duration.ofMinutes(5))
+                        .build())
+                .build();
+
+        return new InMemoryRegisteredClientRepository(webClient, serviceClient);
+    }
+}
+```
+
+> [ADVERTENCIA] `InMemoryRegisteredClientRepository` es solo para desarrollo. En producción usar `JdbcRegisteredClientRepository` con la tabla `oauth2_registered_client` que Spring Authorization Server genera automáticamente mediante los scripts SQL incluidos en el jar.
+
+## Configuración del Authorization Server con SecurityFilterChain
+
+Spring Authorization Server requiere dos `SecurityFilterChain` separados: uno para el protocolo OAuth2/OIDC (endpoints del AS) y otro para la seguridad de la propia aplicación del AS (login del usuario, UI de consentimiento).
+
+```java
+// SecurityConfig.java — dos SecurityFilterChain obligatorios
+package com.example.authserver.config;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
+import org.springframework.security.config.Customizer;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.oauth2.server.authorization.config.annotation.web.configuration.OAuth2AuthorizationServerConfiguration;
+import org.springframework.security.oauth2.server.authorization.config.annotation.web.configurers.OAuth2AuthorizationServerConfigurer;
+import org.springframework.security.oauth2.server.authorization.settings.AuthorizationServerSettings;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.LoginUrlAuthenticationEntryPoint;
+import org.springframework.security.core.userdetails.User;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.provisioning.InMemoryUserDetailsManager;
+import org.springframework.security.crypto.password.NoOpPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig {
+
+    // Cadena 1: endpoints OAuth2/OIDC del Authorization Server (máxima prioridad)
+    @Bean
+    @Order(1)
+    public SecurityFilterChain authorizationServerSecurityFilterChain(HttpSecurity http) throws Exception {
+        OAuth2AuthorizationServerConfiguration.applyDefaultSecurity(http);
+        http.getConfigurer(OAuth2AuthorizationServerConfigurer.class)
+                .oidc(Customizer.withDefaults());    // habilita endpoint /userinfo y /connect/register
+
+        http.exceptionHandling(ex -> ex
+                .authenticationEntryPoint(
+                        new LoginUrlAuthenticationEntryPoint("/login")));   // redirige al login si no autenticado
+
+        return http.build();
+    }
+
+    // Cadena 2: seguridad de la app del AS (login form, acceso a UI de consentimiento)
+    @Bean
+    @Order(2)
+    public SecurityFilterChain defaultSecurityFilterChain(HttpSecurity http) throws Exception {
+        http.authorizeHttpRequests(auth -> auth
+                        .anyRequest().authenticated())
+                .formLogin(Customizer.withDefaults());     // pantalla de login del AS
+
+        return http.build();
+    }
+
+    @Bean
+    public UserDetailsService userDetailsService() {
+        // Solo para desarrollo; usar JDBC/LDAP en producción
+        var user = User.withDefaultPasswordEncoder()
+                .username("usuario")
+                .password("clave")
+                .roles("USER")
+                .build();
+        return new InMemoryUserDetailsManager(user);
+    }
+
+    @Bean
+    public AuthorizationServerSettings authorizationServerSettings() {
+        return AuthorizationServerSettings.builder()
+                .issuer("http://localhost:9000")    // URL base del AS; debe coincidir con jwt.issuer-uri en RS
+                .build();
+    }
+}
+```
+
+## Endpoint JWKS y validación de tokens
+
+El endpoint JWKS (`/oauth2/jwks`) expone las claves públicas RSA o EC que los Resource Servers usan para verificar la firma de los JWT emitidos por este Authorization Server. Spring Authorization Server genera automáticamente un par de claves RSA en memoria al arrancar, pero en producción se debe usar un `JWKSource` configurado con claves persistentes.
+
+El siguiente ejemplo configura un `JWKSource` con un par RSA generado al inicio pero cargado desde una propiedad de configuración (compatible con Config Server):
+
+```java
+// JwksConfig.java
+package com.example.authserver.config;
 
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.RSAKey;
@@ -81,182 +203,146 @@ import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.proc.SecurityContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.annotation.Order;
-import org.springframework.security.config.Customizer;
-import org.springframework.security.config.annotation.web.builders.HttpSecurity;
-import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
-import org.springframework.security.oauth2.core.AuthorizationGrantType;
-import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
-import org.springframework.security.oauth2.core.oidc.OidcScopes;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
-import org.springframework.security.oauth2.server.authorization.client.InMemoryRegisteredClientRepository;
-import org.springframework.security.oauth2.server.authorization.client.RegisteredClient;
-import org.springframework.security.oauth2.server.authorization.client.RegisteredClientRepository;
 import org.springframework.security.oauth2.server.authorization.config.annotation.web.configuration.OAuth2AuthorizationServerConfiguration;
-import org.springframework.security.oauth2.server.authorization.config.annotation.web.configurers.OAuth2AuthorizationServerConfigurer;
-import org.springframework.security.oauth2.server.authorization.settings.AuthorizationServerSettings;
-import org.springframework.security.oauth2.server.authorization.settings.ClientSettings;
-import org.springframework.security.oauth2.server.authorization.settings.TokenSettings;
-import org.springframework.security.web.SecurityFilterChain;
-import org.springframework.security.web.authentication.LoginUrlAuthenticationEntryPoint;
 
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.interfaces.RSAPrivateKey;
 import java.security.interfaces.RSAPublicKey;
-import java.time.Duration;
 import java.util.UUID;
 
 @Configuration
-@EnableWebSecurity
-public class AuthorizationServerConfig {
+public class JwksConfig {
 
-    // (1) SecurityFilterChain para los endpoints del Authorization Server
     @Bean
-    @Order(1)
-    public SecurityFilterChain authorizationServerSecurityFilterChain(HttpSecurity http) throws Exception {
-        OAuth2AuthorizationServerConfiguration.applyDefaultSecurity(http);
-        http
-            .getConfigurer(OAuth2AuthorizationServerConfigurer.class)
-            // Habilitar OpenID Connect 1.0
-            .oidc(Customizer.withDefaults());
-        http
-            // Redirigir al login cuando se requiere autenticación en el flujo Authorization Code
-            .exceptionHandling(exceptions -> exceptions
-                .authenticationEntryPoint(
-                    new LoginUrlAuthenticationEntryPoint("/login"))
-            )
-            // El Authorization Server también actúa como Resource Server para el userinfo endpoint
-            .oauth2ResourceServer(oauth2 -> oauth2.jwt(Customizer.withDefaults()));
+    public JWKSource<SecurityContext> jwkSource() throws Exception {
+        KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
+        generator.initialize(2048);
+        KeyPair keyPair = generator.generateKeyPair();
 
-        return http.build();
+        RSAKey rsaKey = new RSAKey.Builder((RSAPublicKey) keyPair.getPublic())
+                .privateKey((RSAPrivateKey) keyPair.getPrivate())
+                .keyID(UUID.randomUUID().toString())
+                .build();
+
+        return new ImmutableJWKSet<>(new JWKSet(rsaKey));
     }
 
-    // (2) SecurityFilterChain para el login del usuario (formulario estándar)
-    @Bean
-    @Order(2)
-    public SecurityFilterChain defaultSecurityFilterChain(HttpSecurity http) throws Exception {
-        http
-            .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/actuator/health").permitAll()
-                .anyRequest().authenticated()
-            )
-            .formLogin(Customizer.withDefaults());
-
-        return http.build();
-    }
-
-    // (3) RegisteredClientRepository — clientes OAuth2 registrados
-    @Bean
-    public RegisteredClientRepository registeredClientRepository() {
-        // Cliente para Authorization Code con PKCE (frontend/SPA)
-        RegisteredClient frontendClient = RegisteredClient.withId(UUID.randomUUID().toString())
-            .clientId("frontend-app")
-            .clientSecret("{noop}frontend-secret")  // {noop} = sin hashing (solo para dev)
-            .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_BASIC)
-            .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
-            .authorizationGrantType(AuthorizationGrantType.REFRESH_TOKEN)
-            .redirectUri("http://localhost:3000/callback")
-            .postLogoutRedirectUri("http://localhost:3000")
-            .scope(OidcScopes.OPENID)
-            .scope(OidcScopes.PROFILE)
-            .scope("orders:read")
-            .scope("orders:write")
-            .clientSettings(ClientSettings.builder()
-                .requireProofKey(true)          // PKCE obligatorio
-                .requireAuthorizationConsent(false)
-                .build())
-            .tokenSettings(TokenSettings.builder()
-                .accessTokenTimeToLive(Duration.ofMinutes(15))
-                .refreshTokenTimeToLive(Duration.ofDays(1))
-                .reuseRefreshTokens(false)      // nuevo refresh token en cada uso
-                .build())
-            .build();
-
-        // Cliente para Client Credentials (servicio-a-servicio)
-        RegisteredClient serviceClient = RegisteredClient.withId(UUID.randomUUID().toString())
-            .clientId("order-service")
-            .clientSecret("{bcrypt}$2a$10$...")  // usar BCrypt en producción
-            .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_BASIC)
-            .authorizationGrantType(AuthorizationGrantType.CLIENT_CREDENTIALS)
-            .scope("inventory:read")
-            .tokenSettings(TokenSettings.builder()
-                .accessTokenTimeToLive(Duration.ofMinutes(30))
-                .build())
-            .build();
-
-        return new InMemoryRegisteredClientRepository(frontendClient, serviceClient);
-    }
-
-    // (4) JWKSource — par de claves RSA para firmar los JWT
-    @Bean
-    public JWKSource<SecurityContext> jwkSource() {
-        KeyPair keyPair = generateRsaKey();
-        RSAPublicKey publicKey = (RSAPublicKey) keyPair.getPublic();
-        RSAPrivateKey privateKey = (RSAPrivateKey) keyPair.getPrivate();
-        RSAKey rsaKey = new RSAKey.Builder(publicKey)
-            .privateKey(privateKey)
-            .keyID(UUID.randomUUID().toString())
-            .build();
-        JWKSet jwkSet = new JWKSet(rsaKey);
-        return new ImmutableJWKSet<>(jwkSet);
-    }
-
-    private static KeyPair generateRsaKey() {
-        try {
-            KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
-            generator.initialize(2048);
-            return generator.generateKeyPair();
-        } catch (Exception ex) {
-            throw new IllegalStateException("Failed to generate RSA key pair", ex);
-        }
-    }
-
-    // (5) JwtDecoder para el userinfo endpoint
     @Bean
     public JwtDecoder jwtDecoder(JWKSource<SecurityContext> jwkSource) {
         return OAuth2AuthorizationServerConfiguration.jwtDecoder(jwkSource);
     }
+}
+```
 
-    // (6) AuthorizationServerSettings — issuer URI
+> [ADVERTENCIA] En producción, las claves RSA deben persistirse (en un KeyStore, en Vault, o en un secreto de Kubernetes). Si el AS reinicia con claves nuevas, todos los tokens existentes dejan de ser válidos porque la firma no coincide con las claves del JWKS endpoint.
+
+## Personalización de claims con OAuth2TokenCustomizer
+
+`OAuth2TokenCustomizer` permite añadir claims personalizados al JWT emitido por el Authorization Server. Es el mecanismo para incluir información de negocio (roles, tenantId, organizationId) que los Resource Servers necesitan para tomar decisiones de autorización.
+
+```java
+// TokenCustomizerConfig.java
+package com.example.authserver.config;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.oauth2.server.authorization.OAuth2TokenType;
+import org.springframework.security.oauth2.server.authorization.token.JwtEncodingContext;
+import org.springframework.security.oauth2.server.authorization.token.OAuth2TokenCustomizer;
+
+@Configuration
+public class TokenCustomizerConfig {
+
     @Bean
-    public AuthorizationServerSettings authorizationServerSettings() {
-        return AuthorizationServerSettings.builder()
-            .issuer("https://auth.example.com")
-            .build();
+    public OAuth2TokenCustomizer<JwtEncodingContext> tokenCustomizer() {
+        return context -> {
+            // Solo personalizar el access token, no el ID token
+            if (OAuth2TokenType.ACCESS_TOKEN.equals(context.getTokenType())) {
+                // Añadir roles del usuario como claim personalizado
+                context.getClaims().claim("roles",
+                        context.getPrincipal().getAuthorities()
+                                .stream()
+                                .map(a -> a.getAuthority())
+                                .toList());
+
+                // Añadir el cliente que solicitó el token
+                context.getClaims().claim("client_id",
+                        context.getRegisteredClient().getClientId());
+            }
+        };
     }
 }
 ```
 
-> [ADVERTENCIA] `generateRsaKey()` genera un nuevo par de claves en cada arranque del servidor. En producción, la clave privada debe persistirse (en Vault, KMS, o keystore en base de datos) para que los tokens emitidos antes de un reinicio sigan siendo válidos. Los Resource Servers cachean el JWK Set — si la clave cambia, los tokens existentes dejarán de validarse hasta que el JWK Set se refresque.
+## Tabla de configuraciones clave
 
-> [CONCEPTO] `InMemoryRegisteredClientRepository` pierde los clientes registrados al reiniciar. En producción, usar `JdbcRegisteredClientRepository` que persiste en base de datos. Spring Authorization Server provee el DDL para crear las tablas necesarias: `spring-security-oauth2-authorization-server-schema.sql`.
+Las propiedades de `application.yml` del Authorization Server son mínimas porque la mayor parte de la configuración es programática mediante beans:
 
-## Tabla de elementos clave
+```yaml
+# application.yml del Authorization Server
+server:
+  port: 9000
 
-| Componente | Descripción |
-|---|---|
-| `OAuth2AuthorizationServerConfiguration.applyDefaultSecurity(http)` | Aplica la configuración por defecto de todos los endpoints OAuth2/OIDC en un paso |
-| `RegisteredClient` | Representa un cliente OAuth2 con sus grant types, scopes, redirect URIs y settings |
-| `ClientSettings.requireProofKey(true)` | Requiere PKCE para este cliente; obligatorio para public clients (SPAs) |
-| `TokenSettings.accessTokenTimeToLive()` | Configura la expiración del access token; default: 5 minutos |
-| `InMemoryRegisteredClientRepository` | Repositorio en memoria; usar solo para dev/test |
-| `JdbcRegisteredClientRepository` | Repositorio persistente en base de datos; para producción |
-| `JWKSource` | Provee las claves JWK para firmar los JWT; `ImmutableJWKSet` para clave fija |
-| `AuthorizationServerSettings.issuer()` | URI del issuer que aparece en el claim `iss` de todos los tokens |
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/authserver
+    username: authuser
+    password: ${DB_PASSWORD}
+
+logging:
+  level:
+    org.springframework.security: DEBUG   # útil para troubleshooting OAuth2
+```
+
+| Configuración | Clase/Bean | Descripción |
+|---|---|---|
+| `issuer` | `AuthorizationServerSettings` | URL base del AS; debe coincidir con `jwt.issuer-uri` en los RS |
+| `accessTokenTimeToLive` | `TokenSettings` | Vida del access token; corta por seguridad (5-30 min) |
+| `refreshTokenTimeToLive` | `TokenSettings` | Vida del refresh token (horas/días) |
+| `reuseRefreshTokens` | `TokenSettings` | `false` rota el refresh token en cada uso (más seguro) |
+| `requireProofKey` | `ClientSettings` | Fuerza PKCE para este cliente |
+| `requireAuthorizationConsent` | `ClientSettings` | Muestra pantalla de consentimiento al usuario |
 
 ## Buenas y malas prácticas
 
-**Hacer:**
-- Persistir las claves RSA del `JWKSource` en Vault o KMS en producción; una clave regenerada en cada arranque invalida todos los tokens existentes.
-- Usar `{bcrypt}` en los `clientSecret` de producción; `{noop}` solo es aceptable en entornos de desarrollo.
-- Configurar `reuseRefreshTokens(false)` para emitir un nuevo refresh token en cada renovación; esto permite detectar el uso de un refresh token robado (el refresh token anterior queda inválido).
+**Buenas prácticas:**
+- Usar `JdbcRegisteredClientRepository` con base de datos dedicada en producción; `InMemoryRegisteredClientRepository` solo para tests.
+- Configurar `reuseRefreshTokens(false)` para rotar refresh tokens en cada uso, limitando el impacto de un refresh token comprometido.
+- Persistir las claves JWKS en un KeyStore o Vault; nunca confiar en las claves generadas en memoria al arrancar.
+- Establecer `accessTokenTimeToLive` corto (5-30 minutos) y compensar con refresh tokens de mayor vida.
+- El `issuer` en `AuthorizationServerSettings` debe ser una URL públicamente accesible; es el valor que aparecerá en el claim `iss` de todos los tokens.
 
-**Evitar:**
-- Usar `InMemoryRegisteredClientRepository` en producción; los clientes y sus datos de autorización se pierden al reiniciar el servidor.
-- Configurar el `accessTokenTimeToLive` mayor de 60 minutos; en caso de compromiso del token, el tiempo de expiración corto limita la ventana de ataque.
-- Ignorar el endpoint `/oauth2/revoke`; los tokens comprometidos deben poder revocarse sin esperar a su expiración natural.
+**Malas prácticas:**
+- Usar `{noop}` o contraseñas en texto plano en `clientSecret` fuera de entornos de desarrollo. En producción, usar `{bcrypt}` o `{argon2}`.
+- Colocar el Authorization Server y el Resource Server en el mismo servicio Spring Boot sin necesidad: son roles conceptualmente separados.
+- No configurar `requireProofKey(true)` para clientes de aplicaciones públicas (SPAs, móviles).
+- Hardcodear el `issuer` sin dejarlo configurable por perfil; en desarrollo apunta a `localhost`, en producción a la URL del dominio real.
+
+## Verificación y práctica
+
+> [EXAMEN] **Pregunta 1**: ¿Cuál es la diferencia entre `InMemoryRegisteredClientRepository` y `JdbcRegisteredClientRepository`? ¿Cuándo usar cada uno?
+
+**Respuesta**: `InMemoryRegisteredClientRepository` almacena los clientes en memoria (solo desarrollo/tests, se pierde al reiniciar). `JdbcRegisteredClientRepository` persiste los clientes en base de datos SQL usando el esquema que provee Spring Authorization Server; es el obligatorio en producción para que los clientes sobrevivan reinicios.
+
+> [EXAMEN] **Pregunta 2**: ¿Por qué el Authorization Server necesita dos `SecurityFilterChain`? ¿Qué hace cada uno?
+
+**Respuesta**: El primero (Order 1) configura los endpoints del protocolo OAuth2/OIDC (`/oauth2/authorize`, `/oauth2/token`, `/oauth2/jwks`, etc.) con las reglas de seguridad del estándar. El segundo (Order 2) configura la seguridad de la propia aplicación del AS (el formulario de login del usuario, la página de consentimiento), que usa seguridad web tradicional.
+
+> [EXAMEN] **Pregunta 3**: ¿Para qué sirve el endpoint JWKS y quién lo consume?
+
+**Respuesta**: El endpoint JWKS (`/oauth2/jwks`) expone las claves públicas RSA/EC que el AS usa para firmar los JWT. Los Resource Servers lo consumen al arrancar (o periódicamente) para obtener las claves y verificar localmente la firma de los tokens entrantes sin llamar al AS en cada petición.
+
+> [EXAMEN] **Pregunta 4**: ¿Cómo añade el Authorization Server claims personalizados (por ejemplo, los roles del usuario) al JWT emitido?
+
+**Respuesta**: Implementando el bean `OAuth2TokenCustomizer<JwtEncodingContext>`. En el callback se accede al `JwtEncodingContext` que expone `getClaims()` para añadir claims, `getPrincipal()` para acceder al usuario autenticado, y `getRegisteredClient()` para acceder al cliente que solicitó el token.
+
+> [EXAMEN] **Pregunta 5**: ¿Qué consecuencia tiene reiniciar un Authorization Server que genera sus claves JWKS en memoria al arrancar?
+
+**Respuesta**: Todos los tokens JWT emitidos antes del reinicio dejan de ser válidos porque fueron firmados con las claves antiguas que ya no existen. Los Resource Servers que cachearon las claves JWKS intentarán verificar los nuevos tokens con claves antiguas (fallo) y viceversa. Se debe usar claves persistentes (KeyStore, Vault) en producción.
 
 ---
 
-← [8.9 Propagación de identidad en contextos asíncronos y mensajería](sc-security-propagation-async.md) | [Índice (README.md)](README.md) | [8.11 Spring Authorization Server — personalización avanzada y OIDC](sc-security-authorization-server-advanced.md) →
+← [8.1 OAuth2 en microservicios — Roles y flujos de autorización](sc-security-oauth2-conceptos-flujos.md) | [Índice](README.md) | [8.3 Resource Server — Validación de JWT en microservicios](sc-security-resource-server.md) →
+

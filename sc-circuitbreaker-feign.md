@@ -1,287 +1,217 @@
-# 5.13 Integración del Circuit Breaker con OpenFeign, RestClient y WebClient
+# 4.10 Integración con Feign
 
-← [5.12 Health check y eventos CircuitBreakerEvent en producción](sc-circuitbreaker-eventos.md) | [Índice](README.md) | [5.14 Testing del Circuit Breaker, Retry y Bulkhead](sc-circuitbreaker-testing.md) →
+← [4.9 Eventos y Métricas — Observabilidad completa](sc-circuitbreaker-eventos.md) | [Índice](README.md) | [4.11 Integración con Spring Cloud Gateway](sc-circuitbreaker-gateway.md) →
+
+---
 
 ## Introducción
 
-La integración del Circuit Breaker con los clientes HTTP de Spring Cloud es el escenario más común en producción: los microservicios se comunican entre sí vía HTTP y cada llamada necesita protección ante fallos del servicio remoto. Esta integración puede ser automática (en el caso de OpenFeign) o manual (en el caso de RestClient y WebClient), pero en ambos casos el Circuit Breaker es el mismo Resilience4j subyacente.
+La integración entre Feign y Resilience4j permite que cada método de un cliente Feign esté protegido automáticamente por un Circuit Breaker sin necesidad de anotaciones adicionales. Cuando el servicio downstream falla, el CircuitBreaker se activa y redirige al fallback definido en el cliente Feign, que puede devolver datos cacheados, valores por defecto o simplemente registrar el fallo. Esta integración es la forma más natural de añadir resiliencia a las llamadas HTTP declarativas en una arquitectura Spring Cloud.
 
-La integración con OpenFeign es la más transparente: basta con habilitar una propiedad y declarar un bean `FallbackFactory<T>` para que cada método del cliente Feign quede automáticamente protegido por un Circuit Breaker individual. La integración con `RestClient` y `WebClient` es explícita y requiere envolver cada llamada con `circuitBreaker.run()`, lo que ofrece más control sobre el fallback y la gestión de excepciones.
+> [PREREQUISITO] Requiere conocimiento del cliente Feign básico documentado en [3.1 Cliente declarativo](sc-feign-cliente-declarativo.md). La integración con Resilience4j solo funciona cuando `feign.circuitbreaker.enabled=true`.
 
-> [PREREQUISITO] Este fichero asume conocimiento de la API de Spring Cloud OpenFeign (Módulo 4) para la parte de integración Feign. Las propiedades `spring.cloud.openfeign.*` se describen en el módulo 4; aquí solo se documenta la parte de integración con Circuit Breaker.
+## Nomenclatura automática del CircuitBreaker
 
-## Representación visual
-
-Los dos modos de integración del Circuit Breaker con clientes HTTP:
+Cuando se activa la integración Feign-Resilience4j, Feign crea automáticamente un CircuitBreaker por cada método del cliente. El nombre del CircuitBreaker sigue el patrón:
 
 ```
-Integración con OpenFeign (automática):
-─────────────────────────────────────────────────────────────────
-  @FeignClient(name = "payment-service", fallback = PaymentFallback.class)
-  interface PaymentClient { ... }
-
-  Resilience4j genera automáticamente un CB por método:
-  PaymentClient#processPayment(String,Long)   → CB: "payment-service#processPayment(String,Long)"
-  PaymentClient#getPaymentStatus(String)      → CB: "payment-service#getPaymentStatus(String)"
-
-  Propiedad activadora:
-  spring.cloud.openfeign.circuitbreaker.enabled=true
-
-Integración con RestClient (manual):
-─────────────────────────────────────────────────────────────────
-  CircuitBreaker cb = factory.create("paymentService");
-  Result result = cb.run(
-      () -> restClient.post().uri(...).body(req).retrieve().body(Result.class),
-      ex -> fallback(ex)
-  );
-
-Integración con WebClient + ReactiveCircuitBreaker:
-─────────────────────────────────────────────────────────────────
-  Mono<Result> result = reactiveCircuitBreaker.create("paymentService")
-      .run(
-          webClient.get().uri(...).retrieve().bodyToMono(Result.class),
-          t -> Mono.just(fallback)
-      );
+<clientName>#<methodName>(<parameterTypes>)
 ```
 
-| Característica                          | OpenFeign + CB                             | RestClient + CB (manual)               | WebClient + ReactiveCircuitBreaker       |
-|-----------------------------------------|--------------------------------------------|----------------------------------------|------------------------------------------|
-| Activación                              | `feign.circuitbreaker.enabled=true`        | Explícita (`cb.run(...)`)              | Explícita (`reactiveCircuitBreaker.run`) |
-| Nombre del CB                           | Generado automáticamente                   | Definido por el desarrollador          | Definido por el desarrollador            |
-| Modelo de programación                  | Declarativo                                | Imperativo blocking                    | Reactivo non-blocking                    |
-| Fallback                                | `FallbackFactory<T>` o clase fallback      | Lambda en `run(supplier, fallback)`    | Lambda en `run(mono, fallback)`          |
-| Visibilidad de la excepción en fallback | Con `FallbackFactory`                      | Siempre disponible                     | Siempre disponible                       |
-
-## Ejemplo central
-
-Microservicio de pedidos que usa los tres tipos de integración: Feign para el servicio de inventario, RestClient para el servicio de precios y WebClient reactivo para el servicio de notificaciones.
-
-```xml
-<!-- pom.xml -->
-<dependencies>
-    <dependency>
-        <groupId>org.springframework.cloud</groupId>
-        <artifactId>spring-cloud-starter-circuitbreaker-resilience4j</artifactId>
-    </dependency>
-    <!-- Starter reactivo para WebClient -->
-    <dependency>
-        <groupId>org.springframework.cloud</groupId>
-        <artifactId>spring-cloud-starter-circuitbreaker-reactor-resilience4j</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.cloud</groupId>
-        <artifactId>spring-cloud-starter-openfeign</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-webflux</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-aop</artifactId>
-    </dependency>
-</dependencies>
-```
+Por ejemplo, para el cliente `ProductClient` con método `getProduct(Long)`, el nombre será `ProductClient#getProduct(Long)`. Este nombre se usa para configurar el CircuitBreaker en YAML:
 
 ```yaml
-# application.yml
-spring:
-  application:
-    name: order-service
-  cloud:
-    openfeign:
-      circuitbreaker:
-        enabled: true
-        # Usar IDs alfanuméricos simplificados (sin parámetros en el nombre)
-        alphanumeric-ids:
-          enabled: false
-        # Agrupar todos los métodos de un Feign client en el mismo CB
-        group:
-          enabled: false
-
 resilience4j:
   circuitbreaker:
     instances:
-      # CB para métodos de InventoryClient (nombre generado por Feign)
-      inventory-service#getStock(String):
-        sliding-window-size: 10
-        failure-rate-threshold: 50
-        wait-duration-in-open-state: 30s
-        minimum-number-of-calls: 5
-      # CB para RestClient (nombre definido manualmente)
-      priceService:
-        sliding-window-size: 10
-        failure-rate-threshold: 50
-        wait-duration-in-open-state: 20s
-        minimum-number-of-calls: 5
-      # CB para WebClient reactivo
-      notificationService:
-        sliding-window-size: 10
+      ProductClient#getProduct(Long):
         failure-rate-threshold: 60
-        wait-duration-in-open-state: 15s
-        minimum-number-of-calls: 3
+        wait-duration-in-open-state: 30s
 ```
 
+> [CONCEPTO] El nombre por defecto puede cambiarse implementando `CircuitBreakerNameResolver` como bean Spring. Esto es útil para usar nombres cortos y legibles en configuración YAML.
+
+## Ejemplo central
+
+El ejemplo muestra la configuración completa: cliente Feign con fallback simple, FallbackFactory para acceder a la excepción, y configuración de CircuitBreakerNameResolver:
+
 ```java
-// InventoryClient.java — @FeignClient con Circuit Breaker automático
-package com.example.orders.client;
+package com.example.client;
 
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 
+// fallback: clase que implementa el interface para respuestas degradadas simples
+// fallbackFactory: para acceder a la excepción original del fallo
 @FeignClient(
-        name = "inventory-service",
-        fallbackFactory = InventoryClientFallbackFactory.class
+    name = "product-service",
+    fallback = ProductClientFallback.class,
+    fallbackFactory = ProductClientFallbackFactory.class  // solo uno puede estar activo
 )
-public interface InventoryClient {
+public interface ProductClient {
+    @GetMapping("/products/{id}")
+    ProductResponse getProduct(@PathVariable Long id);
 
-    @GetMapping("/api/stock/{productId}")
-    StockInfo getStock(@PathVariable String productId);
+    @PostMapping("/products")
+    ProductResponse createProduct(@RequestBody ProductRequest request);
 }
 ```
 
+Implementación de fallback simple (sin acceso a la excepción):
+
 ```java
-// InventoryClientFallbackFactory.java — acceso a la excepción que causó el fallback
-package com.example.orders.client;
+package com.example.client;
+
+import org.springframework.stereotype.Component;
+
+// Debe ser un bean Spring para que Feign lo inyecte
+@Component
+public class ProductClientFallback implements ProductClient {
+
+    @Override
+    public ProductResponse getProduct(Long id) {
+        // Respuesta degradada — sin acceso a la excepción original
+        return ProductResponse.notAvailable(id);
+    }
+
+    @Override
+    public ProductResponse createProduct(ProductRequest request) {
+        return ProductResponse.notAvailable(-1L);
+    }
+}
+```
+
+FallbackFactory para acceder a la excepción original (más útil en producción):
+
+```java
+package com.example.client;
 
 import org.springframework.cloud.openfeign.FallbackFactory;
 import org.springframework.stereotype.Component;
 
+// FallbackFactory permite acceder a la causa del fallo en cada método
 @Component
-public class InventoryClientFallbackFactory implements FallbackFactory<InventoryClient> {
+public class ProductClientFallbackFactory implements FallbackFactory<ProductClient> {
 
     @Override
-    public InventoryClient create(Throwable cause) {
-        // El FallbackFactory recibe la excepción; el Fallback simple no
-        return productId -> {
-            if (cause instanceof io.github.resilience4j.circuitbreaker.CallNotPermittedException) {
-                return new StockInfo(productId, 0, false, true);  // modo degradado
+    public ProductClient create(Throwable cause) {
+        // cause es la excepción que disparó el fallback (puede ser FeignException,
+        // CallNotPermittedException si el CB está abierto, etc.)
+        return new ProductClient() {
+            @Override
+            public ProductResponse getProduct(Long id) {
+                if (cause instanceof feign.FeignException.ServiceUnavailable) {
+                    return ProductResponse.serviceDown(id, "503 from product-service");
+                }
+                return ProductResponse.notAvailable(id, cause.getMessage());
             }
-            return new StockInfo(productId, -1, false, false);    // error genuino
+
+            @Override
+            public ProductResponse createProduct(ProductRequest request) {
+                return ProductResponse.notAvailable(-1L, cause.getMessage());
+            }
         };
     }
 }
 ```
 
-```java
-// StockInfo y otros modelos
-package com.example.orders.client;
+Configuración YAML para activar la integración y configurar el CB:
 
-public record StockInfo(String productId, int quantity, boolean available, boolean degraded) {}
-public record PriceInfo(String productId, double price, String currency) {}
-public record NotificationResult(String status, String recipient) {}
+```yaml
+spring:
+  cloud:
+    openfeign:
+      circuitbreaker:
+        enabled: true          # activa la integración Feign + Resilience4j
+
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 30s
+    instances:
+      # Nombre largo automático basado en clientName#methodName(paramTypes)
+      product-service#getProduct(Long):
+        failure-rate-threshold: 60
+        wait-duration-in-open-state: 60s
 ```
 
+Implementación de `CircuitBreakerNameResolver` para nombres cortos:
+
 ```java
-// PriceService.java — RestClient con CB manual
-package com.example.orders.service;
+package com.example.config;
 
-import com.example.orders.client.PriceInfo;
-import org.springframework.cloud.client.circuitbreaker.CircuitBreaker;
-import org.springframework.cloud.client.circuitbreaker.CircuitBreakerFactory;
-import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClient;
+import feign.Target;
+import org.springframework.cloud.openfeign.CircuitBreakerNameResolver;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import java.lang.reflect.Method;
 
-@Service
-public class PriceService {
+@Configuration
+public class FeignCircuitBreakerConfig {
 
-    private final CircuitBreaker circuitBreaker;
-    private final RestClient restClient;
-
-    public PriceService(
-            CircuitBreakerFactory<?, ?> circuitBreakerFactory,
-            RestClient.Builder builder) {
-        // Reutilizar la instancia del CB (no crear en cada llamada)
-        this.circuitBreaker = circuitBreakerFactory.create("priceService");
-        this.restClient = builder.baseUrl("http://price-service").build();
-    }
-
-    public PriceInfo getPrice(String productId) {
-        return circuitBreaker.run(
-                () -> restClient.get()
-                        .uri("/api/prices/{id}", productId)
-                        .retrieve()
-                        .body(PriceInfo.class),
-                ex -> new PriceInfo(productId, 0.0, "EUR")   // precio por defecto
-        );
+    @Bean
+    public CircuitBreakerNameResolver circuitBreakerNameResolver() {
+        // Nombre simplificado: solo clientName + methodName
+        return (feignClientName, target, method) ->
+            feignClientName + "_" + method.getName();
     }
 }
-```
-
-```java
-// NotificationService.java — WebClient con ReactiveCircuitBreaker
-package com.example.orders.service;
-
-import com.example.orders.client.NotificationResult;
-import org.springframework.cloud.client.circuitbreaker.ReactiveCircuitBreaker;
-import org.springframework.cloud.client.circuitbreaker.ReactiveCircuitBreakerFactory;
-import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.client.WebClient;
-import reactor.core.publisher.Mono;
-
-@Service
-public class NotificationService {
-
-    private final ReactiveCircuitBreaker reactiveCircuitBreaker;
-    private final WebClient webClient;
-
-    public NotificationService(
-            ReactiveCircuitBreakerFactory<?, ?> reactiveCircuitBreakerFactory,
-            WebClient.Builder builder) {
-        this.reactiveCircuitBreaker = reactiveCircuitBreakerFactory.create("notificationService");
-        this.webClient = builder.baseUrl("http://notification-service").build();
-    }
-
-    public Mono<NotificationResult> sendOrderConfirmation(String orderId, String userId) {
-        return reactiveCircuitBreaker.run(
-                webClient.post()
-                        .uri("/api/notifications/order-confirmation")
-                        .bodyValue(new OrderNotificationRequest(orderId, userId))
-                        .retrieve()
-                        .bodyToMono(NotificationResult.class),
-                throwable -> Mono.just(new NotificationResult("SKIPPED", userId))
-        );
-    }
-}
-```
-
-```java
-// Request model para notificación
-package com.example.orders.service;
-
-public record OrderNotificationRequest(String orderId, String userId) {}
 ```
 
 ## Tabla de elementos clave
 
-Propiedades de la integración OpenFeign con Circuit Breaker.
+| Elemento | Descripción |
+|----------|-------------|
+| `feign.circuitbreaker.enabled=true` | Activa la integración global Feign-Resilience4j |
+| `@FeignClient(fallback=X.class)` | Clase que implementa el interface para respuestas degradadas |
+| `@FeignClient(fallbackFactory=X.class)` | Factory que recibe la excepción y devuelve una implementación fallback |
+| Nombre automático | `<clientName>#<methodName>(<paramTypes>)` |
+| `CircuitBreakerNameResolver` | Bean para personalizar el nombre del CB por método Feign |
 
-| Propiedad                                                      | Tipo    | Default  | Descripción                                                                       |
-|----------------------------------------------------------------|---------|----------|-----------------------------------------------------------------------------------|
-| `spring.cloud.openfeign.circuitbreaker.enabled`                | boolean | `false`  | Activa la integración automática CB en todos los clientes Feign                   |
-| `spring.cloud.openfeign.circuitbreaker.alphanumeric-ids.enabled` | boolean | `false` | Usa IDs simplificados sin tipos de parámetro en el nombre del CB                 |
-| `spring.cloud.openfeign.circuitbreaker.group.enabled`          | boolean | `false`  | Un solo CB para todos los métodos del cliente (en lugar de uno por método)        |
-| Nombre automático del CB (sin group)                           | String  | —        | `[serviceName]#[methodName]([paramTypes])` p.ej. `inventory-service#getStock(String)` |
-| Nombre automático del CB (con alphanumeric-ids)                | String  | —        | `[className]_[methodName]` sin tipos de parámetro                                |
-| `FallbackFactory<T>`                                           | interfaz | —       | Factory que recibe el `Throwable` y crea el objeto fallback                       |
-| `Fallback simple` (clase que implementa la interfaz)           | clase   | —        | Sin acceso a la excepción; adecuado cuando no se necesita el motivo del fallo     |
+> [EXAMEN] `fallback` y `fallbackFactory` son mutuamente excluyentes en la misma anotación `@FeignClient`. Si se definen ambos, se usa `fallbackFactory`. Para acceder a la causa del fallo, siempre usar `fallbackFactory`.
+
+> [ADVERTENCIA] Cuando el CircuitBreaker está en estado OPEN, la excepción que llega al `FallbackFactory` es `CallNotPermittedException`, no la excepción original del downstream. Es importante distinguir esta excepción en el fallback para dar respuestas diferentes según la causa del fallo.
+
+## Propagación de excepciones
+
+El flujo de propagación de excepciones desde Feign hacia el CircuitBreaker:
+
+1. El método Feign lanza `FeignException` (para errores HTTP) o una excepción de red.
+2. Si la excepción está en `record-exceptions` (o no está en `ignore-exceptions`), el CircuitBreaker la registra como fallo.
+3. Si el umbral se supera, el CB transiciona a OPEN.
+4. En estado OPEN, se lanza `CallNotPermittedException` directamente (sin llamar al downstream).
+5. La excepción (sea `FeignException` o `CallNotPermittedException`) llega al `FallbackFactory.create()`.
 
 ## Buenas y malas prácticas
 
-**Hacer:**
+**Buenas prácticas:**
+- Usar `FallbackFactory` en lugar de `fallback` simple en producción para poder loggear la excepción original.
+- Configurar `ignore-exceptions: [FeignException.BadRequest]` para que errores 4xx no abran el CB (son errores del cliente, no del servidor).
+- Dar nombres legibles a los CBs mediante `CircuitBreakerNameResolver` para facilitar la configuración YAML.
 
-- Preferir `FallbackFactory<T>` sobre la clase fallback simple cuando el comportamiento del fallback debe diferir según si fue `CallNotPermittedException` (circuito abierto) o una excepción de red/HTTP. La distinción ayuda a loguear con el nivel correcto.
-- Almacenar la instancia del `CircuitBreaker` en un campo de la clase cuando se usa la API programática con `RestClient`. Llamar a `factory.create("name")` en cada invocación tiene coste de lookup aunque el registry haga cache.
-- Verificar los nombres de los CB generados automáticamente por Feign en `/actuator/circuitbreakers` antes de definir la configuración YAML. El formato `[className]#[methodName]([paramTypes])` puede causar sorpresas con tipos genéricos.
-- Usar `spring.cloud.openfeign.circuitbreaker.group.enabled: true` solo cuando todos los métodos del cliente tienen el mismo SLA. Si unos métodos son críticos y otros no, el CB por método permite afinar los umbrales independientemente.
+**Malas prácticas:**
+- Lanzar excepciones dentro del fallback: produce `FallbackExecutionException` que oculta el error original.
+- No diferenciar en el fallback entre `CallNotPermittedException` (CB abierto) y `FeignException` (fallo real): impide métricas de calidad.
 
-**Evitar:**
+## Verificación y práctica
 
-- No activar `spring.cloud.openfeign.circuitbreaker.enabled: true` globalmente sin haber definido configuración YAML para las instancias. Los CB se crearán con los defaults de Resilience4j (`minimumNumberOfCalls: 100`) que en muchos servicios nunca llegan a evaluar.
-- Evitar declarar el fallback de Feign como clase `@Component` sin la anotación correcta. Si Spring no encuentra el bean, el fallback se ignora silenciosamente y el cliente Feign no tiene protección.
-- No mezclar `@CircuitBreaker` (anotación AOP) con la integración automática de Feign en el mismo cliente. La anotación AOP decoraría el método del servicio que llama al cliente Feign, añadiendo un segundo CB que puede interactuar con el CB interno de Feign de formas no previstas.
+> [EXAMEN] 1. ¿Qué propiedad activa la integración entre Feign y Resilience4j?
+
+> [EXAMEN] 2. ¿Cuál es el nombre automático del CircuitBreaker para `@FeignClient(name="order-service")` con método `getOrder(Long, String)`?
+
+> [EXAMEN] 3. ¿Qué diferencia hay entre `fallback` y `fallbackFactory` en `@FeignClient`? ¿Cuál permite acceder a la excepción?
+
+> [EXAMEN] 4. Cuando el CircuitBreaker de un cliente Feign está en estado OPEN, ¿qué excepción recibe el `FallbackFactory.create(cause)`?
+
+> [EXAMEN] 5. ¿Cómo se configura en YAML un CircuitBreaker con nombre corto "productService" cuando se usa `CircuitBreakerNameResolver` que devuelve `clientName + "_" + methodName`?
 
 ---
 
-← [5.12 Health check y eventos CircuitBreakerEvent en producción](sc-circuitbreaker-eventos.md) | [Índice](README.md) | [5.14 Testing del Circuit Breaker, Retry y Bulkhead](sc-circuitbreaker-testing.md) →
+← [4.9 Eventos y Métricas — Observabilidad completa](sc-circuitbreaker-eventos.md) | [Índice](README.md) | [4.11 Integración con Spring Cloud Gateway](sc-circuitbreaker-gateway.md) →

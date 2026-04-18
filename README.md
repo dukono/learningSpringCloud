@@ -1,490 +1,242 @@
-# Índice — Spring Cloud 2025.1.1 (Oakwood)
+# Índice — Spring Cloud 2025.1.1
+
+> Spring Boot 3.5.x · VMware Spring Professional (EDU-1202)
 
 ## Mapa de módulos
 
-| Tema | Módulo | JSON |
-|------|--------|------|
-| 1 | Spring Cloud Config | dominio-sc-config.json |
-| 2 | Spring Cloud Netflix / Eureka | dominio-sc-eureka.json |
-| 3 | Spring Cloud Gateway | dominio-sc-gateway.json |
-| 4 | Spring Cloud OpenFeign | dominio-sc-feign.json |
-| 5 | Spring Cloud Circuit Breaker / Resilience4j | dominio-sc-circuitbreaker.json |
-| 6 | Spring Cloud Stream | dominio-sc-stream.json |
-| 7 | Spring Cloud Bus | dominio-sc-bus.json |
-| 8 | Spring Cloud Security | dominio-sc-security.json |
-| 9 | Spring Cloud Kubernetes | dominio-sc-kubernetes.json |
-| 10 | Spring Cloud Contract | dominio-sc-contract.json |
-| 11 | Spring Cloud Task | dominio-sc-task.json |
-| 12 | Spring Cloud Function | dominio-sc-function.json |
-| 13 | Patrones de microservicios distribuidos | dominio-sc-patrones.json |
+| # | Tema | Módulo | JSON |
+|---|------|--------|------|
+| 1 | Spring Cloud Config | sc-config | dominio-sc-config.json |
+| 2 | Spring Cloud Netflix / Eureka | sc-eureka | dominio-sc-eureka.json |
+| 3 | Spring Cloud OpenFeign | sc-feign | dominio-sc-feign.json |
+| 4 | Spring Cloud Circuit Breaker / Resilience4j | sc-resilience4j | dominio-sc-resilience4j.json |
+| 5 | Spring Cloud Gateway | sc-gateway | dominio-sc-gateway.json |
+| 6 | Spring Cloud Stream | sc-stream | dominio-sc-stream.json |
+| 7 | Spring Cloud Bus | sc-bus | dominio-sc-bus.json |
+| 8 | Spring Cloud Security | sc-security | dominio-sc-security.json |
+| 9 | Spring Cloud Kubernetes | sc-kubernetes | dominio-sc-kubernetes.json |
+| 10 | Spring Cloud Contract | sc-contract | dominio-sc-contract.json |
+| 11 | Spring Cloud Task | sc-task | dominio-sc-task.json |
+| 12 | Spring Cloud Function | sc-function | dominio-sc-function.json |
+| 13 | Patrones de microservicios | sc-patrones | dominio-sc-patrones.json |
 
 ---
 
 ## Verificación de cobertura
 
-1. **Subdominios representados**: Los 13 módulos del alcance de meta.md están representados:
-   Config (9 hojas), Eureka (13), Gateway (21), OpenFeign (13), Circuit Breaker (14),
-   Stream (13), Bus (9), Security (15), Kubernetes (12), Contract (15), Task (9),
-   Function (11), Patrones (9). Total: 163 nodos hoja.
-   Nota: el protocolo fija un límite orientativo de 150 nodos hoja. En este caso los nodos
-   provienen íntegramente de los ficheros dominio-*.json ya aprobados; el índice los integra
-   sin generar nodos propios. El alcance está correctamente definido en meta.md.
+1. **¿Están todos los módulos del alcance representados?**
+   Sí — los 13 módulos definidos en meta.md tienen su JSON correspondiente y aparecen en el índice.
 
-2. **Temas estándar de la fuente autoritativa** (docs.spring.io/spring-cloud):
-   Todos los módulos declarados en "Dentro del alcance" de meta.md tienen representación.
-   Spring Data, Spring Batch y plataformas cloud específicas están fuera del alcance por
-   decisión explícita de meta.md. No se detectan ausencias.
+2. **¿La ordenación respeta la estrategia de meta.md?**
+   Sí — se sigue exactamente: Config → Eureka → Feign → Resilience4j → Gateway → Stream → Bus → Security → Kubernetes → Contract → Task → Function → Patrones.
 
-3. **Orden didáctico**: Config (prerequisito operativo) → Eureka (service discovery base)
-   → Gateway + OpenFeign + Circuit Breaker (comunicación síncrona) → Stream + Bus
-   (comunicación asíncrona) → Security + Kubernetes + Contract + Task + Function
-   (módulos especializados) → Patrones (integrador transversal). Progresión válida:
-   cada tema puede comprenderse con los conocimientos aportados por los anteriores.
+3. **¿Hay nodos intermedios sin fichero propio correctamente representados?**
+   Sí — sc-config (X.3 Backends), sc-feign (X.2 Configuración, X.4 Logging/Errores, X.9 Herencia/Compresión) aparecen como nodos de agrupación sin enlace, con sus hijos enlazados.
 
-4. **Cohesión de nodos**: cada nodo hoja proviene de dominio-*.json con tarea única
-   verificada (un verbo, un objeto). Los nodos intermedios (Gateway X.4, Eureka
-   "Ciclo de vida del registro") agrupan hijos semánticamente relacionados sin fichero propio.
+4. **¿Existen módulos sin ficheros hoja (solo [intermedio])?**
+   No — todos los módulos tienen al menos sus ficheros hoja resueltos en los JSON. Los nodos intermedios agrupan subnodos hoja que sí tienen fichero.
 
-5. **Nombres de fichero repetidos**: ninguno. Cada prefijo de módulo (sc-config-, sc-eureka-,
-   sc-gateway-, sc-feign-, sc-circuitbreaker-, sc-stream-, sc-bus-, sc-security-,
-   sc-kubernetes-, sc-contract-, sc-task-, sc-function-, sc-patrones-) es exclusivo.
-
-Cobertura verificada: no se detectan lagunas.
-
-
-## README.md
-
-- 1 Spring Cloud Config
-    - [1.1 Arquitectura y concepto del Config Server](sc-config-arquitectura.md)
-    - [1.2 Config Client — configuración y arranque](sc-config-client.md)
-    - [1.3 Resolución de configuración por perfiles y labels](sc-config-resolucion.md)
-    - [1.4 Git backend — configuración y autenticación](sc-config-git-backend.md)
-    - [1.5 Backends alternativos al Git backend](sc-config-backends.md)
-    - [1.6 Actualización dinámica de configuración (Refresh)](sc-config-refresh.md)
-    - [1.7 Seguridad del Config Server](sc-config-security.md)
-    - [1.8 Operación del Config Server en producción (HA, Webhooks y Observabilidad)](sc-config-operacion.md)
-    - [1.9 Testing / Verificación de Spring Cloud Config](sc-config-testing.md)
-- 2 Spring Cloud Netflix Eureka
-    - [2.1 Arquitectura y rol de Eureka en el ecosistema de microservicios](sc-eureka-arquitectura.md)
-    - [2.2 Configuración y arranque del Eureka Server](sc-eureka-server.md)
-    - [2.3 Configuración y arranque del Eureka Client](sc-eureka-cliente.md)
-    - [2.4 Registro de instancias: metadata y estado](sc-eureka-instancias.md)
-    - 2.5 Ciclo de vida del registro: heartbeat y lease
-        - [2.5.1 Heartbeat y lease del registro](sc-eureka-lease.md)
-        - [2.5.2 Self-preservation mode](sc-eureka-self-preservation.md)
-    - [2.6 Descubrimiento de servicios desde el cliente](sc-eureka-descubrimiento.md)
-    - [2.7 Dashboard y API REST del Eureka Server](sc-eureka-api-rest.md)
-    - [2.8 Alta disponibilidad: Eureka Server en cluster](sc-eureka-cluster.md)
-    - [2.9 Seguridad del Eureka Server](sc-eureka-seguridad.md)
-    - [2.10 Integración con Spring Cloud Config](sc-eureka-integracion-config.md)
-    - [2.11 Operación y troubleshooting de Eureka](sc-eureka-troubleshooting.md)
-    - [2.12 Testing / Verificación de Spring Cloud Netflix Eureka](sc-eureka-testing.md)
-- 3 Spring Cloud Gateway
-    - [3.1 Arquitectura reactiva y modelo de ejecución](sc-gateway-arquitectura.md)
-    - [3.2 Definición y configuración de rutas](sc-gateway-rutas.md)
-    - [3.3 Predicados de enrutamiento built-in](sc-gateway-predicados.md)
-    - 3.4 GatewayFilters por ruta
-        - [3.4.1 Filtros de cabeceras del request](sc-gateway-filtros-request-headers.md)
-        - [3.4.2 Filtros de path y parámetros](sc-gateway-filtros-path.md)
-        - [3.4.3 Filtros de response (cabeceras, status y body)](sc-gateway-filtros-response.md)
-        - [3.4.4 Rate Limiting con RedisRateLimiter](sc-gateway-ratelimiting.md)
-        - [3.4.5 Circuit Breaker en Gateway con fallback](sc-gateway-circuitbreaker.md)
-        - [3.4.6 Retry: política de reintentos automáticos](sc-gateway-retry.md)
-        - [3.4.7 Filtros de seguridad y sesión (SecureHeaders, SaveSession, TokenRelay)](sc-gateway-filtros-seguridad.md)
-    - [3.5 GlobalFilters: filtros transversales y personalización](sc-gateway-globalfilters.md)
-    - [3.6 Integración con Service Discovery y Load Balancer](sc-gateway-discovery.md)
-    - [3.7 Timeouts y configuración del cliente HTTP Netty](sc-gateway-timeouts.md)
-    - [3.8 CORS y TLS/HTTPS en Gateway](sc-gateway-cors-tls.md)
-    - [3.9 Rutas dinámicas y recarga en caliente](sc-gateway-rutas-dinamicas.md)
-    - [3.10 WebSockets y Server-Sent Events](sc-gateway-websockets.md)
-    - [3.11 Filtros y predicados personalizados (extension points)](sc-gateway-extension-points.md)
-    - [3.12 Spring Cloud Gateway MVC](sc-gateway-mvc.md)
-    - [3.13 Actuator, administración y observabilidad](sc-gateway-actuator.md)
-    - [3.14 Manejo de errores y respuestas de error](sc-gateway-error-handling.md)
-    - [3.15 Testing / Verificación de Gateway](sc-gateway-testing.md)
-- 4 Spring Cloud OpenFeign
-    - [4.1 Setup y bootstrap](sc-feign-setup.md)
-    - [4.2 Declaración de @FeignClient](sc-feign-cliente-declarativo.md)
-    - [4.3 Configuración por clase Java](sc-feign-configuracion-java.md)
-    - [4.4 Configuración por propiedades YAML](sc-feign-configuracion-propiedades.md)
-    - [4.5 Codecs — Encoder, Decoder, FormEncoder, multipart y ErrorDecoder](sc-feign-codecs.md)
-    - [4.6 Interceptores y observabilidad](sc-feign-interceptores.md)
-    - [4.7 Logging](sc-feign-logging.md)
-    - [4.8 Manejo de errores HTTP](sc-feign-errores.md)
-    - [4.9 Fallback y Circuit Breaker](sc-feign-fallback.md)
-    - [4.10 Retryer](sc-feign-retryer.md)
-    - [4.11 Cliente HTTP subyacente](sc-feign-cliente-http.md)
-    - [4.12 Herencia de interfaz y @SpringQueryMap](sc-feign-herencia.md)
-    - [4.13 Testing](sc-feign-testing.md)
-- 5 Spring Cloud Circuit Breaker / Resilience4j
-    - [5.1 Circuit Breaker: estados, transiciones y modelo de evaluación](sc-circuitbreaker-estados.md)
-    - [5.2 Setup: dependencias y autoconfiguración de Resilience4j](sc-circuitbreaker-setup.md)
-    - [5.3 API programática de Spring Cloud Circuit Breaker y Customizer](sc-circuitbreaker-api.md)
-    - [5.4 Configuración YAML avanzada del Circuit Breaker](sc-circuitbreaker-config.md)
-    - [5.5 Fallback: estrategias de respuesta degradada](sc-circuitbreaker-fallback.md)
-    - [5.6 Retry: política de reintentos, backoff y @Retry](sc-circuitbreaker-retry.md)
-    - [5.7 Bulkhead: aislamiento de recursos](sc-circuitbreaker-bulkhead.md)
-    - [5.8 RateLimiter: control de tasa de llamadas](sc-circuitbreaker-ratelimiter.md)
-    - [5.9 TimeLimiter: acotación de tiempos de ejecución asíncronos](sc-circuitbreaker-timelimiter.md)
-    - [5.10 Anotaciones AOP y orden de decoradores combinados](sc-circuitbreaker-aop.md)
-    - [5.11 Métricas con Micrometer y endpoints Actuator](sc-circuitbreaker-metricas.md)
-    - [5.12 Health check y eventos CircuitBreakerEvent en producción](sc-circuitbreaker-eventos.md)
-    - [5.13 Integración con OpenFeign, RestClient y WebClient](sc-circuitbreaker-feign.md)
-    - [5.14 Testing del Circuit Breaker, Retry y Bulkhead](sc-circuitbreaker-testing.md)
-- 6 Spring Cloud Stream
-    - [6.1 Modelo de programación funcional](sc-stream-modelo-funcional.md)
-    - [6.2 Bindings y binders](sc-stream-bindings.md)
-    - [6.3 Binder Kafka — configuración y propiedades](sc-stream-binder-kafka.md)
-    - [6.4 Kafka Streams binder](sc-stream-binder-kafka-streams.md)
-    - [6.5 Binder RabbitMQ — configuración y propiedades](sc-stream-binder-rabbit.md)
-    - [6.6 Serialización y deserialización (SerDes)](sc-stream-serdes.md)
-    - [6.7 Particionado de mensajes](sc-stream-particionado.md)
-    - [6.8 Gestión de errores y DLQ](sc-stream-error-handling.md)
-    - [6.9 Polling y batch consumers](sc-stream-polling-batch.md)
-    - [6.10 StreamBridge — producción de mensajes programática](sc-stream-streambridge.md)
-    - [6.11 Multi-binder](sc-stream-multi-binder.md)
-    - [6.12 Actuator y monitorización de bindings](sc-stream-actuator.md)
-    - [6.13 Testing / Verificación de Spring Cloud Stream](sc-stream-testing.md)
-- 7 Spring Cloud Bus
-    - [7.1 Arquitectura de Spring Cloud Bus](sc-bus-arquitectura.md)
-    - [7.2 Setup y dependencias de Spring Cloud Bus](sc-bus-setup.md)
-    - [7.3 Configuración del broker subyacente para Spring Cloud Bus](sc-bus-broker-config.md)
-    - [7.4 Refresh de configuración distribuido con Spring Cloud Bus](sc-bus-refresh-distribuido.md)
-    - [7.5 Eventos personalizados de Spring Cloud Bus](sc-bus-eventos-personalizados.md)
-    - [7.6 Seguridad del endpoint actuator de Spring Cloud Bus](sc-bus-seguridad-endpoint.md)
-    - [7.7 Tracing y observabilidad de Spring Cloud Bus](sc-bus-observabilidad.md)
-    - [7.8 Patrones de fallo y troubleshooting de Spring Cloud Bus](sc-bus-troubleshooting.md)
-    - [7.9 Testing de Spring Cloud Bus](sc-bus-testing.md)
-- 8 Spring Cloud Security
-    - [8.1 Fundamentos OAuth2 y JWT para microservicios](sc-security-oauth2-fundamentals.md)
-    - [8.2 Resource Server JWT — configuración y personalización](sc-security-resource-server-jwt.md)
-    - [8.3 Resource Server avanzado — claims, opaque tokens y multi-tenancy](sc-security-resource-server-advanced.md)
-    - [8.4 OAuth2 Client servlet — registro, gestión de tokens y Client Credentials](sc-security-oauth2-client.md)
-    - [8.5 OAuth2 Client avanzado — WebClient, ReactiveManager y logout OIDC](sc-security-oauth2-client-advanced.md)
-    - [8.6 Token Relay en Spring Cloud Gateway](sc-security-token-relay.md)
-    - [8.7 Autorización por URL y métodos con Spring Security](sc-security-authorization.md)
-    - [8.8 Propagación de identidad entre microservicios síncronos](sc-security-propagation.md)
-    - [8.9 Propagación de identidad en contextos asíncronos y mensajería](sc-security-propagation-async.md)
-    - [8.10 Spring Authorization Server — configuración base](sc-security-authorization-server.md)
-    - [8.11 Spring Authorization Server — personalización avanzada y OIDC](sc-security-authorization-server-advanced.md)
-    - [8.12 Seguridad en microservicios reactivos con WebFlux](sc-security-reactive.md)
-    - [8.13 CORS, CSRF y cabeceras de seguridad HTTP](sc-security-cors-csrf.md)
-    - [8.14 Configuración avanzada de seguridad y producción](sc-security-production.md)
-    - [8.15 Testing / Verificación de Spring Cloud Security](sc-security-testing.md)
-- 9 Spring Cloud Kubernetes
-    - [9.1 Setup y starters de Spring Cloud Kubernetes](sc-kubernetes-setup.md)
-    - [9.2 ConfigMap PropertySource — lectura y fuentes](sc-kubernetes-configmap.md)
-    - [9.3 ConfigMap PropertySource — recarga dinámica](sc-kubernetes-configmap-reload.md)
-    - [9.4 Secrets PropertySource](sc-kubernetes-secrets.md)
-    - [9.5 Namespace awareness y RBAC](sc-kubernetes-namespace-rbac.md)
-    - [9.6 KubernetesDiscoveryClient — descubrimiento de servicios](sc-kubernetes-discovery.md)
-    - [9.7 Reactive DiscoveryClient y variantes de implementación](sc-kubernetes-discovery-reactive.md)
-    - [9.8 Load Balancer con Kubernetes](sc-kubernetes-loadbalancer.md)
-    - [9.9 Kubernetes Java Client: fabric8 vs cliente oficial](sc-kubernetes-client.md)
-    - [9.10 Health Indicators de Spring Cloud Kubernetes](sc-kubernetes-health.md)
-    - [9.11 Leader Election con Spring Cloud Kubernetes](sc-kubernetes-leader.md)
-    - [9.12 Testing de Spring Cloud Kubernetes](sc-kubernetes-testing.md)
-- 10 Spring Cloud Contract
-    - [10.1 Arquitectura CDC y modelo Consumer-Driven Contracts](sc-contract-fundamentos.md)
-    - [10.2 Ciclo de vida CDC y workflow CI/CD](sc-contract-workflow.md)
-    - 10.3 Plugin de build
-        - [10.3.1 Plugin Maven/Gradle — goals, tasks y testMode](sc-contract-plugin.md)
-        - [10.3.2 Plugin Maven/Gradle — propiedades de personalización](sc-contract-plugin-config.md)
-    - 10.4 DSL de contratos
-        - [10.4.1 DSL Groovy/YAML — estructura base de contratos HTTP](sc-contract-dsl.md)
-        - [10.4.2 Matchers estándar en contratos](sc-contract-matchers.md)
-        - [10.4.3 Custom matchers y extensión del DSL](sc-contract-custom-matchers.md)
-    - [10.5 Clase base de tests del producer](sc-contract-producer-tests.md)
-    - [10.6 Stub JAR y modos de StubRunner](sc-contract-stubs.md)
-    - [10.7 Stub Runner en el consumer](sc-contract-stub-runner.md)
-    - [10.8 Contract Messaging — contratos de eventos](sc-contract-messaging.md)
-    - [10.9 Repositorio de contratos y publicación de stubs](sc-contract-stubs-repo.md)
-    - [10.10 Compatibilidad, versionado y troubleshooting de contratos](sc-contract-troubleshooting.md)
-    - [10.11 Soporte GraphQL en Spring Cloud Contract](sc-contract-graphql.md)
-    - [10.12 Testing / Verificación de Spring Cloud Contract](sc-contract-testing.md)
-- 11 Spring Cloud Task
-    - [11.1 Fundamentos de Spring Cloud Task](sc-task-fundamentos.md)
-    - [11.2 TaskRepository y persistencia de ejecuciones](sc-task-repository.md)
-    - [11.3 Configuración y propiedades spring.cloud.task.*](sc-task-configuracion.md)
-    - [11.4 Argumentos y parámetros de lanzamiento](sc-task-arguments.md)
-    - [11.5 Integración con Spring Cloud Data Flow](sc-task-scdf-integration.md)
-    - [11.6 Composed Tasks y Composed Task Runner](sc-task-composed.md)
-    - [11.7 Integración con Spring Batch](sc-task-batch-integration.md)
-    - [11.8 Métricas, observabilidad y trazabilidad](sc-task-observability.md)
-    - [11.9 Testing de Spring Cloud Task](sc-task-testing.md)
-- 12 Spring Cloud Function
-    - [12.1 Modelo de programación funcional: Function, Consumer, Supplier y FunctionCatalog](sc-function-modelo.md)
-    - [12.2 Configuración de funciones y exposición HTTP](sc-function-config.md)
-    - [12.3 Manejo de tipos, inferencia y serialización de payloads](sc-function-tipos.md)
-    - [12.4 Routing dinámico con RoutingFunction y expresiones SpEL](sc-function-routing.md)
-    - 12.5 Despliegue serverless
-        - [12.5.1 Despliegue en AWS Lambda con SpringBootRequestHandler y FunctionInvoker](sc-function-aws.md)
-        - [12.5.2 Despliegue en Azure Functions y Google Cloud Functions](sc-function-cloud.md)
-    - [12.6 Compilación a imagen nativa con GraalVM AOT](sc-function-native.md)
-    - [12.7 Integración con Spring Cloud Stream: binding de funciones a canales](sc-function-stream.md)
-    - [12.8 Puntos de extensión avanzados: FunctionAroundWrapper y FunctionRegistration](sc-function-extension.md)
-    - [12.9 Observabilidad y operación de funciones expuestas](sc-function-operations.md)
-    - [12.10 Testing y verificación de Spring Cloud Function](sc-function-testing.md)
-- 13 Patrones de microservicios distribuidos con Spring Cloud
-    - [13.1 CQRS con Spring Cloud Stream y Gateway](sc-patrones-cqrs.md)
-    - [13.2 Saga de coreografía con Spring Cloud Stream](sc-patrones-saga-coreografia.md)
-    - [13.3 Saga de orquestación con Spring Cloud Stream](sc-patrones-saga-orquestacion.md)
-    - [13.4 Outbox Pattern con Spring Cloud Stream](sc-patrones-outbox.md)
-    - [13.5 Strangler Fig con Spring Cloud Gateway](sc-patrones-strangler.md)
-    - [13.6 API Composition con Spring Cloud Gateway y OpenFeign](sc-patrones-api-composition.md)
-    - [13.7 Sidecar Pattern con Spring Cloud Netflix Sidecar](sc-patrones-sidecar.md)
-    - [13.8 Resiliencia transversal en patrones distribuidos](sc-patrones-resiliencia-transversal.md)
-    - [13.9 Testing de patrones distribuidos con Spring Cloud](sc-patrones-testing.md)
-
-## Tabla resumen
-
-| Nro | Tema                                              | Ficheros hoja | Líneas est./fichero |
-|-----|---------------------------------------------------|:-------------:|:-------------------:|
-|  1  | Spring Cloud Config                               |       9       |       ~250–400      |
-|  2  | Spring Cloud Netflix Eureka                       |      13       |       ~250–380      |
-|  3  | Spring Cloud Gateway                              |      21       |       ~130–490      |
-|  4  | Spring Cloud OpenFeign                            |      13       |       ~250–380      |
-|  5  | Spring Cloud Circuit Breaker / Resilience4j       |      14       |       ~250–420      |
-|  6  | Spring Cloud Stream                               |      13       |       ~250–400      |
-|  7  | Spring Cloud Bus                                  |       9       |       ~250–410      |
-|  8  | Spring Cloud Security                             |      15       |       ~250–420      |
-|  9  | Spring Cloud Kubernetes                           |      12       |       ~250–380      |
-| 10  | Spring Cloud Contract                             |      15       |       ~250–400      |
-| 11  | Spring Cloud Task                                 |       9       |       ~250–380      |
-| 12  | Spring Cloud Function                             |      11       |       ~250–380      |
-| 13  | Patrones de microservicios distribuidos           |       9       |       ~250–420      |
-| **Total** |                                             |   **163**     |   **~41 000 total** |
-
-Nota: los nodos intermedios (sin fichero) no se contabilizan. Total de ficheros .md = 163 nodos hoja.
+5. **¿Hay duplicados de ficheros?**
+   No — cada fichero .md aparece una única vez en el índice (verificado en el paso de VERIFICACIÓN FINAL).
 
 ---
 
-### Desglose por fichero
+## Índice completo
 
-#### Tema 1 — Spring Cloud Config (9 ficheros)
+- 1 Spring Cloud Config
+  - [1.1 Concepto, arquitectura y configuración base del Config Server](sc-config-arquitectura.md)
+  - [1.2 Config Client — bootstrap context y propiedades clave](sc-config-client.md)
+  - 1.3 Backends de configuración
+    - [1.3.1 Backend Git — autenticación, search-paths y etiquetas](sc-config-git-backend.md)
+    - [1.3.2 Backends alternativos — native, Vault, JDBC y composite](sc-config-backends.md)
+  - [1.4 Resolución de configuración — perfiles y overrides](sc-config-resolucion.md)
+  - [1.5 Refresh de configuración en caliente — manual, Bus y webhooks](sc-config-refresh.md)
+  - [1.6 Seguridad del Config Server — autenticación HTTP Basic y cifrado](sc-config-security.md)
+  - [1.7 Operación y alta disponibilidad — fail-fast, retry y Eureka discovery](sc-config-operacion.md)
+  - [1.8 Testing / Verificación de Config Server](sc-config-testing.md)
 
-| Fichero                        | Líneas est. |
-|--------------------------------|:-----------:|
-| sc-config-arquitectura.md      |    ~350     |
-| sc-config-client.md            |    ~300     |
-| sc-config-resolucion.md        |    ~280     |
-| sc-config-git-backend.md       |    ~400     |
-| sc-config-backends.md          |    ~300     |
-| sc-config-refresh.md           |    ~320     |
-| sc-config-security.md          |    ~280     |
-| sc-config-operacion.md         |    ~370     |
-| sc-config-testing.md           |    ~250     |
+- 2 Spring Cloud Netflix / Eureka
+  - [2.1 Arquitectura de Eureka: Server y Client](sc-eureka-arquitectura.md)
+  - [2.2 Configuración del servidor Eureka (standalone)](sc-eureka-server.md)
+  - [2.3 Registro y configuración del cliente Eureka](sc-eureka-cliente.md)
+  - [2.4 Ciclo de vida de instancias: heartbeat y evicción](sc-eureka-lease.md)
+  - [2.5 Self-preservation mode y umbral de renovación](sc-eureka-self-preservation.md)
+  - [2.6 Alta disponibilidad: clúster Eureka peer-aware](sc-eureka-cluster.md)
+  - [2.7 Estados, salud y metadata de instancias](sc-eureka-instancias.md)
+  - [2.8 Discovery Client API: DiscoveryClient y EurekaClient](sc-eureka-descubrimiento.md)
+  - [2.9 REST API de Eureka: endpoints de administración](sc-eureka-api-rest.md)
+  - [2.10 Seguridad en Eureka Server: autenticación básica](sc-eureka-seguridad.md)
+  - [2.11 Integración con Config Server: Discovery First vs Config First](sc-eureka-integracion-config.md)
+  - [2.12 Zonas, regiones y configuración avanzada de Eureka](sc-eureka-zonas.md)
+  - [2.13 Troubleshooting: instancias ghost, registro lento y diagnóstico](sc-eureka-troubleshooting.md)
+  - [2.14 Testing de aplicaciones con Eureka](sc-eureka-testing.md)
 
-#### Tema 2 — Spring Cloud Netflix Eureka (13 ficheros)
+- 3 Spring Cloud OpenFeign
+  - [3.1 Cliente declarativo básico con OpenFeign](sc-feign-cliente-declarativo.md)
+  - 3.2 Configuración del cliente Feign — Java y propiedades
+    - [3.2.1 Configuración por clase Java (FeignClientConfiguration)](sc-feign-configuracion-java.md)
+    - [3.2.2 Configuración por propiedades (spring.cloud.openfeign.client.config.*)](sc-feign-configuracion-propiedades.md)
+  - [3.3 Codecs — Encoder y Decoder en Feign](sc-feign-codecs.md)
+  - 3.4 Logging y manejo de errores en Feign
+    - [3.4.1 Logger.Level y configuración dual de logging](sc-feign-logging.md)
+    - [3.4.2 ErrorDecoder — manejo de errores HTTP](sc-feign-errores.md)
+  - [3.5 Interceptores de petición — RequestInterceptor](sc-feign-interceptores.md)
+  - [3.6 Integración con Eureka y Spring Cloud LoadBalancer](sc-feign-eureka-lb.md)
+  - [3.7 Integración con Resilience4j — Fallback y FallbackFactory](sc-feign-fallback.md)
+  - [3.8 Timeouts y cliente HTTP subyacente](sc-feign-http-client.md)
+  - 3.9 Herencia de interfaces y compresión
+    - [3.9.1 Herencia de interfaces API compartida](sc-feign-herencia.md)
+    - [3.9.2 Compresión de peticiones y respuestas](sc-feign-compresion.md)
+  - [3.10 Testing / Verificación de OpenFeign](sc-feign-testing.md)
 
-| Fichero                           | Líneas est. |
-|-----------------------------------|:-----------:|
-| sc-eureka-arquitectura.md         |    ~350     |
-| sc-eureka-server.md               |    ~300     |
-| sc-eureka-cliente.md              |    ~300     |
-| sc-eureka-instancias.md           |    ~280     |
-| sc-eureka-lease.md                |    ~300     |
-| sc-eureka-self-preservation.md    |    ~250     |
-| sc-eureka-descubrimiento.md       |    ~280     |
-| sc-eureka-api-rest.md             |    ~280     |
-| sc-eureka-cluster.md              |    ~380     |
-| sc-eureka-seguridad.md            |    ~250     |
-| sc-eureka-integracion-config.md   |    ~300     |
-| sc-eureka-troubleshooting.md      |    ~350     |
-| sc-eureka-testing.md              |    ~250     |
+- 4 Spring Cloud Circuit Breaker / Resilience4j
+  - [4.1 Circuit Breaker — Estados y Transiciones](sc-circuitbreaker-estados.md)
+  - [4.2 Circuit Breaker — Configuración completa](sc-circuitbreaker-configuracion.md)
+  - [4.3 Circuit Breaker — Uso con anotaciones y API programática](sc-circuitbreaker-api.md)
+  - [4.4 Retry — Configuración y uso](sc-circuitbreaker-retry.md)
+  - [4.5 Bulkhead — Semaphore y ThreadPool](sc-circuitbreaker-bulkhead.md)
+  - [4.6 RateLimiter y TimeLimiter](sc-circuitbreaker-ratelimiter.md)
+  - [4.7 AOP — Orden de aspectos y fallbackMethod](sc-circuitbreaker-aop.md)
+  - [4.8 Spring Cloud Circuit Breaker — Abstraction Layer](sc-circuitbreaker-sc-abstraction.md)
+  - [4.9 Eventos y Métricas — Observabilidad completa](sc-circuitbreaker-eventos.md)
+  - [4.10 Integración con Feign](sc-circuitbreaker-feign.md)
+  - [4.11 Integración con Spring Cloud Gateway](sc-circuitbreaker-gateway.md)
+  - [4.12 Métricas avanzadas y Health Indicators](sc-circuitbreaker-metricas.md)
+  - [4.13 Testing con Resilience4j](sc-circuitbreaker-testing.md)
 
-#### Tema 3 — Spring Cloud Gateway (21 ficheros)
+- 5 Spring Cloud Gateway
+  - [5.1 Arquitectura y ciclo de vida de Spring Cloud Gateway](sc-gateway-arquitectura.md)
+  - [5.2 Configuración de rutas: YAML, Java DSL y Timeouts](sc-gateway-configuracion-rutas.md)
+  - [5.3 Predicate Factories built-in](sc-gateway-predicate-factories.md)
+  - [5.4 GatewayFilter Factories built-in](sc-gateway-filter-factories-builtin.md)
+  - [5.5 GatewayFilter Factories de resiliencia: CircuitBreaker, Retry y RequestRateLimiter](sc-gateway-filter-factories-resiliencia.md)
+  - [5.6 GlobalFilter: interfaz, orden y filtros built-in](sc-gateway-global-filters.md)
+  - [5.7 Integración con Service Discovery (DiscoveryClientRouteDefinitionLocator)](sc-gateway-discovery-integration.md)
+  - [5.8 CORS en Spring Cloud Gateway](sc-gateway-cors.md)
+  - [5.9 Seguridad y OAuth2: SecurityWebFilterChain y TokenRelay](sc-gateway-seguridad-oauth2.md)
+  - [5.10 Actuator y observabilidad del Gateway](sc-gateway-actuator-observabilidad.md)
+  - [5.11 Extensiones custom: Custom Predicate Factory y Custom GatewayFilter Factory](sc-gateway-custom-extensiones.md)
+  - [5.12 Testing / Verificación de Spring Cloud Gateway](sc-gateway-testing.md)
 
-| Fichero                               | Líneas est. |
-|---------------------------------------|:-----------:|
-| sc-gateway-arquitectura.md            |    ~370     |
-| sc-gateway-rutas.md                   |    ~330     |
-| sc-gateway-predicados.md              |    ~490     |
-| sc-gateway-filtros-request-headers.md |    ~330     |
-| sc-gateway-filtros-path.md            |    ~250     |
-| sc-gateway-filtros-response.md        |    ~420     |
-| sc-gateway-ratelimiting.md            |    ~300     |
-| sc-gateway-circuitbreaker.md          |    ~340     |
-| sc-gateway-retry.md                   |    ~130     |
-| sc-gateway-filtros-seguridad.md       |    ~210     |
-| sc-gateway-globalfilters.md           |    ~400     |
-| sc-gateway-discovery.md               |    ~280     |
-| sc-gateway-timeouts.md                |    ~250     |
-| sc-gateway-cors-tls.md                |    ~350     |
-| sc-gateway-rutas-dinamicas.md         |    ~290     |
-| sc-gateway-websockets.md              |    ~180     |
-| sc-gateway-extension-points.md        |    ~210     |
-| sc-gateway-mvc.md                     |    ~210     |
-| sc-gateway-actuator.md                |    ~300     |
-| sc-gateway-error-handling.md          |    ~180     |
-| sc-gateway-testing.md                 |    ~250     |
+- 6 Spring Cloud Stream
+  - [6.1 Spring Cloud Stream — Setup y dependencias](sc-stream-setup.md)
+  - [6.2 Spring Cloud Stream — Modelo de programación funcional](sc-stream-modelo-funcional.md)
+  - [6.3 Spring Cloud Stream — Configuración de bindings](sc-stream-bindings-config.md)
+  - [6.4 Spring Cloud Stream — Binder abstraction](sc-stream-binder-abstraction.md)
+  - [6.5 Spring Cloud Stream — Kafka binder: configuración completa](sc-stream-kafka-binder.md)
+  - [6.6 Spring Cloud Stream — RabbitMQ binder: configuración completa](sc-stream-rabbit-binder.md)
+  - [6.7 Spring Cloud Stream — Consumer Groups y competing consumers](sc-stream-consumer-groups.md)
+  - [6.8 Spring Cloud Stream — Particionado y afinidad de mensajes](sc-stream-particionado.md)
+  - [6.9 Spring Cloud Stream — Error handling, reintentos y DLQ](sc-stream-error-handling.md)
+  - [6.10 Spring Cloud Stream — Serialización y contentType](sc-stream-serializacion.md)
+  - [6.11 Spring Cloud Stream — Integración interna con Spring Integration](sc-stream-integracion-spring-integration.md)
+  - [6.12 Spring Cloud Stream — Actuator y operación de bindings](sc-stream-actuator.md)
+  - [6.13 Spring Cloud Stream — Escenarios y preguntas de examen](sc-stream-escenarios-examen.md)
+  - [6.14 Spring Cloud Stream — Testing con TestChannelBinder](sc-stream-testing.md)
 
-#### Tema 4 — Spring Cloud OpenFeign (13 ficheros)
+- 7 Spring Cloud Bus
+  - [7.1 Spring Cloud Bus — Arquitectura y propósito](sc-bus-arquitectura.md)
+  - [7.2 Spring Cloud Bus — Setup y auto-configuración](sc-bus-setup.md)
+  - [7.3 Spring Cloud Bus — Refresh distribuido de configuración](sc-bus-refresh-distribuido.md)
+  - [7.4 Spring Cloud Bus — Eventos personalizados con RemoteApplicationEvent](sc-bus-eventos-personalizados.md)
+  - [7.5 Spring Cloud Bus — Configuración de brokers RabbitMQ y Kafka](sc-bus-broker-config.md)
+  - [7.6 Spring Cloud Bus — Trazabilidad y destination pattern](sc-bus-observabilidad.md)
+  - [7.7 Spring Cloud Bus — Seguridad de endpoints del Bus](sc-bus-seguridad-endpoint.md)
+  - [7.8 Spring Cloud Bus — Endpoint busenv y cambio en caliente](sc-bus-busenv.md)
+  - [7.9 Spring Cloud Bus — Testing y Troubleshooting](sc-bus-testing.md)
 
-| Fichero                                  | Líneas est. |
-|------------------------------------------|:-----------:|
-| sc-feign-setup.md                        |    ~300     |
-| sc-feign-cliente-declarativo.md          |    ~320     |
-| sc-feign-configuracion-java.md           |    ~380     |
-| sc-feign-configuracion-propiedades.md    |    ~300     |
-| sc-feign-codecs.md                       |    ~350     |
-| sc-feign-interceptores.md                |    ~300     |
-| sc-feign-logging.md                      |    ~250     |
-| sc-feign-errores.md                      |    ~300     |
-| sc-feign-fallback.md                     |    ~320     |
-| sc-feign-retryer.md                      |    ~280     |
-| sc-feign-cliente-http.md                 |    ~350     |
-| sc-feign-herencia.md                     |    ~260     |
-| sc-feign-testing.md                      |    ~280     |
+- 8 Spring Cloud Security
+  - [8.1 OAuth2 en microservicios — Roles y flujos de autorización](sc-security-oauth2-conceptos-flujos.md)
+  - [8.2 Spring Authorization Server — Configuración y registro de clientes](sc-security-authorization-server.md)
+  - [8.3 Resource Server — Validación de JWT en microservicios](sc-security-resource-server.md)
+  - [8.4 OAuth2 Client — Gestión de tokens de salida entre servicios](sc-security-oauth2-client.md)
+  - [8.5 JWT — Estructura, claims estándar y conversión a Spring Security](sc-security-jwt-claims.md)
+  - [8.6 Token Relay en Spring Cloud Gateway — Propagación del token de usuario](sc-security-token-relay-gateway.md)
+  - [8.7 Propagación de tokens entre microservicios — Feign, WebClient y RestTemplate](sc-security-propagacion-servicios.md)
+  - [8.8 mTLS y seguridad avanzada en Spring Cloud Gateway](sc-security-mtls.md)
+  - [8.9 Testing de seguridad OAuth2 — JWT mocks y Authorization Server simulado](sc-security-testing.md)
 
-#### Tema 5 — Spring Cloud Circuit Breaker / Resilience4j (14 ficheros)
+- 9 Spring Cloud Kubernetes
+  - [9.1 Spring Cloud Kubernetes — Motivación y Arquitectura](sc-kubernetes-arquitectura.md)
+  - [9.2 Spring Cloud Kubernetes — ConfigMap como PropertySource](sc-kubernetes-configmap.md)
+  - [9.3 Spring Cloud Kubernetes — Secrets como PropertySource](sc-kubernetes-secrets.md)
+  - [9.4 Spring Cloud Kubernetes — Service Discovery con KubernetesDiscoveryClient](sc-kubernetes-discovery.md)
+  - [9.5 Spring Cloud Kubernetes — Starters: Fabric8 vs Cliente Oficial](sc-kubernetes-starters.md)
+  - [9.6 Spring Cloud Kubernetes — Health Indicators y Actuator](sc-kubernetes-health.md)
+  - [9.7 Spring Cloud Kubernetes — Reload de Configuración](sc-kubernetes-reload.md)
+  - [9.8 Spring Cloud Kubernetes — Leader Election](sc-kubernetes-leader.md)
+  - [9.9 Spring Cloud Kubernetes — Integración con Istio](sc-kubernetes-istio.md)
+  - [9.10 Spring Cloud Kubernetes — Testing](sc-kubernetes-testing.md)
 
-| Fichero                            | Líneas est. |
-|------------------------------------|:-----------:|
-| sc-circuitbreaker-estados.md       |    ~350     |
-| sc-circuitbreaker-setup.md         |    ~300     |
-| sc-circuitbreaker-api.md           |    ~350     |
-| sc-circuitbreaker-config.md        |    ~420     |
-| sc-circuitbreaker-fallback.md      |    ~320     |
-| sc-circuitbreaker-retry.md         |    ~350     |
-| sc-circuitbreaker-bulkhead.md      |    ~380     |
-| sc-circuitbreaker-ratelimiter.md   |    ~330     |
-| sc-circuitbreaker-timelimiter.md   |    ~280     |
-| sc-circuitbreaker-aop.md           |    ~400     |
-| sc-circuitbreaker-metricas.md      |    ~320     |
-| sc-circuitbreaker-eventos.md       |    ~280     |
-| sc-circuitbreaker-feign.md         |    ~350     |
-| sc-circuitbreaker-testing.md       |    ~280     |
+- 10 Spring Cloud Contract
+  - [10.1 Spring Cloud Contract — Fundamentos CDC](sc-contract-fundamentos.md)
+  - [10.2 Spring Cloud Contract — DSL Groovy y YAML](sc-contract-dsl.md)
+  - [10.3 Spring Cloud Contract — Contratos HTTP](sc-contract-http.md)
+  - [10.4 Spring Cloud Contract — Contratos Mensajería](sc-contract-mensajeria.md)
+  - [10.5 Spring Cloud Contract — Plugin Maven y Gradle](sc-contract-plugin-config.md)
+  - [10.6 Spring Cloud Contract — Clases Base Productor](sc-contract-base-class.md)
+  - [10.7 Spring Cloud Contract — Stub Runner](sc-contract-stub-runner.md)
+  - [10.8 Spring Cloud Contract — Repositorio de Stubs](sc-contract-stubs-repo.md)
+  - [10.9 Spring Cloud Contract — Matchers Personalizados](sc-contract-matchers.md)
+  - [10.10 Spring Cloud Contract — Contratos GraphQL](sc-contract-graphql.md)
+  - [10.11 Spring Cloud Contract — Workflow CI/CD](sc-contract-workflow.md)
+  - [10.12 Spring Cloud Contract — Troubleshooting](sc-contract-troubleshooting.md)
 
-#### Tema 6 — Spring Cloud Stream (13 ficheros)
+- 11 Spring Cloud Task
+  - [11.1 Spring Cloud Task — Fundamentos y Ciclo de Vida](sc-task-fundamentos.md)
+  - [11.2 Spring Cloud Task — TaskExecution y Persistencia en Base de Datos](sc-task-execution-bd.md)
+  - [11.3 Spring Cloud Task — Configuración y Datasource](sc-task-configuracion.md)
+  - [11.4 Spring Cloud Task — ApplicationRunner, CommandLineRunner y Argumentos](sc-task-runners.md)
+  - [11.5 Spring Cloud Task — Integración con Spring Batch](sc-task-batch.md)
+  - [11.6 Spring Cloud Task — Integración con Spring Cloud Data Flow](sc-task-data-flow.md)
+  - [11.7 Spring Cloud Task — Task Events y TaskExecutionListener](sc-task-events.md)
+  - [11.8 Spring Cloud Task — Composed Tasks](sc-task-composed.md)
+  - [11.9 Spring Cloud Task — Testing](sc-task-testing.md)
+  - [11.10 Spring Cloud Task — Troubleshooting](sc-task-troubleshooting.md)
 
-| Fichero                             | Líneas est. |
-|-------------------------------------|:-----------:|
-| sc-stream-modelo-funcional.md       |    ~380     |
-| sc-stream-bindings.md               |    ~350     |
-| sc-stream-binder-kafka.md           |    ~400     |
-| sc-stream-binder-kafka-streams.md   |    ~400     |
-| sc-stream-binder-rabbit.md          |    ~350     |
-| sc-stream-serdes.md                 |    ~300     |
-| sc-stream-particionado.md           |    ~280     |
-| sc-stream-error-handling.md         |    ~350     |
-| sc-stream-polling-batch.md          |    ~280     |
-| sc-stream-streambridge.md           |    ~300     |
-| sc-stream-multi-binder.md           |    ~280     |
-| sc-stream-actuator.md               |    ~250     |
-| sc-stream-testing.md                |    ~280     |
+- 12 Spring Cloud Function
+  - [12.1 Spring Cloud Function — Modelo de programación funcional](sc-function-modelo-programacion.md)
+  - [12.2 Spring Cloud Function — FunctionCatalog](sc-function-catalog.md)
+  - [12.3 Spring Cloud Function — Adaptador HTTP](sc-function-adaptador-http.md)
+  - [12.4 Spring Cloud Function — Adaptadores cloud (AWS / Azure / GCP)](sc-function-adaptadores-cloud.md)
+  - [12.5 Spring Cloud Function — Composición de funciones](sc-function-composicion.md)
+  - [12.6 Spring Cloud Function — Message<T> y MessageHeaders](sc-function-message-headers.md)
+  - [12.7 Spring Cloud Function — Routing dinámico](sc-function-routing.md)
+  - [12.8 Spring Cloud Function — Integración con Spring Cloud Stream](sc-function-integracion-stream.md)
+  - [12.9 Spring Cloud Function — Tipos reactivos (Flux/Mono)](sc-function-tipos-reactivos.md)
+  - [12.10 Spring Cloud Function — Testing y packaging](sc-function-testing.md)
 
-#### Tema 7 — Spring Cloud Bus (9 ficheros)
+- 13 Patrones de microservicios
+  - [13.1 Descomposición por capacidades de negocio y subdominios DDD](sc-patrones-descomposicion-dominio.md)
+  - [13.2 Comunicación síncrona: API Gateway y Backend for Frontend](sc-patrones-comunicacion-sincrona.md)
+  - [13.3 Comunicación asíncrona y eventos: EDA, Choreography vs Orchestration, Outbox Pattern](sc-patrones-comunicacion-asincrona-eventos.md)
+  - [13.4 Patrón Saga: choreography, orchestration, compensación e idempotencia](sc-patrones-saga.md)
+  - [13.5 CQRS y Event Sourcing: patrón ES independiente, separación de modelos, proyecciones y consistencia eventual](sc-patrones-cqrs-event-sourcing.md)
+  - [13.6 API Composition y Aggregator: llamadas paralelas reactivas y fallos parciales](sc-patrones-api-composition-aggregator.md)
+  - [13.7 Patrones de resiliencia como diseño: Circuit Breaker, Bulkhead, Retry, Rate Limiting](sc-patrones-resilience-design-patterns.md)
+  - [13.8 Observabilidad distribuida: trazas, métricas, logs y health checks](sc-patrones-observabilidad-distribuida.md)
+  - [13.9 Patrones de seguridad: Access Token, API Gateway Auth y service-to-service auth](sc-patrones-seguridad-patrones.md)
+  - [13.10 Patrones de despliegue: Strangler Fig, Sidecar, ACL y Database per Service](sc-patrones-deployment-patterns.md)
+  - [13.11 Antipatrones: Distributed Monolith, Chatty Services, Shared Database, Mega-Service y Two-Phase Commit](sc-patrones-antipatrones.md)
+  - [13.12 Testing de microservicios: Contract Testing, Component Tests, Chaos Engineering y estrategia E2E](sc-patrones-testing.md)
 
-| Fichero                            | Líneas est. |
-|------------------------------------|:-----------:|
-| sc-bus-arquitectura.md             |    ~300     |
-| sc-bus-setup.md                    |    ~280     |
-| sc-bus-broker-config.md            |    ~300     |
-| sc-bus-refresh-distribuido.md      |    ~410     |
-| sc-bus-eventos-personalizados.md   |    ~350     |
-| sc-bus-seguridad-endpoint.md       |    ~250     |
-| sc-bus-observabilidad.md           |    ~280     |
-| sc-bus-troubleshooting.md          |    ~350     |
-| sc-bus-testing.md                  |    ~280     |
+---
 
-#### Tema 8 — Spring Cloud Security (15 ficheros)
+## Tabla resumen
 
-| Fichero                                      | Líneas est. |
-|----------------------------------------------|:-----------:|
-| sc-security-oauth2-fundamentals.md           |    ~380     |
-| sc-security-resource-server-jwt.md           |    ~400     |
-| sc-security-resource-server-advanced.md      |    ~420     |
-| sc-security-oauth2-client.md                 |    ~380     |
-| sc-security-oauth2-client-advanced.md        |    ~380     |
-| sc-security-token-relay.md                   |    ~300     |
-| sc-security-authorization.md                 |    ~350     |
-| sc-security-propagation.md                   |    ~320     |
-| sc-security-propagation-async.md             |    ~320     |
-| sc-security-authorization-server.md          |    ~380     |
-| sc-security-authorization-server-advanced.md |    ~400     |
-| sc-security-reactive.md                      |    ~350     |
-| sc-security-cors-csrf.md                     |    ~300     |
-| sc-security-production.md                    |    ~350     |
-| sc-security-testing.md                       |    ~280     |
-
-#### Tema 9 — Spring Cloud Kubernetes (12 ficheros)
-
-| Fichero                            | Líneas est. |
-|------------------------------------|:-----------:|
-| sc-kubernetes-setup.md             |    ~300     |
-| sc-kubernetes-configmap.md         |    ~320     |
-| sc-kubernetes-configmap-reload.md  |    ~300     |
-| sc-kubernetes-secrets.md           |    ~280     |
-| sc-kubernetes-namespace-rbac.md    |    ~350     |
-| sc-kubernetes-discovery.md         |    ~320     |
-| sc-kubernetes-discovery-reactive.md|    ~300     |
-| sc-kubernetes-loadbalancer.md      |    ~300     |
-| sc-kubernetes-client.md            |    ~380     |
-| sc-kubernetes-health.md            |    ~260     |
-| sc-kubernetes-leader.md            |    ~300     |
-| sc-kubernetes-testing.md           |    ~280     |
-
-#### Tema 10 — Spring Cloud Contract (15 ficheros)
-
-| Fichero                          | Líneas est. |
-|----------------------------------|:-----------:|
-| sc-contract-fundamentos.md       |    ~350     |
-| sc-contract-workflow.md          |    ~380     |
-| sc-contract-plugin.md            |    ~320     |
-| sc-contract-plugin-config.md     |    ~300     |
-| sc-contract-dsl.md               |    ~400     |
-| sc-contract-matchers.md          |    ~350     |
-| sc-contract-custom-matchers.md   |    ~320     |
-| sc-contract-producer-tests.md    |    ~350     |
-| sc-contract-stubs.md             |    ~320     |
-| sc-contract-stub-runner.md       |    ~360     |
-| sc-contract-messaging.md         |    ~350     |
-| sc-contract-stubs-repo.md        |    ~300     |
-| sc-contract-troubleshooting.md   |    ~320     |
-| sc-contract-graphql.md           |    ~280     |
-| sc-contract-testing.md           |    ~280     |
-
-#### Tema 11 — Spring Cloud Task (9 ficheros)
-
-| Fichero                       | Líneas est. |
-|-------------------------------|:-----------:|
-| sc-task-fundamentos.md        |    ~320     |
-| sc-task-repository.md         |    ~380     |
-| sc-task-configuracion.md      |    ~300     |
-| sc-task-arguments.md          |    ~280     |
-| sc-task-scdf-integration.md   |    ~380     |
-| sc-task-composed.md           |    ~350     |
-| sc-task-batch-integration.md  |    ~350     |
-| sc-task-observability.md      |    ~300     |
-| sc-task-testing.md            |    ~250     |
-
-#### Tema 12 — Spring Cloud Function (11 ficheros)
-
-| Fichero                    | Líneas est. |
-|----------------------------|:-----------:|
-| sc-function-modelo.md      |    ~380     |
-| sc-function-config.md      |    ~320     |
-| sc-function-tipos.md       |    ~350     |
-| sc-function-routing.md     |    ~300     |
-| sc-function-aws.md         |    ~350     |
-| sc-function-cloud.md       |    ~320     |
-| sc-function-native.md      |    ~350     |
-| sc-function-stream.md      |    ~350     |
-| sc-function-extension.md   |    ~300     |
-| sc-function-operations.md  |    ~280     |
-| sc-function-testing.md     |    ~280     |
-
-#### Tema 13 — Patrones de microservicios distribuidos (9 ficheros)
-
-| Fichero                                 | Líneas est. |
-|-----------------------------------------|:-----------:|
-| sc-patrones-cqrs.md                     |    ~420     |
-| sc-patrones-saga-coreografia.md         |    ~370     |
-| sc-patrones-saga-orquestacion.md        |    ~350     |
-| sc-patrones-outbox.md                   |    ~350     |
-| sc-patrones-strangler.md                |    ~300     |
-| sc-patrones-api-composition.md          |    ~380     |
-| sc-patrones-sidecar.md                  |    ~300     |
-| sc-patrones-resiliencia-transversal.md  |    ~380     |
-| sc-patrones-testing.md                  |    ~320     |
+| Nro | Módulo | Ficheros hoja | Líneas est./fichero |
+|-----|--------|:-------------:|:-------------------:|
+| 1 | Spring Cloud Config | 9 | ~80 |
+| 2 | Spring Cloud Netflix / Eureka | 14 | ~70 |
+| 3 | Spring Cloud OpenFeign | 12 | ~70 |
+| 4 | Spring Cloud Circuit Breaker / Resilience4j | 13 | ~80 |
+| 5 | Spring Cloud Gateway | 12 | ~90 |
+| 6 | Spring Cloud Stream | 14 | ~80 |
+| 7 | Spring Cloud Bus | 9 | ~70 |
+| 8 | Spring Cloud Security | 9 | ~80 |
+| 9 | Spring Cloud Kubernetes | 10 | ~70 |
+| 10 | Spring Cloud Contract | 12 | ~75 |
+| 11 | Spring Cloud Task | 10 | ~70 |
+| 12 | Spring Cloud Function | 10 | ~70 |
+| 13 | Patrones de microservicios | 12 | ~90 |
+| — | **TOTAL** | **147** | — |

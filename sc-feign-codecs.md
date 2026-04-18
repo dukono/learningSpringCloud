@@ -1,236 +1,232 @@
-# 4.5 Codecs — Encoder, Decoder, FormEncoder, multipart y ErrorDecoder
+# 3.3 Codecs — Encoder y Decoder en Feign
 
-<- [4.4 Configuración por propiedades YAML](sc-feign-configuracion-propiedades.md) | [Índice](README.md) | [4.6 Interceptores y observabilidad](sc-feign-interceptores.md) ->
+← [3.2.2 Configuración por propiedades](sc-feign-configuracion-propiedades.md) | [Índice](README.md) | [3.4.1 Logger.Level y configuración dual de logging](sc-feign-logging.md) →
 
 ---
 
 ## Introducción
 
-Los codecs de Feign son los responsables de transformar los objetos Java en bytes para la petición saliente (Encoder) y de convertir los bytes de la respuesta en objetos Java (Decoder). El `ErrorDecoder` se ocupa de un caso especial: las respuestas con código HTTP de error (4xx/5xx), que Feign trata como una ruta de procesamiento separada del Decoder normal.
+Los codecs de Feign son las piezas responsables de transformar objetos Java en cuerpos de petición HTTP (Encoder) y cuerpos de respuesta HTTP de vuelta en objetos Java (Decoder). Sin un Encoder apropiado, Feign no sabe cómo serializar un `@RequestBody`; sin un Decoder, no puede convertir la respuesta JSON en un record o POJO. Spring Cloud OpenFeign auto-configura `SpringEncoder` y `SpringDecoder` que delegan en los mismos `HttpMessageConverter` de Spring MVC, por lo que en la mayoría de los casos no se necesita configuración adicional. Sin embargo, existen escenarios específicos — formularios URL-encoded, acceso a headers de respuesta, respuestas binarias — que requieren codecs adicionales o personalizados.
 
-Los codecs por defecto (`SpringEncoder` y `SpringDecoder`) delegan en los `HttpMessageConverter` de Spring MVC y cubren el 90% de los casos de uso: JSON con Jackson, XML con JAXB. El problema aparece cuando el servicio remoto devuelve un formato no estándar, cuando hay que enviar formularios HTML (`application/x-www-form-urlencoded`), cuando el payload es un fichero binario (multipart), o cuando una respuesta con cuerpo JSON representa un error de negocio que debe mapearse a una excepción de dominio en lugar de a `FeignException`.
+## Flujo de codificación y decodificación
 
-> [ADVERTENCIA] Los codecs de Feign son distintos de los codecs de Spring WebFlux (`CodecConfigurer`). No se comparten. Configurar un `HttpMessageConverter` en `WebMvcConfigurer` no afecta a los clientes Feign; hay que registrar el `Encoder`/`Decoder` explícitamente en la configuración de Feign.
-
-> [ADVERTENCIA] `ErrorDecoder` y `Decoder` cubren casos mutuamente excluyentes: `Decoder` procesa respuestas 2xx (y 404 si `decode404=true`); `ErrorDecoder` procesa el resto de errores HTTP. Confundirlos es un error frecuente: si se intenta manejar un 404 en el `ErrorDecoder` pero `decode404=true` está activo, el 404 nunca llega al `ErrorDecoder`.
-
----
-
-## Diagrama: flujo de procesamiento de respuesta en Feign
-
-El siguiente diagrama muestra en qué punto del pipeline de Feign interviene cada codec.
+Cada petición Feign pasa por el Encoder antes de enviarse y cada respuesta pasa por el Decoder al recibirla. El proceso es sincrónico y se integra con el contrato de Spring MVC.
 
 ```
- Respuesta HTTP del servicio remoto
-         │
-         ▼
- ┌─────────────────────────────────────┐
- │  ¿Código HTTP de respuesta?         │
- │                                     │
- │  2xx ──────────────────────────────►│ Decoder (SpringDecoder por defecto)
- │                                     │   → deserializa body → objeto Java
- │  404 con decode404=true ───────────►│ Decoder (mismo flujo)
- │                                     │
- │  404 con decode404=false ──────────►│ ErrorDecoder
- │  4xx (excepto 404) ────────────────►│ ErrorDecoder
- │  5xx ──────────────────────────────►│ ErrorDecoder
- └─────────────────────────────────────┘
-         │
-         ▼ ErrorDecoder
- ¿Tiene Retry-After header?
-   Sí → lanza RetryableException (Feign puede reintentar)
-   No → lanza Exception de dominio o FeignException
+  Método Feign llamado con objeto Java
+              │
+              ▼
+    ┌─────────────────┐
+    │    Encoder      │  @RequestBody → bytes HTTP
+    │  (serializa)    │
+    └────────┬────────┘
+             │ HTTP Request
+             ▼
+         Servicio remoto
+             │
+             │ HTTP Response (2xx)
+             ▼
+    ┌─────────────────┐
+    │    Decoder      │  bytes HTTP → objeto Java
+    │  (deserializa)  │
+    └────────┬────────┘
+             │
+             ▼         (status >= 300 y != redirect)
+    ┌─────────────────┐
+    │  ErrorDecoder   │  bytes HTTP → excepción
+    └─────────────────┘
 ```
-
----
 
 ## Ejemplo central
 
-El siguiente ejemplo muestra cuatro escenarios: Encoder/Decoder por defecto, `FormEncoder` para formularios, `SpringFormEncoder` para multipart, y `ErrorDecoder` personalizado que convierte respuestas de error en excepciones de dominio.
-
-**Dependencias adicionales necesarias para FormEncoder:**
-
-```xml
-<dependency>
-    <groupId>io.github.openfeign.form</groupId>
-    <artifactId>feign-form</artifactId>
-    <!-- La versión la gestiona el BOM de Spring Cloud -->
-</dependency>
-<dependency>
-    <groupId>io.github.openfeign.form</groupId>
-    <artifactId>feign-form-spring</artifactId>
-</dependency>
-```
-
-**Configuración de Feign con todos los codecs personalizados:**
+El siguiente ejemplo ilustra los casos de uso principales de cada codec. Muestra cómo registrar `FormEncoder` para formularios, `ResponseEntityDecoder` para acceder a headers, y `ByteArrayDecoder` para respuestas binarias, todos en la misma configuración Java de Feign.
 
 ```java
-package com.example.orderservice.config;
+// build.gradle — dependencias necesarias
+// implementation 'org.springframework.cloud:spring-cloud-starter-openfeign'
+// Para FormEncoder (feign-form):
+// implementation 'io.github.openfeign.form:feign-form-spring:4.0.0'
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+package com.example.demo.feign.config;
+
 import feign.codec.Decoder;
 import feign.codec.Encoder;
-import feign.codec.ErrorDecoder;
 import feign.form.spring.SpringFormEncoder;
 import org.springframework.beans.factory.ObjectFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.http.HttpMessageConverters;
+import org.springframework.cloud.openfeign.support.ResponseEntityDecoder;
 import org.springframework.cloud.openfeign.support.SpringDecoder;
 import org.springframework.cloud.openfeign.support.SpringEncoder;
 import org.springframework.context.annotation.Bean;
-import org.springframework.http.HttpStatus;
 
-public class CatalogFeignConfig {
+// Configuración para upload-service que necesita FormEncoder y ResponseEntityDecoder
+// Sin @Configuration para evitar que sea detectada por component scan raíz
+public class UploadFeignConfig {
 
-    /**
-     * SpringFormEncoder delega en SpringEncoder para tipos no-form.
-     * Permite que el mismo cliente envíe tanto JSON como multipart/form-data.
-     */
+    @Autowired
+    private ObjectFactory<HttpMessageConverters> messageConverters;
+
+    // FormEncoder: necesario para application/x-www-form-urlencoded y multipart/form-data
+    // SpringEncoder por sí solo NO soporta envío de formularios
     @Bean
-    public Encoder feignFormEncoder(ObjectFactory<HttpMessageConverters> converters) {
-        return new SpringFormEncoder(new SpringEncoder(converters));
+    public Encoder feignFormEncoder() {
+        return new SpringFormEncoder(new SpringEncoder(messageConverters));
     }
 
-    /**
-     * Decoder personalizado: usa el ObjectMapper de la aplicación para
-     * deserializar campos con tipos polimórficos o fechas en formato ISO no estándar.
-     */
+    // ResponseEntityDecoder: envuelve SpringDecoder permitiendo acceder a headers de respuesta
+    // El tipo de retorno del método Feign debe ser ResponseEntity<T>
     @Bean
-    public Decoder feignDecoder(ObjectFactory<HttpMessageConverters> converters) {
-        // SpringDecoder ya usa los HttpMessageConverter registrados en la app,
-        // incluyendo el ObjectMapper configurado con los módulos Jackson necesarios.
-        return new SpringDecoder(converters);
-    }
-
-    /**
-     * ErrorDecoder personalizado: convierte códigos HTTP de error en excepciones de dominio.
-     */
-    @Bean
-    public ErrorDecoder catalogErrorDecoder() {
-        return new CatalogErrorDecoder();
+    public Decoder feignDecoder() {
+        return new ResponseEntityDecoder(new SpringDecoder(messageConverters));
     }
 }
 ```
 
-**CatalogErrorDecoder.java — implementación del ErrorDecoder:**
-
 ```java
-package com.example.orderservice.config;
+// Cliente Feign que usa FormEncoder y ResponseEntityDecoder
+package com.example.demo.clients;
 
-import com.example.orderservice.exception.ProductNotFoundException;
-import com.example.orderservice.exception.CatalogServiceException;
-import feign.Response;
-import feign.codec.ErrorDecoder;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-
-public class CatalogErrorDecoder implements ErrorDecoder {
-
-    private static final Logger log = LoggerFactory.getLogger(CatalogErrorDecoder.class);
-    private final ErrorDecoder defaultDecoder = new Default();
-
-    @Override
-    public Exception decode(String methodKey, Response response) {
-        String body = extractBody(response);
-
-        return switch (response.status()) {
-            case 404 -> new ProductNotFoundException(
-                    "Producto no encontrado. Método: " + methodKey + ". Body: " + body
-            );
-            case 409 -> new CatalogServiceException(
-                    "Conflicto en catálogo. Método: " + methodKey + ". Detalle: " + body
-            );
-            case 503 -> {
-                // 503 es retryable: Feign lanzará RetryableException si hay Retryer configurado
-                log.warn("Catalog-service no disponible (503). Método: {}", methodKey);
-                yield defaultDecoder.decode(methodKey, response);
-            }
-            default -> {
-                log.error("Error inesperado desde catalog-service. Status: {}, Método: {}",
-                        response.status(), methodKey);
-                yield defaultDecoder.decode(methodKey, response);
-            }
-        };
-    }
-
-    private String extractBody(Response response) {
-        if (response.body() == null) return "[sin cuerpo]";
-        try {
-            return new String(response.body().asInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        } catch (IOException e) {
-            return "[error leyendo cuerpo]";
-        }
-    }
-}
-```
-
-**Ejemplo de método multipart en la interfaz Feign:**
-
-```java
-package com.example.orderservice.client;
-
-import com.example.orderservice.config.CatalogFeignConfig;
+import com.example.demo.feign.config.UploadFeignConfig;
+import com.example.demo.dto.UploadResponse;
+import com.example.demo.dto.UserFormRequest;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.multipart.MultipartFile;
 
 @FeignClient(
-        name          = "catalog-service",
-        contextId     = "catalogMedia",
-        configuration = CatalogFeignConfig.class
+    name = "upload-service",
+    configuration = UploadFeignConfig.class
 )
-public interface CatalogMediaClient {
+public interface UploadClient {
 
-    /**
-     * Sube una imagen de producto como multipart/form-data.
-     * Requiere SpringFormEncoder en la configuración del cliente.
-     */
+    // Formulario URL-encoded — requiere SpringFormEncoder
+    // @RequestBody con MediaType.APPLICATION_FORM_URLENCODED
     @PostMapping(
-            value    = "/api/products/images",
-            consumes = MediaType.MULTIPART_FORM_DATA_VALUE
+        value = "/users/register",
+        consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE
     )
-    void uploadProductImage(
-            @RequestPart("productId") String productId,
-            @RequestPart("image")     MultipartFile image
+    ResponseEntity<UploadResponse> registerUser(@RequestBody UserFormRequest form);
+
+    // Multipart file upload — requiere SpringFormEncoder
+    @PostMapping(
+        value = "/files/upload",
+        consumes = MediaType.MULTIPART_FORM_DATA_VALUE
+    )
+    ResponseEntity<UploadResponse> uploadFile(
+        @RequestPart("file") MultipartFile file,
+        @RequestPart("description") String description
     );
 }
 ```
 
----
+```java
+// DTO para formulario URL-encoded — los campos se mapean como parámetros de form
+package com.example.demo.dto;
 
-## Tabla de elementos clave
+public record UserFormRequest(String username, String email, String password) {}
+```
 
-Codecs disponibles y sus casos de uso.
+```java
+// Ejemplo de acceso a headers desde ResponseEntity
+package com.example.demo.service;
 
-| Codec / Clase | Tipo | Cuándo usar |
+import com.example.demo.clients.UploadClient;
+import com.example.demo.dto.UploadResponse;
+import com.example.demo.dto.UserFormRequest;
+import org.springframework.http.ResponseEntity;
+import org.springframework.stereotype.Service;
+
+@Service
+public class RegistrationService {
+
+    private final UploadClient uploadClient;
+
+    public RegistrationService(UploadClient uploadClient) {
+        this.uploadClient = uploadClient;
+    }
+
+    public String registerAndGetLocation(String username, String email, String pwd) {
+        UserFormRequest form = new UserFormRequest(username, email, pwd);
+        ResponseEntity<UploadResponse> response = uploadClient.registerUser(form);
+
+        // Con ResponseEntityDecoder podemos acceder a headers de respuesta
+        String location = response.getHeaders().getFirst("Location");
+        int statusCode = response.getStatusCode().value();
+
+        return "Registrado en: " + location + " [HTTP " + statusCode + "]";
+    }
+}
+```
+
+```java
+// Configuración para acceso a recursos binarios con ByteArrayDecoder
+package com.example.demo.feign.config;
+
+import feign.codec.Decoder;
+import org.springframework.context.annotation.Bean;
+
+public class BinaryFeignConfig {
+
+    // ByteArrayDecoder: devuelve byte[] directamente sin deserialización adicional
+    // Útil para descargar archivos, imágenes, PDFs
+    @Bean
+    public Decoder binaryDecoder() {
+        return (response, type) -> {
+            if (type == byte[].class) {
+                return response.body().asInputStream().readAllBytes();
+            }
+            // Fallback al decoder estándar para otros tipos
+            return new feign.codec.StringDecoder().decode(response, type);
+        };
+    }
+}
+```
+
+## Tabla de codecs disponibles
+
+Spring Cloud OpenFeign incluye los siguientes codecs en su módulo `spring-cloud-openfeign-core`:
+
+| Codec | Tipo | Cuándo usar |
 |---|---|---|
-| `SpringEncoder` | `Encoder` | Default; serializa con `HttpMessageConverter` de Spring (Jackson JSON, etc.) |
-| `SpringDecoder` | `Decoder` | Default; deserializa con `HttpMessageConverter` de Spring |
-| `SpringFormEncoder` | `Encoder` | Envío de `application/x-www-form-urlencoded` o `multipart/form-data` |
-| `JacksonEncoder` | `Encoder` | Serialización Jackson sin contexto Spring MVC |
-| `JacksonDecoder` | `Decoder` | Deserialización Jackson sin contexto Spring MVC |
-| `GsonEncoder` / `GsonDecoder` | `Encoder`/`Decoder` | Proyectos que usan Gson en lugar de Jackson |
-| `ErrorDecoder.Default` | `ErrorDecoder` | Default; convierte errores HTTP en `FeignException` |
-| `ErrorDecoder` (custom) | `ErrorDecoder` | Convertir 4xx/5xx en excepciones de dominio específicas |
-
----
+| `SpringEncoder` | Encoder | Default; usa `HttpMessageConverter` de Spring MVC para JSON, XML, etc. |
+| `SpringDecoder` | Decoder | Default; usa `HttpMessageConverter` para deserializar respuesta |
+| `JacksonEncoder` | Encoder | Cuando se quiere Jackson directamente sin pasar por Spring MVC converters |
+| `JacksonDecoder` | Decoder | Ídem para decodificación directa con Jackson |
+| `SpringFormEncoder` | Encoder | **Obligatorio** para `application/x-www-form-urlencoded` y `multipart/form-data` |
+| `ResponseEntityDecoder` | Decoder | Cuando el método Feign retorna `ResponseEntity<T>` y se necesitan los headers |
+| `ByteArrayDecoder` | Decoder | Para respuestas binarias (`byte[]`, descargas de archivos) |
+| `StringDecoder` | Decoder | Cuando el tipo de retorno es `String` y se quiere el cuerpo raw |
 
 ## Buenas y malas prácticas
 
-**Hacer:**
-- Leer el cuerpo de la respuesta en `ErrorDecoder` antes de cerrar el objeto `Response`. El cuerpo de Feign es un `InputStream` de un solo uso; si no se lee en el `decode()`, se pierde. Guardar el contenido en un `String` para incluirlo en el mensaje de la excepción facilita el diagnóstico en logs.
-- Usar `SpringFormEncoder` envolviendo `SpringEncoder` como delegado. El delegado gestiona los tipos no-form (JSON, XML) y `SpringFormEncoder` solo interviene para los tipos `multipart` y `form-urlencoded`. Sin el delegado, el cliente perdería la capacidad de enviar JSON.
-- Lanzar `RetryableException` desde el `ErrorDecoder` para errores transitorios (503, 429 con `Retry-After`). Feign solo reintentará si la excepción es `RetryableException`; cualquier otro tipo detiene el reintento.
+**Buenas prácticas:**
+- Usar los defaults (`SpringEncoder`/`SpringDecoder`) a menos que tengas un caso específico: evita configuración innecesaria.
+- Cuando el método Feign deba retornar `ResponseEntity<T>` para acceder a headers, registrar `ResponseEntityDecoder`.
+- Para formularios, añadir siempre `SpringFormEncoder`: sin él, Spring Cloud no enviará `Content-Type: application/x-www-form-urlencoded` aunque lo especifiques en `consumes`.
 
-**Evitar:**
-- Compartir un `ErrorDecoder` con estado (campos mutables) entre clientes. El `ErrorDecoder` se instancia una vez por configuración de cliente y puede recibir llamadas concurrentes. Un estado mutable produciría data races.
-- Devolver `null` desde un `Decoder` personalizado cuando el cuerpo de respuesta está vacío. Feign no valida el resultado del `Decoder`; el `null` propagará silenciosamente hasta el llamador y puede causar `NullPointerException` lejos del punto de origen.
-- Registrar el `SpringFormEncoder` como bean global (en `defaultConfiguration`) si solo un cliente del módulo necesita soporte multipart. Los demás clientes cargarán el encoder innecesariamente y podrían serializar accidentalmente tipos que deberían ir como JSON como `form-data`.
+**Malas prácticas:**
+- Registrar `JacksonEncoder`/`JacksonDecoder` directamente cuando ya tienes `SpringEncoder`/`SpringDecoder`: son redundantes y pueden causar conflictos de content-type.
+- Asumir que `SpringEncoder` soporta formularios: no lo hace, necesitas `SpringFormEncoder`.
+
+> [ADVERTENCIA] Si un método Feign declara `ResponseEntity<T>` como tipo de retorno pero no hay `ResponseEntityDecoder` configurado, Feign lanzará un error de decodificación en tiempo de ejecución porque el decoder estándar no sabe envolver la respuesta en `ResponseEntity`.
+
+## Verificación y práctica
+
+> [EXAMEN] **1.** ¿Qué codec es necesario añadir explícitamente para que Feign envíe un formulario con `Content-Type: application/x-www-form-urlencoded`? ¿Por qué `SpringEncoder` no es suficiente?
+
+> [EXAMEN] **2.** ¿Qué ventaja aporta `ResponseEntityDecoder` frente al `SpringDecoder` estándar? ¿Qué debe cambiar en la firma del método Feign para aprovecharlo?
+
+> [EXAMEN] **3.** ¿Cuál es la diferencia entre `JacksonEncoder` y `SpringEncoder`? ¿En qué escenario usarías el primero?
+
+> [EXAMEN] **4.** Un método Feign retorna `byte[]` para descargar un archivo PDF. ¿Qué decoder deberías configurar y por qué el `SpringDecoder` no funciona para este caso?
+
+> [EXAMEN] **5.** ¿Dónde se registran los codecs personalizados de Feign y cuál es la forma correcta de hacerlo para que solo afecten a un cliente específico?
 
 ---
 
-<- [4.4 Configuración por propiedades YAML](sc-feign-configuracion-propiedades.md) | [Índice](README.md) | [4.6 Interceptores y observabilidad](sc-feign-interceptores.md) ->
+← [3.2.2 Configuración por propiedades](sc-feign-configuracion-propiedades.md) | [Índice](README.md) | [3.4.1 Logger.Level y configuración dual de logging](sc-feign-logging.md) →

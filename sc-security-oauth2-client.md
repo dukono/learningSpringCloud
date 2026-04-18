@@ -1,64 +1,30 @@
-# 8.4 OAuth2 Client servlet — registro, gestión de tokens y Client Credentials
+# 8.4 OAuth2 Client — Gestión de tokens de salida entre servicios
 
-← [8.3 Resource Server avanzado — claims, opaque tokens y multi-tenancy](sc-security-resource-server-advanced.md) | [Índice (README.md)](README.md) | [8.5 OAuth2 Client avanzado — WebClient, ReactiveManager y logout OIDC](sc-security-oauth2-client-advanced.md) →
+← [sc-security-resource-server.md](sc-security-resource-server.md) | [Índice](README.md) | [sc-security-jwt-claims.md](sc-security-jwt-claims.md) →
 
 ---
 
-Un microservicio actúa como OAuth2 Client cuando necesita obtener tokens para llamar a otros servicios (Machine-to-Machine, flujo Client Credentials) o cuando actúa de intermediario entre el usuario y los servicios backend (flujo Authorization Code). Spring Security 6.x gestiona ambos flujos a través de `ClientRegistration`, `OAuth2AuthorizedClientManager` y el mecanismo de intercepción de tokens en `RestClient`. El flujo más frecuente en microservicios backend es Client Credentials: el servicio obtiene un access token con su propia identidad (sin usuario) para llamar a otro servicio downstream.
+## Introducción
 
-> [PREREQUISITO] Requiere `spring-boot-starter-oauth2-client`. Para llamadas HTTP downstream con tokens: `spring-boot-starter-web` (RestClient/RestTemplate).
+Cuando un microservicio necesita llamar a otro servicio protegido, debe obtener y gestionar su propio Access Token de salida. El rol OAuth2 Client cubre este escenario: el servicio se registra en el Authorization Server, obtiene tokens (normalmente con el flujo Client Credentials para comunicación service-to-service), los almacena en caché y los refresca automáticamente cuando expiran. Spring Boot auto-configura toda la infraestructura de gestión de tokens a partir de propiedades `spring.security.oauth2.client.*`.
 
-## Flujo Client Credentials en microservicios
+> [PREREQUISITO] Tener claro el flujo Client Credentials de sc-security-oauth2-conceptos-flujos.md. Este fichero cubre el rol Client; para el rol Resource Server ver sc-security-resource-server.md.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Microservicio A (OAuth2 Client)                             │
-│                                                              │
-│  1. OAuth2AuthorizedClientManager solicita token al AS      │
-│     POST /oauth2/token                                       │
-│     grant_type=client_credentials                           │
-│     client_id=service-a                                     │
-│     client_secret=secret                                    │
-│     scope=orders:read                                       │
-│                                                              │
-│  2. AS devuelve access_token JWT                            │
-│                                                              │
-│  3. RestClient incluye automáticamente                      │
-│     Authorization: Bearer <token>                           │
-│     en cada petición a Microservicio B                      │
-└─────────────────────────────────────────────────────────────┘
-```
+## Dependencia y auto-configuración
 
-## Ejemplo central: Client Credentials con RestClient
-
-### Dependencias Maven
+El starter `spring-boot-starter-oauth2-client` trae `ClientRegistrationRepository`, `OAuth2AuthorizedClientRepository` y, con Spring Boot, la auto-configuración registra los beans necesarios cuando se detectan propiedades `spring.security.oauth2.client.*`. Para contextos reactivos (WebFlux, Gateway) se añade `spring-boot-starter-webflux`.
 
 ```xml
-<dependencyManagement>
-    <dependencies>
-        <dependency>
-            <groupId>org.springframework.cloud</groupId>
-            <artifactId>spring-cloud-dependencies</artifactId>
-            <version>2025.1.1</version>
-            <type>pom</type>
-            <scope>import</scope>
-        </dependency>
-    </dependencies>
-</dependencyManagement>
-
-<dependencies>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-oauth2-client</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-web</artifactId>
-    </dependency>
-</dependencies>
+<!-- pom.xml -->
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-oauth2-client</artifactId>
+</dependency>
 ```
 
-### application.yml — registro del cliente OAuth2
+## Configuración spring.security.oauth2.client.*
+
+Las propiedades de registro definen cómo el servicio se identifica ante el Authorization Server. El bloque `registration` contiene las credenciales del cliente; el bloque `provider` contiene los endpoints del AS. Para proveedores estándar OIDC (Google, Okta, Spring AS), Spring Boot tiene valores predeterminados de los endpoints si se usa `issuer-uri` en el provider.
 
 ```yaml
 spring:
@@ -66,146 +32,223 @@ spring:
     oauth2:
       client:
         registration:
-          # Nombre del registro — se referencia en el código como "order-service-cc"
-          order-service-cc:
+          my-service:                         # ID lógico del cliente (se usa en código)
             provider: my-auth-server
-            client-id: inventory-service
-            client-secret: ${CLIENT_SECRET}
+            client-id: product-service
+            client-secret: ${OAUTH2_CLIENT_SECRET}   # puede venir de Config Server {cipher}
             authorization-grant-type: client_credentials
-            scope: orders:read, orders:write
+            scope: inventory.read, inventory.write
+            client-authentication-method: client_secret_basic
         provider:
           my-auth-server:
-            issuer-uri: https://auth.example.com
-            # Alternativa sin OIDC discovery:
-            # token-uri: https://auth.example.com/oauth2/token
+            issuer-uri: http://auth-server:9000
+            # Spring Boot descubre token-uri, jwks-uri, etc. automáticamente
 ```
 
-### Configuración del OAuth2AuthorizedClientManager y RestClient
+> [ADVERTENCIA] El `client-secret` en texto plano en `application.yml` es un riesgo. Usar variables de entorno (`${OAUTH2_CLIENT_SECRET}`) o cifrado con Spring Cloud Config (`{cipher}secret`). Nunca commitearlo en Git.
+
+## ClientRegistration y ClientRegistrationRepository
+
+`ClientRegistration` es la entidad que representa la configuración de un cliente OAuth2 registrado. `ClientRegistrationRepository` es el repositorio de todos los registros — Spring Boot lo auto-configura como `InMemoryClientRegistrationRepository` a partir de las properties. Se puede inyectar para inspeccionar registros programáticamente.
 
 ```java
-package com.example.client;
+package com.example.inventoryservice.config;
+
+import org.springframework.security.oauth2.client.registration.ClientRegistration;
+import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+public class DebugController {
+
+    private final ClientRegistrationRepository clientRegistrationRepository;
+
+    public DebugController(ClientRegistrationRepository repo) {
+        this.clientRegistrationRepository = repo;
+    }
+
+    @GetMapping("/debug/oauth2-client")
+    public String debugRegistration() {
+        ClientRegistration reg = clientRegistrationRepository
+            .findByRegistrationId("my-service");
+        return "tokenUri=" + reg.getProviderDetails().getTokenUri()
+             + ", scopes=" + reg.getScopes();
+    }
+}
+```
+
+## OAuth2AuthorizedClientManager (servlet)
+
+`OAuth2AuthorizedClientManager` es el orquestador central: obtiene tokens (solicitando uno nuevo si no existe), los almacena en `OAuth2AuthorizedClientService` y los refresca automáticamente cuando expiran. `DefaultOAuth2AuthorizedClientManager` es la implementación para contextos servlet; requiere un `HttpServletRequest`/`Response` en el contexto, lo que lo hace adecuado para controllers pero no para procesos batch o scheduled tasks.
+
+```java
+package com.example.inventoryservice.config;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.security.oauth2.client.AuthorizedClientServiceOAuth2AuthorizedClientManager;
 import org.springframework.security.oauth2.client.OAuth2AuthorizedClientManager;
 import org.springframework.security.oauth2.client.OAuth2AuthorizedClientProviderBuilder;
-import org.springframework.security.oauth2.client.OAuth2AuthorizedClientService;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
-import org.springframework.security.oauth2.client.web.reactive.function.client.ServletOAuth2AuthorizedClientExchangeFilterFunction;
-import org.springframework.web.client.RestClient;
+import org.springframework.security.oauth2.client.web.DefaultOAuth2AuthorizedClientManager;
+import org.springframework.security.oauth2.client.web.OAuth2AuthorizedClientRepository;
 
 @Configuration
 public class OAuth2ClientConfig {
 
-    // OAuth2AuthorizedClientManager para contextos sin request HTTP (batch, schedulers)
-    // Usar AuthorizedClientServiceOAuth2AuthorizedClientManager en lugar del basado en request
     @Bean
     public OAuth2AuthorizedClientManager authorizedClientManager(
-            ClientRegistrationRepository registrations,
-            OAuth2AuthorizedClientService clientService) {
+            ClientRegistrationRepository clientRegistrationRepository,
+            OAuth2AuthorizedClientRepository authorizedClientRepository) {
 
-        var provider = OAuth2AuthorizedClientProviderBuilder.builder()
-            .clientCredentials()   // soporta el flujo client_credentials
-            .refreshToken()        // renueva tokens expirados automáticamente
-            .build();
+        DefaultOAuth2AuthorizedClientManager manager =
+            new DefaultOAuth2AuthorizedClientManager(
+                clientRegistrationRepository, authorizedClientRepository);
 
-        var manager = new AuthorizedClientServiceOAuth2AuthorizedClientManager(
-            registrations, clientService);
-        manager.setAuthorizedClientProvider(provider);
+        // Soporta: client_credentials, authorization_code, refresh_token
+        manager.setAuthorizedClientProvider(
+            OAuth2AuthorizedClientProviderBuilder.builder()
+                .clientCredentials()
+                .refreshToken()
+                .build());
 
         return manager;
     }
-
-    // RestClient con intercepción automática de tokens OAuth2
-    @Bean
-    public RestClient orderServiceClient(OAuth2AuthorizedClientManager authorizedClientManager) {
-        // El exchange filter function añade el Bearer token en cada petición
-        var oauth2Filter = new ServletOAuth2AuthorizedClientExchangeFilterFunction(
-            authorizedClientManager);
-        // Registración por defecto para este cliente
-        oauth2Filter.setDefaultClientRegistrationId("order-service-cc");
-
-        return RestClient.builder()
-            .baseUrl("https://order-service.example.com")
-            // Adaptar el filter de WebFlux a RestClient (Spring Boot 3.4+)
-            .requestInterceptor((request, body, execution) -> {
-                // Obtener token del AuthorizedClientManager
-                var clientRequest = org.springframework.security.oauth2.client.web.reactive
-                    .function.client.ServerOAuth2AuthorizedClientExchangeFilterFunction
-                    .clientRegistrationId("order-service-cc");
-                // Añadir header Authorization
-                request.getHeaders().setBearerAuth(
-                    getAccessToken(authorizedClientManager, "order-service-cc"));
-                return execution.execute(request, body);
-            })
-            .build();
-    }
-
-    private String getAccessToken(OAuth2AuthorizedClientManager manager, String registrationId) {
-        var request = org.springframework.security.oauth2.client.OAuth2AuthorizeRequest
-            .withClientRegistrationId(registrationId)
-            .principal("inventory-service")  // nombre del servicio como principal anónimo
-            .build();
-        var client = manager.authorize(request);
-        return client.getAccessToken().getTokenValue();
-    }
 }
 ```
 
-### Uso del RestClient con OAuth2 en un servicio
+## ReactiveOAuth2AuthorizedClientManager para WebFlux y batch
+
+Para aplicaciones reactivas (WebFlux) o procesos que no tienen un `HttpServletRequest` (scheduled tasks, batch jobs), se usa `AuthorizedClientServiceReactiveOAuth2AuthorizedClientManager`. Este manager funciona sin usuario autenticado en el contexto reactivo, lo que lo hace ideal para flujos Client Credentials puros donde el servicio actúa en nombre propio.
 
 ```java
-package com.example.client;
+package com.example.inventoryservice.config;
 
-import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClient;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.oauth2.client.AuthorizedClientServiceReactiveOAuth2AuthorizedClientManager;
+import org.springframework.security.oauth2.client.InMemoryReactiveOAuth2AuthorizedClientService;
+import org.springframework.security.oauth2.client.ReactiveOAuth2AuthorizedClientManager;
+import org.springframework.security.oauth2.client.ReactiveOAuth2AuthorizedClientProviderBuilder;
+import org.springframework.security.oauth2.client.registration.ReactiveClientRegistrationRepository;
 
-@Service
-public class OrderServiceAdapter {
+@Configuration
+public class ReactiveOAuth2Config {
 
-    private final RestClient orderServiceClient;
+    @Bean
+    public ReactiveOAuth2AuthorizedClientManager reactiveAuthorizedClientManager(
+            ReactiveClientRegistrationRepository clientRegistrationRepository) {
 
-    public OrderServiceAdapter(RestClient orderServiceClient) {
-        this.orderServiceClient = orderServiceClient;
-    }
+        InMemoryReactiveOAuth2AuthorizedClientService service =
+            new InMemoryReactiveOAuth2AuthorizedClientService(clientRegistrationRepository);
 
-    public Order getOrder(String orderId) {
-        // El token se añade automáticamente en la petición
-        return orderServiceClient.get()
-            .uri("/orders/{id}", orderId)
-            .retrieve()
-            .body(Order.class);
+        AuthorizedClientServiceReactiveOAuth2AuthorizedClientManager manager =
+            new AuthorizedClientServiceReactiveOAuth2AuthorizedClientManager(
+                clientRegistrationRepository, service);
+
+        manager.setAuthorizedClientProvider(
+            ReactiveOAuth2AuthorizedClientProviderBuilder.builder()
+                .clientCredentials()
+                .refreshToken()
+                .build());
+
+        return manager;
     }
 }
 ```
 
-> [CONCEPTO] `AuthorizedClientServiceOAuth2AuthorizedClientManager` (sin request HTTP) es el manager correcto para tareas batch, schedulers y contextos sin `HttpServletRequest`. El manager por defecto (`DefaultOAuth2AuthorizedClientManager`) requiere un request HTTP activo. Si se usa el manager por defecto en un scheduler, la obtención del token fallará con `IllegalStateException`.
+> [EXAMEN] `DefaultOAuth2AuthorizedClientManager` requiere `HttpServletRequest` — solo sirve en contexto de request HTTP servlet. `AuthorizedClientServiceReactiveOAuth2AuthorizedClientManager` es para contextos reactivos o sin usuario; es el correcto para scheduled tasks y batch jobs con Client Credentials.
 
-## Tabla de elementos clave
+## @RegisteredOAuth2AuthorizedClient en controllers
 
-| Componente / Propiedad | Descripción |
-|---|---|
-| `ClientRegistration` | Configuración de un cliente OAuth2: client-id, secret, grant-type, scopes, provider |
-| `authorization-grant-type: client_credentials` | Flujo M2M: el servicio obtiene token con su propia identidad, sin usuario |
-| `OAuth2AuthorizedClientManager` | Orquesta la obtención y renovación de tokens; dos implementaciones: con y sin request |
-| `AuthorizedClientServiceOAuth2AuthorizedClientManager` | Manager sin request HTTP; usar en tareas batch, schedulers, eventos |
-| `OAuth2AuthorizedClientProviderBuilder` | Builder de flujos soportados: `clientCredentials()`, `refreshToken()`, `authorizationCode()` |
-| `OAuth2AuthorizeRequest.withClientRegistrationId()` | Solicita autorización para un registro concreto; `.principal()` es el nombre del cliente |
-| `client-secret: ${CLIENT_SECRET}` | El secret nunca debe hardcodearse; usar variables de entorno o Vault |
+La anotación `@RegisteredOAuth2AuthorizedClient` inyecta directamente un `OAuth2AuthorizedClient` en un método de controller o en un parámetro de servicio cuando hay un usuario autenticado. Es conveniente para el flujo Authorization Code donde el cliente tiene un token asociado al usuario actual.
+
+```java
+package com.example.inventoryservice.controller;
+
+import org.springframework.security.oauth2.client.OAuth2AuthorizedClient;
+import org.springframework.security.oauth2.client.annotation.RegisteredOAuth2AuthorizedClient;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.reactive.function.client.WebClient;
+
+@RestController
+public class InventoryController {
+
+    private final WebClient.Builder webClientBuilder;
+
+    public InventoryController(WebClient.Builder webClientBuilder) {
+        this.webClientBuilder = webClientBuilder;
+    }
+
+    @GetMapping("/inventory/delegated")
+    public String getInventoryWithUserToken(
+            @RegisteredOAuth2AuthorizedClient("my-service")
+            OAuth2AuthorizedClient authorizedClient) {
+
+        String token = authorizedClient.getAccessToken().getTokenValue();
+        return webClientBuilder.build()
+            .get()
+            .uri("http://inventory-service/items")
+            .headers(h -> h.setBearerAuth(token))
+            .retrieve()
+            .bodyToMono(String.class)
+            .block();
+    }
+}
+```
+
+## Token refresh automático
+
+El refresh de tokens es transparente cuando se configura `refreshToken()` en el provider builder. El `OAuth2AuthorizedClientManager` detecta que el `AccessToken` ha expirado antes de usarlo (compara `expiresAt` con el instante actual) y solicita automáticamente un nuevo token usando el `refresh_token`. Para Client Credentials no hay refresh_token — el manager simplemente solicita uno nuevo.
+
+## Tabla de propiedades del OAuth2 Client
+
+Las propiedades de `registration` y `provider` configuran cada cliente registrado.
+
+| Propiedad | Tipo | Default | Descripción |
+|-----------|------|---------|-------------|
+| `registration.<id>.client-id` | String | — | ID del cliente en el AS |
+| `registration.<id>.client-secret` | String | — | Secret del cliente |
+| `registration.<id>.authorization-grant-type` | String | — | `client_credentials`, `authorization_code`, `refresh_token` |
+| `registration.<id>.scope` | String | — | Scopes solicitados (separados por coma) |
+| `registration.<id>.client-authentication-method` | String | `client_secret_basic` | Método de autenticación en el AS |
+| `provider.<id>.issuer-uri` | URI | — | URI del AS para autodiscovery OIDC |
+| `provider.<id>.token-uri` | URI | — | Endpoint de tokens (si no se usa `issuer-uri`) |
 
 ## Buenas y malas prácticas
 
-**Hacer:**
-- Usar `AuthorizedClientServiceOAuth2AuthorizedClientManager` para todos los flujos Client Credentials en microservicios backend; el manager gestiona automáticamente la caché del token y su renovación antes de la expiración.
-- Almacenar `CLIENT_SECRET` en un secret manager (Vault, AWS Secrets Manager, Kubernetes Secrets) y referenciarlo como `${CLIENT_SECRET}`; nunca en `application.yml` versionado.
-- Configurar `scope` mínimo necesario en el registro: si el servicio solo necesita leer órdenes, no solicitar `orders:write`; el principio de mínimo privilegio aplica también a los tokens M2M.
+Hacer:
+- Usar `AuthorizedClientServiceReactiveOAuth2AuthorizedClientManager` para contextos reactivos y scheduled tasks con Client Credentials.
+- Almacenar `client-secret` en variables de entorno o cifrado con `{cipher}` de Config Server.
+- Configurar `refreshToken()` en el provider builder para renovación automática.
+- Usar un ID lógico (`registrationId`) descriptivo para poder cambiar el proveedor sin cambiar código.
 
-**Evitar:**
-- Obtener tokens manualmente con `RestTemplate` contra el endpoint `/oauth2/token` en lugar de usar `OAuth2AuthorizedClientManager`; el manager gestiona caché, renovación y reintentos automáticamente.
-- Compartir un mismo `ClientRegistration` entre múltiples microservicios con distintos scopes: cada microservicio debe tener su propio `client-id` con los scopes específicos que necesita.
-- Usar `grant-type: password` en microservicios: está deprecado en OAuth2.1 y expone credenciales de usuario al servicio intermediario.
+Evitar:
+- Usar `DefaultOAuth2AuthorizedClientManager` en scheduled tasks o batch jobs (requiere HttpServletRequest; fallará con `NullPointerException`).
+- Hardcodear `client-secret` en `application.yml` en el repositorio git.
+- Crear manualmente el `HttpClient` para obtener tokens — `OAuth2AuthorizedClientManager` lo gestiona con caché y refresh.
+
+## Verificación y práctica
+
+```bash
+# Verificar que la auto-configuración detecta las propiedades
+curl http://localhost:8080/actuator/beans | jq '.beans | keys | map(select(startswith("oauth2")))'
+
+# Obtener token manualmente para comparar con el que gestiona Spring
+curl -X POST http://localhost:9000/oauth2/token \
+  -d "grant_type=client_credentials&scope=inventory.read" \
+  -u "product-service:secret"
+```
+
+**Preguntas estilo examen VMware Spring Professional:**
+
+1. ¿Cuál es la diferencia entre `DefaultOAuth2AuthorizedClientManager` y `AuthorizedClientServiceReactiveOAuth2AuthorizedClientManager`? ¿En qué escenario se usa cada uno?
+
+2. Un scheduled task que llama a otro microservicio falla con error al obtener el token OAuth2 usando `DefaultOAuth2AuthorizedClientManager`. ¿Cuál es la causa y qué manager debe usarse en su lugar?
+
+3. ¿Cómo gestiona Spring Boot el refresh automático de Access Tokens expirados cuando se usa `OAuth2AuthorizedClientManager` con `refreshToken()` configurado?
 
 ---
 
-← [8.3 Resource Server avanzado — claims, opaque tokens y multi-tenancy](sc-security-resource-server-advanced.md) | [Índice (README.md)](README.md) | [8.5 OAuth2 Client avanzado — WebClient, ReactiveManager y logout OIDC](sc-security-oauth2-client-advanced.md) →
+← [sc-security-resource-server.md](sc-security-resource-server.md) | [Índice](README.md) | [sc-security-jwt-claims.md](sc-security-jwt-claims.md) →

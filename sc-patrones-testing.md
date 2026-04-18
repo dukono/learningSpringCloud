@@ -1,257 +1,275 @@
-# 13.9 Testing de patrones distribuidos con Spring Cloud
+# 13.12 Testing de microservicios: Contract Testing, Component Tests, Chaos Engineering y estrategia E2E
 
-← [13.8 Resiliencia transversal en patrones distribuidos](sc-patrones-resiliencia-transversal.md) | [Índice (README.md)](README.md) →
+← [13.11 Antipatrones](sc-patrones-antipatrones.md) | [Índice](README.md) →
 
 ---
 
-Testear los patrones distribuidos (CQRS, Saga, Outbox, API Composition) es más complejo que testear un servicio individual porque el comportamiento correcto emerge de la interacción entre múltiples componentes. Un test unitario del servicio de pedidos no puede detectar que la Saga de coreografía queda bloqueada cuando el InventoryService publica un evento con un campo renombrado. Existen tres estrategias complementarias: tests de integración con TestChannelBinder que verifican el flujo de eventos de una Saga o Outbox en memoria, tests de contrato (CDC) que verifican la compatibilidad de los eventos entre servicios, y tests end-to-end con Testcontainers que verifican el flujo completo con brokers y bases de datos reales.
+## Introducción
 
-> [PREREQUISITO] Requiere `spring-cloud-stream-test-binder` para tests con broker simulado, `spring-cloud-starter-contract-verifier` para CDC de eventos, y `org.testcontainers:kafka` + `org.testcontainers:postgresql` para tests e2e.
+El testing de microservicios requiere una estrategia diferente al testing de monolitos. Las pruebas de integración clásicas que levantan todo el sistema son lentas, frágiles y costosas de mantener en un sistema con decenas de servicios. La estrategia óptima combina Contract Testing para verificar las integraciones sin entornos completos, Component Tests para verificar el comportamiento de cada servicio en aislamiento, testing de resiliencia para verificar el comportamiento ante fallos, y una capa mínima de E2E que verifica únicamente los flujos críticos de negocio.
 
-## Estrategias de testing de patrones distribuidos
+## La pirámide de testing en microservicios
 
-| Estrategia | Infraestructura | Velocidad | Qué verifica |
-|---|---|---|---|
-| 1 — Test unitario del step | Sin Spring | Muy rápida | Lógica del paso individual de Saga/Outbox |
-| 2 — Test con TestChannelBinder | Broker simulado | Rápida | Flujo de eventos Saga/CQRS en memoria |
-| 3 — CDC de eventos con Contract | Sin broker real | Media | Compatibilidad del schema de eventos entre servicios |
-| 4 — E2E con Testcontainers | Docker real | Lenta | Flujo completo con Kafka, PostgreSQL y servicios reales |
+> [CONCEPTO] **Consumer-Driven Contract Testing**: en lugar de levantar todos los servicios juntos para verificar las integraciones, el consumidor define el contrato de lo que espera del productor (request/response o mensaje). El productor verifica que su implementación satisface ese contrato en tests aislados. Spring Cloud Contract es la implementación de referencia. Esto elimina la necesidad de entornos de integración completos para verificar compatibilidad entre servicios.
 
-## Ejemplo central: testing de Saga y Outbox con TestChannelBinder
+La pirámide de testing adaptada a microservicios:
 
-### Estrategia 2: Test de flujo Saga con TestChannelBinder
+```
+                    ┌─────────────┐
+                    │  E2E Tests  │  ← mínimos, solo flujos críticos
+                    │  (frágiles) │
+                ┌───┴─────────────┴───┐
+                │  Integration Tests  │  ← Contract Tests + Component Tests
+                │  (Spring Cloud      │     con WireMock / Stubs
+                │   Contract)         │
+        ┌───────┴─────────────────────┴───────┐
+        │         Unit Tests                  │  ← la mayor parte
+        │  (lógica de negocio, dominio)        │
+        └─────────────────────────────────────┘
+```
+
+## Component Tests: testing en aislamiento con dependencias stubbeadas
+
+> [CONCEPTO] **Component Test en microservicios**: un Component Test verifica el comportamiento completo de un microservicio (desde su API hasta su base de datos) reemplazando las dependencias externas (otros servicios, brokers) con stubs o mocks. No es un test de integración clásico que necesita todos los servicios reales — es un test del "servicio como unidad de despliegue", aislado del ecosistema.
+
+La herramienta principal para stubs de servicios HTTP en Component Tests es **WireMock**: levanta un servidor HTTP que simula las respuestas de los servicios externos.
+
+## E2E Tests: mínimos y focalizados en flujos críticos
+
+> [CONCEPTO] **End-to-End Test en microservicios**: los tests E2E verifican el sistema completo de extremo a extremo. Son los más costosos: requieren todos los servicios en ejecución, son frágiles (fallan por razones no relacionadas con la funcionalidad — red, timing, datos de test), y son lentos. La estrategia recomendada: minimizar los E2E a los flujos de negocio más críticos (happy path del checkout, login básico) y construir confianza con Contract Tests + Component Tests en su lugar.
+
+## Testing de resiliencia: Chaos Engineering
+
+> [CONCEPTO] **Testing de patrones de resiliencia (Chaos Engineering)**: el Chaos Engineering verifica que los mecanismos de resiliencia (Circuit Breaker, Bulkhead, Retry) funcionan correctamente bajo condiciones reales de fallo. No es suficiente con escribir el código — hay que verificar que el Circuit Breaker se abre cuando debe, que el Bulkhead realmente limita la concurrencia y que el Retry no genera avalanchas. Herramientas: WireMock (simula servicios lentos o caídos), Chaos Monkey for Spring Boot (inyecta fallos en la JVM), Testcontainers (infraestructura real en tests).
+
+La diferencia con el testing funcional clásico: el testing de resiliencia verifica el comportamiento ante fallos del sistema, no ante datos inválidos. Inyecta fallos de red, latencia, servicios no disponibles, y verifica que el sistema degrada graciosamente.
+
+## Ejemplo central: estrategia de testing completa
+
+El siguiente ejemplo implementa los cuatro niveles de testing: un Contract Test con Spring Cloud Contract, un Component Test con WireMock, y un test de resiliencia con Circuit Breaker usando WireMock para simular fallos.
 
 ```java
-package com.example.saga;
+// NIVEL 1: Contract Test — Producer verifica el contrato definido por el Consumer
+// Contrato en src/test/resources/contracts/orders/shouldReturnOrderById.groovy
 
-import org.junit.jupiter.api.Test;
+// OrdersBaseTest.java — clase base para los tests generados por Spring Cloud Contract
+package com.example.orders.contract;
+
+import com.example.orders.controller.OrderController;
+import com.example.orders.service.OrderService;
+import io.restassured.module.mockmvc.RestAssuredMockMvc;
+import org.junit.jupiter.api.BeforeEach;
+import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.cloud.stream.binder.test.InputDestination;
-import org.springframework.cloud.stream.binder.test.OutputDestination;
-import org.springframework.cloud.stream.binder.test.TestChannelBinderConfiguration;
-import org.springframework.context.annotation.Import;
-import org.springframework.messaging.Message;
-import org.springframework.messaging.support.MessageBuilder;
-
-import static org.assertj.core.api.Assertions.assertThat;
+import org.springframework.boot.test.mock.mockito.MockBean;
 
 @SpringBootTest
-@Import(TestChannelBinderConfiguration.class)
-class OrderSagaFlowTest {
+public abstract class OrdersBaseTest {
 
     @Autowired
-    private InputDestination inputDestination;
+    private OrderController orderController;
 
-    @Autowired
-    private OutputDestination outputDestination;
+    @MockBean
+    private OrderService orderService;
 
-    @Autowired
-    private SagaStateRepository sagaStateRepository;
+    @BeforeEach
+    void setUp() {
+        // Mock del servicio para el contrato: el consumidor espera este comportamiento
+        Mockito.when(orderService.findById("order-123"))
+            .thenReturn(new OrderDTO("order-123", "customer-456", 99.99, "CONFIRMED"));
 
-    @Test
-    void whenInventoryReserved_thenOrchestratorSendsPaymentCommand() throws Exception {
-        String orderId = "order-test-1";
-        // Crear estado inicial de la Saga en BD de test
-        sagaStateRepository.save(SagaState.create(orderId, SagaStep.RESERVE_INVENTORY));
-
-        // Simular respuesta del InventoryService
-        Message<byte[]> inventoryReservedMsg = MessageBuilder
-            .withPayload("""
-                {"orderId":"%s","productId":"p1","quantity":2}
-                """.formatted(orderId).getBytes())
-            .setHeader("eventType", "InventoryReserved")
-            .build();
-
-        inputDestination.send(inventoryReservedMsg, "inventory-reserved-events");
-
-        // Verificar que el orquestador publicó el Command de pago
-        Message<byte[]> paymentCommand = outputDestination
-            .receive(1000, "process-payment-commands");
-
-        assertThat(paymentCommand).isNotNull();
-        String payloadStr = new String(paymentCommand.getPayload());
-        assertThat(payloadStr).contains(orderId);
-
-        // Verificar que el estado de la Saga avanzó
-        SagaState state = sagaStateRepository.findBySagaId(orderId);
-        assertThat(state.getCurrentStep()).isEqualTo(SagaStep.PROCESS_PAYMENT);
-    }
-
-    @Test
-    void whenPaymentFails_thenOrchestratorTriggersCompensation() throws Exception {
-        String orderId = "order-test-2";
-        sagaStateRepository.save(SagaState.create(orderId, SagaStep.PROCESS_PAYMENT));
-
-        // Simular fallo de pago
-        Message<byte[]> paymentFailedMsg = MessageBuilder
-            .withPayload("""
-                {"orderId":"%s","reason":"Insufficient funds"}
-                """.formatted(orderId).getBytes())
-            .build();
-
-        inputDestination.send(paymentFailedMsg, "payment-failed-events");
-
-        // Verificar que se envió el Command de compensación de inventario
-        Message<byte[]> releaseInventoryCmd = outputDestination
-            .receive(1000, "release-inventory-commands");
-
-        assertThat(releaseInventoryCmd).isNotNull();
-
-        SagaState state = sagaStateRepository.findBySagaId(orderId);
-        assertThat(state.getStatus()).isEqualTo(SagaStatus.COMPENSATING);
+        RestAssuredMockMvc.standaloneSetup(orderController);
     }
 }
 ```
 
-### Estrategia 3: CDC para eventos entre servicios
-
 ```groovy
-// contracts/events/order-created-event.groovy
-// Contrato del evento que el OrderService publica en Kafka
+// src/test/resources/contracts/orders/shouldReturnOrderById.groovy
+// Contrato definido por el consumidor (o acordado entre productor y consumidor)
+
 import org.springframework.cloud.contract.spec.Contract
 
 Contract.make {
-    description "OrderService publica OrderCreatedEvent en Kafka"
-    label "order-created"
+    description "should return order by id"
 
-    input {
-        // El evento es generado por el producer (no hay request HTTP)
-        triggeredBy("createOrder()")  // método que dispara el evento en el test
-    }
-
-    outputMessage {
-        sentTo "order-created-events"  // topic Kafka
-        body([
-            orderId: $(consumer(regex('[a-f0-9\\-]+')), producer(value("order-123"))),
-            productId: $(consumer(regex('[a-z0-9\\-]+')), producer(value("product-456"))),
-            quantity: $(consumer(regex('[0-9]+')), producer(value(2))),
-            userId: $(consumer(regex('[a-f0-9\\-]+')), producer(value("user-789")))
-        ])
+    request {
+        method GET()
+        url "/orders/order-123"
         headers {
-            header("eventType", "OrderCreated")
-            messagingContentType(applicationJson())
+            contentType(applicationJson())
         }
     }
-}
-```
 
-```java
-// Clase base para el contrato de mensajería del OrderService
-package com.example.saga;
-
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.cloud.contract.verifier.messaging.boot.AutoConfigureMessageVerifier;
-
-@SpringBootTest
-@AutoConfigureMessageVerifier
-public abstract class MessagingContractBase {
-
-    @Autowired
-    private OrderSagaParticipant orderSagaParticipant;
-
-    // Este método es invocado por el test generado del contrato
-    public void createOrder() {
-        orderSagaParticipant.createOrder(new CreateOrderRequest(
-            "order-123", "product-456", 2, "user-789"));
+    response {
+        status OK()
+        headers {
+            contentType(applicationJson())
+        }
+        body(
+            id: "order-123",
+            customerId: "customer-456",
+            amount: 99.99,
+            status: "CONFIRMED"
+        )
     }
 }
 ```
 
-### Estrategia 4: E2E del Outbox con Testcontainers
-
 ```java
-package com.example.outbox;
+// NIVEL 2: Component Test — verifica el microservicio completo con dependencias stubbeadas
 
-import org.awaitility.Awaitility;
+package com.example.orders.component;
+
+import com.github.tomakehurst.wiremock.WireMockServer;
+import com.github.tomakehurst.wiremock.client.WireMock;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
-import org.springframework.kafka.core.KafkaTemplate;
-import org.testcontainers.containers.KafkaContainer;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
+import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.cloud.contract.wiremock.AutoConfigureWireMock;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import static com.github.tomakehurst.wiremock.client.WireMock.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
-import java.util.concurrent.TimeUnit;
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+    properties = {
+        "inventory-service.url=http://localhost:${wiremock.server.port}",
+        "payment-service.url=http://localhost:${wiremock.server.port}"
+    })
+@AutoConfigureWireMock(port = 0) // WireMock en puerto aleatorio
+class PlaceOrderComponentTest {
 
-@SpringBootTest
-@Testcontainers
-class OutboxPatternE2ETest {
+    @Autowired
+    private TestRestTemplate restTemplate;
 
-    @Container
-    @ServiceConnection
-    static PostgreSQLContainer<?> postgres =
-        new PostgreSQLContainer<>(DockerImageName.parse("postgres:16"));
+    @BeforeEach
+    void setUpStubs() {
+        // Stub del servicio de inventario: devuelve stock disponible
+        stubFor(get(urlEqualTo("/stock/product-abc/available?quantity=1"))
+            .willReturn(aResponse()
+                .withStatus(200)
+                .withHeader("Content-Type", "application/json")
+                .withBody("true")));
 
-    @Container
-    @ServiceConnection
-    static KafkaContainer kafka =
-        new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.6.0"));
+        // Stub del servicio de pagos: pago exitoso
+        stubFor(post(urlEqualTo("/payments"))
+            .willReturn(aResponse()
+                .withStatus(200)
+                .withHeader("Content-Type", "application/json")
+                .withBody("{\"paymentId\": \"pay-789\", \"status\": \"COMPLETED\"}")));
+    }
+
+    @Test
+    void shouldPlaceOrderSuccessfully() {
+        // Arrange
+        CreateOrderRequest request = new CreateOrderRequest("customer-123", "product-abc", 1);
+
+        // Act — llama al microservicio real con BD real (Testcontainers o H2) y stubs WireMock
+        ResponseEntity<OrderResponse> response = restTemplate.postForEntity(
+            "/orders", request, OrderResponse.class);
+
+        // Assert
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().status()).isEqualTo("CONFIRMED");
+    }
+}
+```
+
+```java
+// NIVEL 3: Test de resiliencia — verifica que el Circuit Breaker se abre bajo fallos
+
+package com.example.orders.resilience;
+
+import com.github.tomakehurst.wiremock.client.WireMock;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.cloud.contract.wiremock.AutoConfigureWireMock;
+import static com.github.tomakehurst.wiremock.client.WireMock.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+    properties = {"inventory-service.url=http://localhost:${wiremock.server.port}"})
+@AutoConfigureWireMock(port = 0)
+class InventoryCircuitBreakerTest {
+
+    @Autowired
+    private CircuitBreakerRegistry circuitBreakerRegistry;
 
     @Autowired
     private OrderService orderService;
 
-    @Autowired
-    private OutboxRepository outboxRepository;
-
-    @Autowired
-    private TestKafkaConsumer kafkaConsumer;  // consumer de test que recibe mensajes
-
     @Test
-    void whenOrderCreated_thenEventPublishedToKafka() throws Exception {
-        // Crear pedido: escribe en orders + outbox en la misma transacción
-        String orderId = orderService.createOrder(
-            new CreateOrderRequest("p1", 1, "user-1")).getId();
+    void shouldOpenCircuitBreakerAfterConsecutiveFailures() {
+        // Arrange: simular que el servicio de inventario está caído (503)
+        stubFor(get(urlMatching("/stock/.*"))
+            .willReturn(aResponse()
+                .withStatus(503)
+                .withBody("Service Unavailable")));
 
-        // Verificar que el evento está en outbox con status PENDING inicialmente
-        assertThat(outboxRepository.findByAggregateId(orderId)).isNotEmpty();
+        CircuitBreaker circuitBreaker = circuitBreakerRegistry.circuitBreaker("inventory-service");
 
-        // Esperar a que el OutboxRelay publique el evento (polling cada 500ms)
-        Awaitility.await()
-            .atMost(5, TimeUnit.SECONDS)
-            .untilAsserted(() -> {
-                // Verificar que el consumer de test recibió el evento en Kafka
-                assertThat(kafkaConsumer.getReceivedEvents())
-                    .anyMatch(event -> event.contains(orderId));
+        // Act: hacer suficientes llamadas para abrir el Circuit Breaker
+        // (configuración: 5 llamadas mínimas, 50% de tasa de fallo)
+        for (int i = 0; i < 10; i++) {
+            try {
+                orderService.checkInventoryAvailability("product-abc", 1).block();
+            } catch (Exception ignored) {
+                // se espera que fallen
+            }
+        }
 
-                // Verificar que el outbox marcó el evento como SENT
-                assertThat(outboxRepository.findByAggregateId(orderId).get(0).getStatus())
-                    .isEqualTo(OutboxStatus.SENT);
-            });
+        // Assert: el Circuit Breaker debe estar abierto
+        assertThat(circuitBreaker.getState())
+            .isEqualTo(CircuitBreaker.State.OPEN);
+
+        // Assert: las llamadas subsiguientes fallan rápido (sin llegar al stub)
+        // reset WireMock para verificar que no se hace ninguna llamada
+        WireMock.reset();
+        try {
+            orderService.checkInventoryAvailability("product-abc", 1).block();
+        } catch (Exception e) {
+            // se espera CallNotPermittedException del Circuit Breaker
+        }
+        WireMock.verify(0, getRequestedFor(urlMatching("/stock/.*")));
     }
 }
 ```
 
-> [CONCEPTO] El test con TestChannelBinder (Estrategia 2) verifica la lógica de orquestación de la Saga: si el orquestador recibe el evento correcto, ¿publica el Command correcto y actualiza el estado? Sin este test, la lógica de composición de eventos y la actualización del estado de la Saga solo se descubren en producción. El test E2E con Testcontainers (Estrategia 4) verifica que el Outbox relay realmente publica en Kafka — algo que el TestChannelBinder no puede verificar.
-
-## Tabla de elementos clave
-
-| Componente | Descripción |
-|---|---|
-| `TestChannelBinderConfiguration` | Binder en memoria para tests; reemplaza Kafka/Rabbit sin Docker |
-| `InputDestination.send(msg, destination)` | Inyectar un mensaje al canal de entrada de un consumer de test |
-| `OutputDestination.receive(timeout, destination)` | Leer el siguiente mensaje publicado por el servicio en un canal de test |
-| `@AutoConfigureMessageVerifier` | Auto-configuración de Spring Cloud Contract para tests de mensajería |
-| `triggeredBy("method()")` | En contratos de mensaje: el método que dispara el evento en el test del producer |
-| `Awaitility.await().untilAsserted()` | Assertion asíncrona con timeout; necesaria para esperar la propagación en Kafka |
-| `@ServiceConnection` con Testcontainers | Configura automáticamente las properties de conexión al contenedor; no requiere `@DynamicPropertySource` |
-
 ## Buenas y malas prácticas
 
-**Hacer:**
-- Testear tanto el happy path como los casos de compensación de la Saga con TestChannelBinder: el happy path es fácil de verificar; los bugs más críticos están en las rutas de compensación que solo se activan en producción cuando algo falla.
-- Usar contratos CDC para los eventos de Saga/Outbox además de para las APIs REST: el renaming de un campo en el evento `OrderCreatedEvent` es un breaking change tan crítico como renombrar un campo de respuesta REST.
-- Definir un consumer de test (`TestKafkaConsumer`) reutilizable en los tests e2e para Kafka: consumir y almacenar mensajes recibidos de forma thread-safe, con método de espera con timeout.
+**Buenas prácticas:**
+- Seguir la pirámide: muchos unit tests, Component Tests + Contract Tests para integraciones, E2E mínimos.
+- Usar Testcontainers para levantar infraestructura real (PostgreSQL, Kafka) en Component Tests — más fiel que los mocks en memoria.
+- Incluir tests de resiliencia en la pipeline de CI/CD para verificar que los Circuit Breakers se comportan como se configuró.
+- Versionar los contratos de Spring Cloud Contract junto con el código del productor.
 
-**Evitar:**
-- Testear la Saga solo con tests unitarios del orquestador sin testear la interacción con los participants; los bugs de integración entre orquestador y participantes solo son detectables con tests que involucran el flujo de mensajes.
-- Usar `Thread.sleep()` en lugar de `Awaitility` en tests con Kafka real; el sleep tiene una duración fija que puede ser insuficiente en CI con carga y excesiva en máquinas rápidas.
-- Compartir el estado del `TestKafkaConsumer` entre tests en la misma clase de test sin limpiarlo en `@BeforeEach`; los mensajes de un test pueden contaminar las assertions del siguiente.
+**Malas prácticas:**
+- Intentar replicar el comportamiento completo del sistema en tests E2E — solo flujos críticos de negocio.
+- Mockear las bases de datos en Component Tests — usar H2 o Testcontainers para fidelidad real.
+- No tener Contract Tests y solo confiar en E2E — los E2E son los más frágiles y caros de mantener.
+
+> [ADVERTENCIA] Los tests de Chaos Engineering que inyectan fallos a nivel de producción (Chaos Monkey) deben ejecutarse con un plan de recuperación claro y durante ventanas de mantenimiento o en entornos de staging, no en producción sin supervisión. Chaos Engineering en producción requiere madurez en observabilidad y capacidad de respuesta del equipo.
+
+## Verificación y práctica
+
+> [EXAMEN] 1. ¿Cómo Spring Cloud Contract permite que el consumidor defina el contrato y el productor lo verifique sin necesitar un entorno de integración real?
+
+> [EXAMEN] 2. ¿Qué prueba un Component Test en un microservicio, qué colaboradores se stubbbean con WireMock, y en qué se diferencia de un test de integración clásico?
+
+> [EXAMEN] 3. ¿Por qué los tests E2E son frágiles en arquitecturas de microservicios, y cuál es la estrategia recomendada para minimizarlos sin perder confianza en el sistema?
+
+> [EXAMEN] 4. ¿Cómo verificas en un test que un Circuit Breaker se abre correctamente bajo fallos simulados, y qué herramienta usas para simular el fallo del servicio downstream?
+
+> [EXAMEN] 5. ¿Qué ventaja aporta Testcontainers sobre H2/bases de datos en memoria en los Component Tests de un microservicio?
 
 ---
 
-← [13.8 Resiliencia transversal en patrones distribuidos](sc-patrones-resiliencia-transversal.md) | [Índice (README.md)](README.md) →
+← [13.11 Antipatrones](sc-patrones-antipatrones.md) | [Índice](README.md) →

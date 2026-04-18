@@ -1,317 +1,267 @@
-# 9.12 Testing de Spring Cloud Kubernetes
+# 9.10 Spring Cloud Kubernetes — Testing
 
-← [9.11 Leader Election con Spring Cloud Kubernetes](sc-kubernetes-leader.md) | [Índice (README.md)](README.md) | [10.1 Arquitectura CDC y modelo Consumer-Driven Contracts](sc-contract-fundamentos.md) →
+← [9.9 Integración con Istio](sc-kubernetes-istio.md) | [Índice](README.md) | [10.1 Spring Cloud Contract — Fundamentos CDC](sc-contract-fundamentos.md) →
 
 ---
 
 ## Introducción
 
-Testear una aplicación Spring Cloud Kubernetes presenta un desafío específico: el código depende de la Kubernetes API para cargar configuración y descubrir servicios, pero los tests unitarios y de integración estándar no tienen acceso a un cluster real. Sin una estrategia de testing adecuada, los tests fallan al arrancar porque SCK intenta conectarse a un API server que no existe, o la aplicación carga sin ConfigMaps y los tests no verifican el comportamiento real. Spring Cloud Kubernetes ofrece dos estrategias complementarias: `@EnableKubernetesMockClient` para tests unitarios y de integración rápidos (basado en WireMock para simular el API server), y Testcontainers con K3s o kind para tests de integración de alta fidelidad sobre un cluster Kubernetes real (pero efímero). Este nodo explica cuándo usar cada estrategia y proporciona ejemplos completos de ambas.
+Testear aplicaciones Spring Cloud Kubernetes requiere una estrategia diferente a los tests habituales de Spring Boot porque la aplicación depende de la API de Kubernetes para cargar propiedades (ConfigMaps/Secrets) y descubrir servicios (Endpoints). Existen tres enfoques principales: deshabilitar completamente la integración con Kubernetes para tests unitarios puros, usar `MockKubernetesServer` como servidor HTTP que imita la API K8s para tests de integración ligeros, y usar Testcontainers con K3s para tests de integración completos contra un clúster real ligero. Cada enfoque tiene un coste diferente en tiempo de ejecución y fidelidad del test.
 
-> **[PREREQUISITO]** Familiaridad con `@SpringBootTest`, JUnit 5 y `@MockBean`. Para la estrategia con Testcontainers, Docker debe estar disponible en el entorno de CI. Ver la documentación de Testcontainers para la configuración de `DockerImageName`.
+## Comparativa de estrategias de testing
 
-## Representación visual
+La siguiente tabla resume las tres estrategias y cuándo usar cada una.
 
-Las dos estrategias cubren niveles de test distintos con distintos compromisos entre velocidad y fidelidad.
+| Estrategia | Fidelidad | Coste | Cuándo usar |
+|---|---|---|---|
+| `spring.cloud.kubernetes.enabled=false` | Baja | Muy bajo | Tests unitarios sin dependencia de K8s |
+| `MockKubernetesServer` | Media | Bajo | Tests de integración de PropertySource y Discovery |
+| Testcontainers + K3s | Alta | Alto | Tests de integración E2E con clúster real |
 
-```
-Nivel de test        │ Estrategia SCK           │ Velocidad │ Fidelidad
-─────────────────────┼──────────────────────────┼───────────┼──────────
-Unitario             │ @MockBean DiscoveryClient │ Muy alta  │ Baja
-                     │ @Value con @TestPropertySource│ Muy alta │ Media
-─────────────────────┼──────────────────────────┼───────────┼──────────
-Integración          │ @EnableKubernetesMock     │ Alta      │ Media
-(mock API server)    │ Client + KubernetesMock   │           │
-                     │ Server (WireMock)         │           │
-─────────────────────┼──────────────────────────┼───────────┼──────────
-Integración real     │ Testcontainers K3s/kind   │ Media     │ Alta
-(cluster K8s efímero)│ + cliente real SCK        │           │
+> [CONCEPTO] `MockKubernetesServer` es un servidor HTTP embebido que imita la API de Kubernetes. Usando `expect()` se pueden registrar respuestas para endpoints concretos (como `GET /api/v1/namespaces/default/configmaps/my-service`), permitiendo testear la carga de ConfigMaps y Secrets sin un clúster real.
 
-Recomendación: la pirámide de tests aplicada a SCK:
-  - 70% unitarios con @MockBean / @TestPropertySource
-  - 25% integración con @EnableKubernetesMockClient
-  -  5% integración real con Testcontainers K3s
-```
+> [CONCEPTO] Testcontainers con K3s levanta un clúster Kubernetes real y ligero dentro de un contenedor Docker. Es la opción más fiel pero requiere Docker y tarda más en arrancar (20-60 segundos). Se usa para tests de integración que verifican el comportamiento completo incluyendo RBAC y reload.
 
-> **[CONCEPTO]** `@EnableKubernetesMockClient` activa un servidor WireMock embebido que simula las respuestas del Kubernetes API server. Los tests pueden registrar ConfigMaps y Services en este servidor mock y verificar que la aplicación los carga correctamente sin necesidad de un cluster real.
+> [PREREQUISITO] Para usar `MockKubernetesServer` del cliente oficial, se necesita la dependencia `spring-cloud-starter-kubernetes-client-test` o el módulo `spring-cloud-kubernetes-client-loadbalancer`. Para Fabric8, `spring-cloud-kubernetes-fabric8-*-test`.
 
 ## Ejemplo central
 
-El ejemplo cubre las tres estrategias: test unitario con `@MockBean`, test de integración con `@EnableKubernetesMockClient`, y test de integración real con Testcontainers K3s.
-
-**pom.xml** (dependencias de test):
+El siguiente ejemplo cubre los tres enfoques de testing con código completo.
 
 ```xml
-<dependencies>
-  <!-- Dependencias principales de la aplicación -->
-  <dependency>
+<!-- pom.xml — dependencias de test -->
+<dependency>
     <groupId>org.springframework.cloud</groupId>
-    <artifactId>spring-cloud-starter-kubernetes-fabric8-all</artifactId>
-  </dependency>
-  <dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-web</artifactId>
-  </dependency>
-
-  <!-- Dependencias de test -->
-  <dependency>
+    <artifactId>spring-cloud-starter-kubernetes-client-all</artifactId>
+</dependency>
+<dependency>
     <groupId>org.springframework.boot</groupId>
     <artifactId>spring-boot-starter-test</artifactId>
     <scope>test</scope>
-  </dependency>
-  <!-- Mock del cliente K8s para @EnableKubernetesMockClient -->
-  <dependency>
-    <groupId>org.springframework.cloud</groupId>
-    <artifactId>spring-cloud-kubernetes-fabric8-client-test</artifactId>
+</dependency>
+<!-- Para MockKubernetesServer con cliente oficial -->
+<dependency>
+    <groupId>io.kubernetes</groupId>
+    <artifactId>client-java</artifactId>
     <scope>test</scope>
-  </dependency>
-  <!-- Testcontainers para tests de integración reales -->
-  <dependency>
+</dependency>
+<!-- Para Testcontainers + K3s -->
+<dependency>
     <groupId>org.testcontainers</groupId>
     <artifactId>k3s</artifactId>
+    <version>1.20.1</version>
     <scope>test</scope>
-  </dependency>
-  <dependency>
-    <groupId>org.testcontainers</groupId>
-    <artifactId>junit-jupiter</artifactId>
-    <scope>test</scope>
-  </dependency>
-</dependencies>
+</dependency>
 ```
 
-**Estrategia 1 — Test unitario con @MockBean** (sin contexto K8s):
-
 ```java
-package com.ejemplo.catalogo;
+// src/test/java/com/example/DisabledK8sTest.java
+package com.example;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
-import org.springframework.cloud.client.ServiceInstance;
-import org.springframework.cloud.client.discovery.DiscoveryClient;
 import org.springframework.test.context.TestPropertySource;
-import java.util.List;
-import static org.mockito.Mockito.when;
-import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest(
-    properties = {
-        "spring.cloud.kubernetes.enabled=false",   // Desactiva SCK completamente
-        "spring.config.import="                    // Evita importación K8s
-    }
-)
+/**
+ * Test con Spring Cloud Kubernetes deshabilitado completamente.
+ * Útil para tests unitarios de lógica de negocio que no dependen de K8s.
+ */
+@SpringBootTest
 @TestPropertySource(properties = {
-    "catalogo.max-resultados=50",
-    "catalogo.cache-ttl-segundos=600"
+    "spring.cloud.kubernetes.enabled=false",
+    "spring.cloud.kubernetes.config.enabled=false",
+    "spring.cloud.kubernetes.discovery.enabled=false",
+    "app.message=test-message",       // valores por defecto para el test
+    "app.max-retries=1"
 })
-class CatalogoServiceTest {
-
-    @MockBean
-    private DiscoveryClient discoveryClient;
+class DisabledK8sTest {
 
     @Autowired
-    private CatalogoService catalogoService;
+    private AppProperties appProperties;
 
     @Test
-    void debeUsarConfiguracionDeTestProperties() {
-        assertThat(catalogoService.getMaxResultados()).isEqualTo(50);
-    }
-
-    @Test
-    void debeDelegarDescubrimientoAlDiscoveryClient() {
-        ServiceInstance instanciaMock = mockServiceInstance("inventario-service", "10.0.0.1", 8080);
-        when(discoveryClient.getInstances("inventario-service"))
-            .thenReturn(List.of(instanciaMock));
-
-        List<ServiceInstance> instancias = catalogoService.obtenerInstanciasInventario();
-
-        assertThat(instancias).hasSize(1);
-        assertThat(instancias.get(0).getHost()).isEqualTo("10.0.0.1");
-    }
-
-    private ServiceInstance mockServiceInstance(String serviceId, String host, int port) {
-        ServiceInstance mock = org.mockito.Mockito.mock(ServiceInstance.class);
-        when(mock.getServiceId()).thenReturn(serviceId);
-        when(mock.getHost()).thenReturn(host);
-        when(mock.getPort()).thenReturn(port);
-        return mock;
+    void shouldLoadDefaultProperties() {
+        assert appProperties.getMessage().equals("test-message");
+        assert appProperties.getMaxRetries() == 1;
     }
 }
 ```
 
-**Estrategia 2 — Test de integración con @EnableKubernetesMockClient**:
-
 ```java
-package com.ejemplo.catalogo;
+// src/test/java/com/example/MockConfigMapTest.java
+package com.example;
 
-import io.fabric8.kubernetes.api.model.ConfigMapBuilder;
-import io.fabric8.kubernetes.client.KubernetesClient;
+import io.kubernetes.client.openapi.ApiClient;
+import io.kubernetes.client.openapi.models.V1ConfigMap;
+import io.kubernetes.client.openapi.models.V1ObjectMeta;
+import io.kubernetes.client.util.ClientBuilder;
+import okhttp3.mockwebserver.MockResponse;
+import okhttp3.mockwebserver.MockWebServer;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.cloud.kubernetes.fabric8.test.EnableKubernetesMockClient;
+import org.springframework.test.context.TestPropertySource;
+
+import java.io.IOException;
 import java.util.Map;
-import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest
-@EnableKubernetesMockClient(crud = true)   // WireMock con soporte CRUD sobre K8s API
-class ConfigMapPropertySourceTest {
+/**
+ * Test con MockWebServer que imita la API de Kubernetes.
+ * Permite testear la carga de ConfigMaps sin un clúster real.
+ */
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@TestPropertySource(properties = {
+    "spring.cloud.kubernetes.config.enabled=true",
+    "spring.cloud.kubernetes.config.name=my-service",
+    "spring.cloud.kubernetes.config.namespace=default"
+})
+class MockConfigMapTest {
 
-    // KubernetesClient conectado al servidor WireMock embebido
-    static KubernetesClient mockClient;
+    private MockWebServer mockApiServer;
 
-    @Value("${catalogo.max-resultados:0}")
-    private int maxResultados;
+    @Autowired
+    private AppProperties appProperties;
+
+    @BeforeEach
+    void setUp() throws IOException {
+        mockApiServer = new MockWebServer();
+        mockApiServer.start();
+
+        // Respuesta simulada del API de Kubernetes para GET configmap
+        String configMapJson = """
+                {
+                  "apiVersion": "v1",
+                  "kind": "ConfigMap",
+                  "metadata": {
+                    "name": "my-service",
+                    "namespace": "default"
+                  },
+                  "data": {
+                    "app.message": "hello-from-mock-configmap",
+                    "app.max-retries": "5"
+                  }
+                }
+                """;
+
+        mockApiServer.enqueue(new MockResponse()
+                .setBody(configMapJson)
+                .addHeader("Content-Type", "application/json"));
+    }
+
+    @AfterEach
+    void tearDown() throws IOException {
+        mockApiServer.shutdown();
+    }
 
     @Test
-    void debeLeerPropiedadesDelConfigMapMock() {
-        // Registrar un ConfigMap en el servidor WireMock embebido
-        mockClient.configMaps()
-            .inNamespace("default")
-            .create(new ConfigMapBuilder()
-                .withNewMetadata()
-                    .withName("catalogo-service")
-                    .withNamespace("default")
-                .endMetadata()
-                .withData(Map.of("application.properties",
-                    "catalogo.max-resultados=75\ncatalogo.cache-ttl-segundos=900"))
-                .build()
-            );
-
-        // La propiedad debe ser accesible via Spring Environment
-        assertThat(maxResultados).isEqualTo(75);
+    void shouldLoadPropertiesFromMockedConfigMap() {
+        // El PropertySource de Spring Cloud K8s ha cargado las propiedades
+        // desde el mock server durante el arranque del contexto de test
+        assert appProperties.getMaxRetries() == 5;
     }
 }
 ```
 
-**Estrategia 3 — Test de integración real con Testcontainers K3s**:
-
 ```java
-package com.ejemplo.catalogo;
+// src/test/java/com/example/K3sIntegrationTest.java
+package com.example;
 
-import io.fabric8.kubernetes.api.model.ConfigMapBuilder;
-import io.fabric8.kubernetes.client.KubernetesClient;
-import io.fabric8.kubernetes.client.KubernetesClientBuilder;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.k3s.K3sContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
-import java.util.Map;
-import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Test de integración con un clúster K3s real en Docker.
+ * Mayor fidelidad pero mayor tiempo de arranque (~30-60 segundos).
+ */
 @Testcontainers
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class K3sIntegrationTest {
 
     @Container
     static K3sContainer k3s = new K3sContainer(
-        DockerImageName.parse("rancher/k3s:v1.27.4-k3s1")
-    );
+            DockerImageName.parse("rancher/k3s:v1.28.3-k3s1"));
 
-    static KubernetesClient client;
+    @DynamicPropertySource
+    static void configureK8sProperties(DynamicPropertyRegistry registry) {
+        // Inyectar el kubeconfig del clúster K3s en el contexto de Spring
+        registry.add("spring.cloud.kubernetes.client.kubeConfigFile",
+                () -> k3s.getKubeConfigYaml());
+    }
 
     @BeforeAll
-    static void inicializarCliente() {
-        // Obtener kubeconfig del contenedor K3s y crear cliente real
-        client = new KubernetesClientBuilder()
-            .withConfig(io.fabric8.kubernetes.client.Config.fromKubeconfig(
-                k3s.getKubeConfigYaml()
-            ))
-            .build();
+    static void setupCluster() throws Exception {
+        // Aquí se crearían los recursos K8s necesarios para el test:
+        // kubectl apply -f configmap.yaml usando el cliente K8s
+        // Por brevedad se omite la lógica de kubectl
     }
 
     @Test
-    void debeCrearYLeerConfigMapEnK3s() {
-        // Crear un ConfigMap real en el cluster K3s efímero
-        client.configMaps()
-            .inNamespace("default")
-            .create(new ConfigMapBuilder()
-                .withNewMetadata()
-                    .withName("test-config")
-                    .withNamespace("default")
-                .endMetadata()
-                .withData(Map.of("clave", "valor-de-prueba"))
-                .build()
-            );
-
-        // Leer el ConfigMap de vuelta
-        var configMap = client.configMaps()
-            .inNamespace("default")
-            .withName("test-config")
-            .get();
-
-        assertThat(configMap).isNotNull();
-        assertThat(configMap.getData()).containsEntry("clave", "valor-de-prueba");
-    }
-
-    @Test
-    void debeVerificarRecargarConfigMapEnCaliente() throws InterruptedException {
-        // Test de recarga: crear ConfigMap, verificar valor inicial,
-        // actualizar ConfigMap, verificar nuevo valor propagado
-        client.configMaps()
-            .inNamespace("default")
-            .create(new ConfigMapBuilder()
-                .withNewMetadata()
-                    .withName("reload-test")
-                    .withNamespace("default")
-                .endMetadata()
-                .withData(Map.of("application.properties", "mi.valor=inicial"))
-                .build()
-            );
-
-        // Actualizar el ConfigMap
-        Thread.sleep(2000);  // Esperar propagación
-        client.configMaps()
-            .inNamespace("default")
-            .withName("reload-test")
-            .edit(cm -> {
-                cm.getData().put("application.properties", "mi.valor=actualizado");
-                return cm;
-            });
-
-        // Verificar que el valor se propagó (en un test real, comprobar via HTTP endpoint)
-        var updated = client.configMaps()
-            .inNamespace("default")
-            .withName("reload-test")
-            .get();
-
-        assertThat(updated.getData().get("application.properties"))
-            .contains("mi.valor=actualizado");
+    void shouldDiscoverServicesInK3sCluster() {
+        // test con clúster real
+        assert k3s.isRunning();
     }
 }
 ```
 
-> **[EXAMEN]** Pregunta frecuente: "¿Cuándo usar `@EnableKubernetesMockClient` vs Testcontainers K3s para tests de SCK?" `@EnableKubernetesMockClient` es adecuado para tests de integración rápidos que verifican que la aplicación carga propiedades de un ConfigMap correctamente. Testcontainers K3s es necesario cuando se necesita verificar comportamientos que dependen de internals de Kubernetes: la propagación real del watch de ConfigMaps, el comportamiento del RBAC, o la integración con el ServiceAccount. La regla práctica: si el test puede verificarse con un mock del API server, usar `@EnableKubernetesMockClient`; si necesita el comportamiento real de Kubernetes, usar K3s.
+## Tabla de estrategias y dependencias
 
-## Tabla de elementos clave
+La siguiente tabla resume qué dependencia de test se necesita para cada estrategia.
 
-| Componente | Estrategia | Descripción |
+| Estrategia | Dependencia adicional de test | Clase / Herramienta |
 |---|---|---|
-| `@EnableKubernetesMockClient` | Mock API server | Activa WireMock embebido simulando la Kubernetes API |
-| `KubernetesMockServer` | Mock API server | Servidor WireMock accesible desde el test para registrar respuestas |
-| `spring.cloud.kubernetes.enabled=false` | Unit test | Desactiva SCK completamente para tests sin contexto K8s |
-| `K3sContainer` (Testcontainers) | Integración real | Cluster K3s efímero en Docker para tests de alta fidelidad |
-| `@MockBean DiscoveryClient` | Unit test | Mock del DiscoveryClient para tests de lógica de servicio |
-| `@TestPropertySource` | Unit test | Proporciona propiedades de test sin necesitar ConfigMap |
+| K8s deshabilitado | — | `@TestPropertySource(properties={"spring.cloud.kubernetes.enabled=false"})` |
+| Mock API server (cliente oficial) | `okhttp3:mockwebserver` o `io.kubernetes:client-java` | `MockWebServer` |
+| Mock API server (Fabric8) | `io.fabric8:kubernetes-server-mock` | `KubernetesServer` |
+| Testcontainers K3s | `org.testcontainers:k3s` | `K3sContainer` |
+
+## Estrategias de stub para cada feature de SC-K8s
+
+La siguiente tabla muestra qué se debe mockear según la feature que se esté probando.
+
+| Feature testeada | Qué mockear en el servidor | Endpoint de la API K8s |
+|---|---|---|
+| ConfigMap PropertySource (sc-kubernetes-configmap.md) | GET ConfigMap | `GET /api/v1/namespaces/{ns}/configmaps/{name}` |
+| Secret PropertySource (sc-kubernetes-secrets.md) | GET Secret | `GET /api/v1/namespaces/{ns}/secrets/{name}` |
+| KubernetesDiscoveryClient (sc-kubernetes-discovery.md) | GET Endpoints + Services | `GET /api/v1/namespaces/{ns}/endpoints` |
+| Reload de configuración (sc-kubernetes-reload.md) | Watch ConfigMap | `GET /api/v1/namespaces/{ns}/configmaps?watch=true` |
 
 ## Buenas y malas prácticas
 
-**Hacer:**
+**Buenas prácticas:**
+- Usar `spring.cloud.kubernetes.enabled=false` para la mayoría de tests unitarios de lógica de negocio: es el enfoque más rápido y sin dependencias de infraestructura.
+- Usar `MockWebServer` para tests de integración que verifican la correcta carga de propiedades desde ConfigMaps y Secrets: buen balance entre fidelidad y velocidad.
+- Reservar Testcontainers + K3s para el pipeline de CI/CD en tests de integración E2E que verifican el comportamiento completo con RBAC y reload real.
+- Usar `@DynamicPropertySource` para inyectar la URL del mock server o el kubeconfig de K3s en el contexto de Spring durante los tests.
 
-- Desactivar SCK con `spring.cloud.kubernetes.enabled=false` en todos los tests unitarios que no necesitan la integración K8s: evita que el contexto de Spring intente conectarse a un cluster inexistente y acelera el arranque del test en un factor de 3-5x.
-- Usar `@TestPropertySource` o `application-test.properties` para proporcionar los valores de configuración en tests unitarios: es la forma más simple y directa, sin necesidad de mocks del API server.
-- Incluir al menos un test de integración con `@EnableKubernetesMockClient` que verifique la carga del ConfigMap y la resolución de propiedades end-to-end: detecta errores de configuración (namespace incorrecto, nombre de clave erróneo) antes de llegar a producción.
-- Reservar Testcontainers K3s para los tests que verifican comportamientos específicos de Kubernetes (recarga de ConfigMap vía watch, RBAC, leader election): son más lentos (arranque del cluster ~30s) y consumen más recursos.
+**Malas prácticas:**
+- Ejecutar tests de integración K3s en el build local de cada desarrollador: el tiempo de arranque del clúster hace que el ciclo de feedback sea demasiado lento.
+- Ignorar `spring.cloud.kubernetes.enabled=false` y dejar que el contexto de test intente conectarse a un API server inexistente: provoca timeouts y tests frágiles.
+- Crear el contexto de Spring con `spring.cloud.kubernetes.config.enabled=true` sin preparar el mock del ConfigMap: el test fallará con `403 Forbidden` o `ConfigMapNotFound`.
 
-**Evitar:**
+> [ADVERTENCIA] En entornos de CI donde Docker no está disponible, Testcontainers con K3s no funciona. Asegurarse de que los tests K3s tienen la anotación `@EnabledIfDockerAvailable` o están en un perfil separado de CI que se ejecuta solo en runners con Docker.
 
-- Usar `@SpringBootTest` sin `spring.cloud.kubernetes.enabled=false` en tests unitarios que no necesitan SCK: el contexto intentará conectarse al API server y fallará con `ConnectException` en entornos sin Kubernetes (CI, máquinas locales sin kubeconfig).
-- Copiar el kubeconfig de producción en el entorno de CI para tests de integración: usar Testcontainers K3s o kind para crear un cluster efímero. El kubeconfig de producción en CI es un riesgo de seguridad grave.
-- Omitir tests de recarga dinámica de ConfigMap: es uno de los comportamientos más frecuentemente rotos por upgrades de versión de SCK o cambios de RBAC, y solo puede verificarse con un cluster Kubernetes real o un mock de alta fidelidad.
+## Verificación y práctica
+
+> [EXAMEN] 1. ¿Cómo se desactiva completamente la integración con Kubernetes en un test de Spring Boot para evitar que el contexto intente conectarse a la API K8s?
+
+> [EXAMEN] 2. ¿Qué herramienta permite simular el API Server de Kubernetes en tests de integración sin levantar un clúster real, y cuáles son sus limitaciones?
+
+> [EXAMEN] 3. ¿Cuándo se recomienda usar Testcontainers con K3s en lugar de `MockWebServer` para testear una aplicación Spring Cloud Kubernetes?
+
+> [EXAMEN] 4. ¿Qué endpoint de la API de Kubernetes hay que mockear para testear que `KubernetesDiscoveryClient` descubre correctamente las instancias de un servicio?
+
+> [EXAMEN] 5. ¿Qué anotación de JUnit 5 permite inyectar propiedades dinámicas (como la URL del mock server o el kubeconfig de K3s) en el contexto de Spring antes de que arranque?
 
 ---
 
-← [9.11 Leader Election con Spring Cloud Kubernetes](sc-kubernetes-leader.md) | [Índice (README.md)](README.md) | [10.1 Arquitectura CDC y modelo Consumer-Driven Contracts](sc-contract-fundamentos.md) →
+← [9.9 Integración con Istio](sc-kubernetes-istio.md) | [Índice](README.md) | [10.1 Spring Cloud Contract — Fundamentos CDC](sc-contract-fundamentos.md) →

@@ -1,246 +1,204 @@
-# 5.10 Anotaciones AOP de Resilience4j y orden de decoradores combinados
+# 4.7 AOP — Orden de aspectos y fallbackMethod
 
-← [5.9 TimeLimiter: acotación de tiempos de ejecución asíncronos](sc-circuitbreaker-timelimiter.md) | [Índice](README.md) | [5.11 Métricas de Resilience4j con Micrometer y endpoints Actuator](sc-circuitbreaker-metricas.md) →
+← [4.6 RateLimiter y TimeLimiter](sc-circuitbreaker-ratelimiter.md) | [Índice](README.md) | [4.8 Spring Cloud Circuit Breaker — Abstraction Layer](sc-circuitbreaker-sc-abstraction.md) →
+
+---
 
 ## Introducción
 
-Resilience4j ofrece un conjunto de anotaciones AOP que permiten decorar métodos Spring con comportamiento de resiliencia sin escribir código de envolvimiento explícito. La comodidad de las anotaciones tiene un precio: cuando se aplican varias anotaciones al mismo método, el orden en que se aplican los aspectos determina el comportamiento del sistema, y ese orden no es intuitivo.
+Las anotaciones de Resilience4j (`@CircuitBreaker`, `@Retry`, `@Bulkhead`, etc.) son procesadas por aspectos Spring AOP. Cuando se aplican múltiples anotaciones sobre el mismo método, el orden en que se aplican los aspectos determina completamente el comportamiento del sistema ante un fallo. Un orden incorrecto puede hacer que el Circuit Breaker abra demasiado rápido, que los reintentos se produzcan fuera del bulkhead, o que el fallback se invoque antes de lo esperado. Este fichero explica el orden fijo de Resilience4j, la firma del fallbackMethod, el problema de self-invocation y cómo superarlo.
 
-El orden canónico documentado por Resilience4j es `Bulkhead > CircuitBreaker > RateLimiter > TimeLimiter > Retry`. Esto significa que Bulkhead es el decorador más exterior (se evalúa primero) y Retry es el más interior (se evalúa al final, dentro de todos los demás). Una consecuencia práctica: si Retry está dentro del Circuit Breaker, cada reintento cuenta como una llamada para el CB, lo que puede hacer que el circuito abra más rápido de lo esperado. Si el orden se invierte (Retry fuera del CB), los reintentos no cuentan para el CB pero el CB puede rechazar los reintentos si ya está OPEN.
+> [EXAMEN] El orden de aspectos de Resilience4j Spring Boot es fijo y conocido: **Bulkhead > TimeLimiter > RateLimiter > CircuitBreaker > Retry** (de exterior a interior). Esta pregunta aparece frecuentemente en el examen VMware Spring Professional.
 
-La limitación de las anotaciones AOP en llamadas internas (self-invocation) también es un punto crítico: cuando un método de una clase llama a otro método de la misma clase, Spring AOP no intercepta la llamada interna porque el proxy no está involucrado.
+## Diagrama de la cadena de aspectos
 
-> [ADVERTENCIA] La limitación de self-invocation es inherente al mecanismo de proxy de Spring. No hay forma de sortearla con anotaciones; si se necesita que la llamada interna esté decorada, usar la API programática (`CircuitBreakerFactory.create()`) o inyectar el propio bean (`@Autowired Self self`).
-
-## Representación visual
-
-El orden de aplicación de los aspectos define una cadena de decoradores en forma de cebolla:
+La cadena de aspectos funciona como decoradores anidados: el aspecto más exterior envuelve a todos los demás. En caso de fallo, el control se propaga desde el interior hacia el exterior.
 
 ```
-Llamada al método decorado desde el exterior:
-──────────────────────────────────────────────────────────────
-
-  ┌─── @Bulkhead (más exterior, se evalúa primero) ──────────┐
-  │  ┌─── @CircuitBreaker ──────────────────────────────────┐ │
-  │  │  ┌─── @RateLimiter ───────────────────────────────┐  │ │
-  │  │  │  ┌─── @TimeLimiter ────────────────────────┐   │  │ │
-  │  │  │  │  ┌─── @Retry (más interior) ─────────┐  │   │  │ │
-  │  │  │  │  │                                   │  │   │  │ │
-  │  │  │  │  │    MÉTODO REAL                    │  │   │  │ │
-  │  │  │  │  └───────────────────────────────────┘  │   │  │ │
-  │  │  │  └────────────────────────────────────────┘   │  │ │
-  │  │  └──────────────────────────────────────────────┘  │ │
-  │  └─────────────────────────────────────────────────────┘ │
-  └──────────────────────────────────────────────────────────┘
-
-Consecuencia del orden:
-  1. Bulkhead comprueba si hay recursos disponibles
-  2. CB comprueba si el circuito está cerrado
-  3. RateLimiter comprueba si hay permisos disponibles
-  4. TimeLimiter inicia el temporizador
-  5. Retry ejecuta el método; si falla, repite desde el paso 4
-     (cada reintento es observable por CB, RL y TL en el camino de vuelta)
+Llamada entrante
+       │
+       ▼
+┌──────────────┐
+│  Bulkhead    │  (exterior — primer control: ¿hay cupo de concurrencia?)
+│  ┌──────────────────────────┐
+│  │  TimeLimiter             │  (segundo — ¿cuánto tiempo puede durar?)
+│  │  ┌──────────────────────────┐
+│  │  │  RateLimiter           │  (tercero — ¿se permite la frecuencia?)
+│  │  │  ┌──────────────────────────┐
+│  │  │  │  CircuitBreaker       │  (cuarto — ¿está el circuito cerrado?)
+│  │  │  │  ┌──────────────────────────┐
+│  │  │  │  │  Retry              │  (interior — reintenta si falla)
+│  │  │  │  │  ┌─────────────┐
+│  │  │  │  │  │  MÉTODO     │  (código real)
+│  │  │  │  │  └─────────────┘
+│  │  │  │  └──────────────────────────┘
+│  │  │  └──────────────────────────┘
+│  │  └──────────────────────────┘
+│  └──────────────────────────┘
+└──────────────┘
 ```
 
-| Anotación           | Aspect Order por defecto | Comportamiento cuando falla                         |
-|---------------------|--------------------------|-----------------------------------------------------|
-| `@Bulkhead`         | 2147483647 - 1 (más alto) | Lanza `BulkheadFullException`                      |
-| `@CircuitBreaker`   | 2147483647 - 2           | Lanza `CallNotPermittedException` si OPEN           |
-| `@RateLimiter`      | 2147483647 - 3           | Lanza `RequestNotPermitted`                         |
-| `@TimeLimiter`      | 2147483647 - 4           | Lanza `TimeoutException`                            |
-| `@Retry`            | 2147483647 - 5 (más bajo) | Reintenta; lanza excepción original tras agotar intentos |
+Este orden significa que:
+- Retry intenta el método `maxAttempts` veces antes de propagar el fallo al CircuitBreaker.
+- CircuitBreaker cuenta UN fallo por cada agotamiento de Retry (no por cada intento).
+- RateLimiter verifica el permiso antes de que CircuitBreaker compruebe el estado.
+- Bulkhead limita la concurrencia total del conjunto completo.
 
 ## Ejemplo central
 
-Servicio de procesamiento de pedidos que combina las cinco anotaciones en el mismo método, con configuración explícita del orden de aspectos y tratamiento de la limitación de self-invocation.
-
-```xml
-<!-- pom.xml -->
-<dependencies>
-    <dependency>
-        <groupId>org.springframework.cloud</groupId>
-        <artifactId>spring-cloud-starter-circuitbreaker-resilience4j</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-web</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-aop</artifactId>
-    </dependency>
-</dependencies>
-```
-
-```yaml
-# application.yml — configuración de instancias usadas en las anotaciones
-resilience4j:
-  circuitbreaker:
-    instances:
-      orderProcessor:
-        sliding-window-size: 10
-        minimum-number-of-calls: 5
-        failure-rate-threshold: 50
-        wait-duration-in-open-state: 30s
-        automatic-transition-from-open-to-half-open-enabled: true
-  retry:
-    instances:
-      orderProcessor:
-        max-attempts: 3
-        wait-duration: 500ms
-        enable-exponential-backoff: true
-        exponential-backoff-multiplier: 2.0
-        retry-exceptions:
-          - java.io.IOException
-          - org.springframework.web.client.HttpServerErrorException
-  bulkhead:
-    instances:
-      orderProcessor:
-        max-concurrent-calls: 10
-        max-wait-duration: 100ms
-  ratelimiter:
-    instances:
-      orderProcessor:
-        limit-for-period: 20
-        limit-refresh-period: 1s
-        timeout-duration: 200ms
-  timelimiter:
-    instances:
-      orderProcessor:
-        timeout-duration: 5s
-        cancel-running-future: true
-
-  # Personalización del orden de aspectos si se necesita invertir algún par
-  # (aquí se deja en el orden canónico por defecto)
-  bulkhead:
-    bulkhead-aspect-order: 2147482647
-  circuitbreaker:
-    circuit-breaker-aspect-order: 2147482646
-  ratelimiter:
-    rate-limiter-aspect-order: 2147482645
-  timelimiter:
-    time-limiter-aspect-order: 2147482644
-  retry:
-    retry-aspect-order: 2147482643
-```
+El ejemplo muestra la combinación correcta de tres anotaciones en el mismo método, el fallback unificado y el comportamiento de orden:
 
 ```java
-// OrderProcessingService.java — uso combinado de las 5 anotaciones
-package com.example.orders.service;
+package com.example.combined;
 
-import com.example.orders.model.Order;
-import com.example.orders.model.OrderResult;
 import io.github.resilience4j.bulkhead.annotation.Bulkhead;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
-import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
 import io.github.resilience4j.retry.annotation.Retry;
-import io.github.resilience4j.timelimiter.annotation.TimeLimiter;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClient;
-import java.util.concurrent.CompletableFuture;
 
 @Service
-public class OrderProcessingService {
+public class ResilientOrderService {
 
-    private final RestClient restClient;
-    // Inyección del propio bean para resolver la limitación de self-invocation
-    private final OrderProcessingService self;
+    private final PaymentClient paymentClient;
 
-    public OrderProcessingService(
-            RestClient.Builder builder,
-            OrderProcessingService self) {
-        this.restClient = builder.baseUrl("http://order-service").build();
-        this.self = self;
+    public ResilientOrderService(PaymentClient paymentClient) {
+        this.paymentClient = paymentClient;
     }
 
-    /**
-     * Método público decorado con todas las anotaciones.
-     * El orden real de aplicación es el canónico:
-     * Bulkhead > CB > RateLimiter > TimeLimiter > Retry
-     */
-    @Bulkhead(name = "orderProcessor", fallbackMethod = "fallbackOrder")
-    @CircuitBreaker(name = "orderProcessor", fallbackMethod = "fallbackOrder")
-    @RateLimiter(name = "orderProcessor", fallbackMethod = "fallbackOrder")
-    @TimeLimiter(name = "orderProcessor", fallbackMethod = "fallbackOrder")
-    @Retry(name = "orderProcessor", fallbackMethod = "fallbackOrder")
-    public CompletableFuture<OrderResult> processOrder(Order order) {
-        return CompletableFuture.supplyAsync(() ->
-                restClient.post()
-                        .uri("/api/orders")
-                        .body(order)
-                        .retrieve()
-                        .body(OrderResult.class)
-        );
+    // Orden de aplicación (exterior → interior):
+    // 1. Bulkhead: limita concurrencia a maxConcurrentCalls
+    // 2. CircuitBreaker: evalúa estado del circuito
+    // 3. Retry: reintenta hasta maxAttempts veces
+    // El fallbackMethod es invocado por el aspecto más externo que lo declare
+    @Bulkhead(name = "paymentService", fallbackMethod = "paymentFallback")
+    @CircuitBreaker(name = "paymentService", fallbackMethod = "paymentFallback")
+    @Retry(name = "paymentService", fallbackMethod = "paymentFallback")
+    public PaymentResult processPayment(PaymentRequest request) {
+        return paymentClient.process(request);
     }
 
-    /**
-     * Ejemplo de cómo llamar a un método decorado desde dentro de la misma clase:
-     * usar this.processOrder() NO pasa por el proxy (sin AOP).
-     * Usar self.processOrder() SÍ pasa por el proxy (con AOP).
-     */
-    public CompletableFuture<OrderResult> processOrderWithPreCheck(Order order) {
-        if (order.items() == null || order.items().isEmpty()) {
-            return CompletableFuture.failedFuture(
-                    new IllegalArgumentException("El pedido no tiene items"));
-        }
-        // self.processOrder pasa por el proxy y aplica todas las anotaciones
-        return self.processOrder(order);
-    }
-
-    private CompletableFuture<OrderResult> fallbackOrder(Order order, Throwable ex) {
-        String reason = switch (ex.getClass().getSimpleName()) {
-            case "BulkheadFullException"      -> "BULKHEAD_FULL";
-            case "CallNotPermittedException"  -> "CIRCUIT_OPEN";
-            case "RequestNotPermitted"        -> "RATE_LIMIT_EXCEEDED";
-            case "TimeoutException"           -> "TIMEOUT";
-            default                           -> "ERROR: " + ex.getMessage();
-        };
-        return CompletableFuture.completedFuture(
-                new OrderResult(order.orderId(), "FAILED", reason));
+    // Firma: mismos parámetros + Throwable
+    // Se usa UN único fallback para las tres anotaciones (mismo nombre y firma)
+    public PaymentResult paymentFallback(PaymentRequest request, Throwable ex) {
+        return PaymentResult.failed(
+            "Payment service unavailable: " + ex.getClass().getSimpleName());
     }
 }
 ```
 
+Demostración del problema de self-invocation:
+
 ```java
-// Modelos
-package com.example.orders.model;
+package com.example.selfinvoke;
 
-import java.util.List;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import org.springframework.stereotype.Service;
 
-public record Order(String orderId, String customerId, List<String> items) {}
-public record OrderResult(String orderId, String status, String reason) {}
+@Service
+public class SelfInvocationDemo {
+
+    // CORRECTO: llama al método desde fuera de la clase → el proxy intercepta
+    public void entryPoint() {
+        // Esta llamada SÍ pasa por el proxy AOP → @CircuitBreaker activo
+        String result = this.protectedByProxy(); // "this" es el proxy
+        // INCORRECTO si se hace desde dentro:
+        // String result = protectedMethod(); // "this" es el objeto real, no el proxy
+    }
+
+    @CircuitBreaker(name = "demo", fallbackMethod = "demoFallback")
+    public String protectedByProxy() {
+        return externalCall();
+    }
+
+    // Este método llama a protectedMethod() via self-invocation
+    // @CircuitBreaker NO se aplica porque el proxy no intercepta llamadas internas
+    public void internalCaller() {
+        // PELIGRO: esta llamada bypassa el proxy
+        String result = protectedByProxy(); // equivale a super.protectedByProxy()
+    }
+
+    public String demoFallback(Throwable ex) {
+        return "fallback";
+    }
+
+    private String externalCall() {
+        return "ok";
+    }
+}
 ```
 
-## Tabla de elementos clave
+## Tabla de prioridades de aspectos
 
-Aspectos de configuración de las anotaciones AOP de Resilience4j.
+Los valores de `@Order` asignados por Resilience4j Spring Boot para cada aspecto (menor = mayor prioridad = más exterior):
 
-| Anotación                                  | Atributos principales                      | Tipo de retorno requerido                     |
-|--------------------------------------------|--------------------------------------------|-----------------------------------------------|
-| `@CircuitBreaker(name, fallbackMethod)`    | `name`, `fallbackMethod`                   | Cualquiera                                    |
-| `@Retry(name, fallbackMethod)`             | `name`, `fallbackMethod`                   | Cualquiera                                    |
-| `@Bulkhead(name, type, fallbackMethod)`    | `name`, `type` (SEMAPHORE/THREADPOOL), `fallbackMethod` | SEMAPHORE: cualquiera; THREADPOOL: `CompletableFuture` |
-| `@RateLimiter(name, fallbackMethod)`       | `name`, `fallbackMethod`                   | Cualquiera                                    |
-| `@TimeLimiter(name, fallbackMethod)`       | `name`, `fallbackMethod`                   | `CompletableFuture` (obligatorio)             |
-| Configuración de aspect order YAML         | `resilience4j.[component].aspect-order`   | Integer                                       |
-| Self-invocation workaround                 | Inyección del bean en el constructor       | —                                             |
+| Aspecto | @Order | Posición en la cadena |
+|---------|--------|----------------------|
+| BulkheadAspect | `Ordered.LOWEST_PRECEDENCE - 3` | Más exterior |
+| TimeLimiterAspect | `Ordered.LOWEST_PRECEDENCE - 2` | Segundo |
+| RateLimiterAspect | `Ordered.LOWEST_PRECEDENCE - 1` | Tercero |
+| CircuitBreakerAspect | `Ordered.LOWEST_PRECEDENCE` | Cuarto |
+| RetryAspect | `Ordered.LOWEST_PRECEDENCE + 1` | Más interior |
+
+> [CONCEPTO] `Ordered.LOWEST_PRECEDENCE` tiene el valor `Integer.MAX_VALUE`. Los aspectos con valores más bajos (más negativos relativo al LOWEST_PRECEDENCE) se aplican más al exterior. Esta numeración puede parecer contraintuitiva pero sigue la convención de Spring AOP.
+
+## Firma del fallbackMethod — reglas completas
+
+Un `fallbackMethod` incorrecto causa `NoSuchMethodException` en la primera invocación o en el arranque. Las reglas son:
+
+1. Debe estar en la **misma clase** que el método protegido (no en una superclase).
+2. Debe tener el **mismo tipo de retorno** (o compatible por polimorfismo).
+3. Debe aceptar los **mismos parámetros** que el método protegido, seguidos de un parámetro `Throwable` (o subclase).
+4. Si hay múltiples fallbacks con el mismo nombre y diferente tipo de excepción, Resilience4j selecciona el **más específico**.
+5. Con `@TimeLimiter` y `CompletableFuture`, el fallback también debe devolver `CompletableFuture<T>`.
+
+> [ADVERTENCIA] La self-invocation es el error más frecuente con Resilience4j. Cuando un método anotado es llamado desde otro método de la misma clase sin pasar por el proxy, ninguna de las anotaciones Resilience4j tiene efecto. La solución es inyectar la misma clase via `@Autowired` (Spring devuelve el proxy), o usar el modo AspectJ (weaving en tiempo de compilación/carga) que no depende de proxies.
+
+## Modo AspectJ vs Spring Proxy
+
+Spring AOP funciona mediante proxies CGLIB (por defecto) o JDK Dynamic Proxies. Solo intercepta llamadas que pasan por el proxy. AspectJ (weaving) modifica el bytecode directamente y puede interceptar cualquier llamada, incluyendo self-invocation, llamadas a constructores y campos.
+
+Para activar el modo AspectJ en Spring Boot se añade la dependencia `spring-aspects` y se usa `@EnableAspectJAutoProxy(proxyTargetClass=false)` con weaving configurado en el build. Para la mayoría de proyectos, la solución más simple a la self-invocation es inyectar la propia clase:
+
+```java
+@Service
+public class MyService {
+    @Autowired
+    private MyService self; // self es el proxy, no el objeto real
+
+    public void internalCaller() {
+        self.protectedMethod(); // pasa por el proxy → @CircuitBreaker activo
+    }
+
+    @CircuitBreaker(name = "demo", fallbackMethod = "fallback")
+    public String protectedMethod() { return "ok"; }
+
+    public String fallback(Throwable ex) { return "fallback"; }
+}
+```
 
 ## Buenas y malas prácticas
 
-**Hacer:**
+**Buenas prácticas:**
+- Respetar el orden por defecto (Bulkhead > TimeLimiter > RateLimiter > CB > Retry) salvo razón documentada.
+- Usar el mismo nombre de `fallbackMethod` para todas las anotaciones combinadas en el mismo método.
+- Si se necesita personalizar el orden, usar `resilience4j.*.aspectOrder` en application.yml o la propiedad `spring.aop.proxy-target-class=true`.
 
-- Anotar solo el método más externo de la llamada a servicios externos. Decorar métodos intermedios que a su vez llaman a los externos duplica los aspectos y produce comportamientos imprevisibles.
-- Documentar en un comentario el orden de aplicación real cuando se combinan varias anotaciones. El orden canónico (`Bulkhead > CB > RL > TL > Retry`) no es obvio para quien lee el código por primera vez.
-- Usar la inyección del propio bean en el constructor para resolver self-invocation de forma limpia. Declarar el bean en el constructor con `@Autowired` o con inyección de constructor evita dependencias circulares con Spring.
-- Revisar que todos los métodos `fallbackMethod` tengan exactamente la misma firma que el método protegido más el parámetro `Throwable` al final. Resilience4j lanza `FallbackExecutionException` en runtime si las firmas no coinciden.
+**Malas prácticas:**
+- Ignorar el efecto del orden: poner Retry más externo que CircuitBreaker hace que cada intento individual cuente como fallo en el CB.
+- Definir el `fallbackMethod` en una clase diferente mediante `@see` o mediante herencia: no funciona con CGLIB proxy.
 
-**Evitar:**
+## Verificación y práctica
 
-- No combinar `@Retry` con operaciones no idempotentes (pagos, creación de recursos) solo porque la anotación es conveniente. Las anotaciones ocultan el riesgo de duplicación; la API programática hace el contrato más explícito.
-- Evitar el orden invertido Retry > CircuitBreaker (Retry exterior al CB) sin documentarlo. En ese orden, los reintentos pasan antes de que el CB evalúe el fallo, lo que puede generar llamadas adicionales a un servicio ya caído.
-- No usar `@TimeLimiter` en métodos síncronos. La anotación solo funciona con `CompletableFuture`; en métodos síncronos no produce ningún error en tiempo de compilación pero tampoco aplica ningún timeout en tiempo de ejecución, lo que crea una falsa sensación de seguridad.
-- Evitar tener más de dos o tres anotaciones por método. A partir de tres es una señal de que el método tiene demasiadas responsabilidades o de que la arquitectura del servicio necesita revisión.
+> [EXAMEN] 1. ¿Cuál es el orden correcto de los aspectos Resilience4j de exterior a interior?
+
+> [EXAMEN] 2. Un método tiene `@Retry(maxAttempts=3)` y `@CircuitBreaker`. Con el orden por defecto, si el método falla las 3 veces del Retry, ¿cuántos fallos registra el CircuitBreaker?
+
+> [EXAMEN] 3. ¿Por qué falla la self-invocation con Spring AOP y cuáles son las dos soluciones posibles?
+
+> [EXAMEN] 4. ¿Puede un `fallbackMethod` definido en una clase padre ser utilizado por `@CircuitBreaker` en la clase hijo? Justifica.
+
+> [EXAMEN] 5. Con `@Bulkhead` (exterior) y `@CircuitBreaker` (interior), si el Bulkhead rechaza la llamada, ¿se invoca el fallback del CircuitBreaker?
 
 ---
 
-← [5.9 TimeLimiter: acotación de tiempos de ejecución asíncronos](sc-circuitbreaker-timelimiter.md) | [Índice](README.md) | [5.11 Métricas de Resilience4j con Micrometer y endpoints Actuator](sc-circuitbreaker-metricas.md) →
+← [4.6 RateLimiter y TimeLimiter](sc-circuitbreaker-ratelimiter.md) | [Índice](README.md) | [4.8 Spring Cloud Circuit Breaker — Abstraction Layer](sc-circuitbreaker-sc-abstraction.md) →

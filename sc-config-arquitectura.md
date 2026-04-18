@@ -1,88 +1,78 @@
-# 1.1 Arquitectura y concepto del Config Server
+# 1.1 Concepto, arquitectura y configuración base del Config Server
 
-← [Índice (README.md)](README.md) | [1.2 Config Client — configuración y arranque →](sc-config-client.md)
+← [Índice](README.md) | [Índice](README.md) | [1.2 Config Client](sc-config-client.md) →
 
 ---
 
 ## Introducción
 
-Cuando un sistema de microservicios crece, cada servicio lleva su propia configuración embebida en el JAR o en un `application.yml` local. El problema aparece en producción: cambiar un parámetro —un timeout, una URL de base de datos, un flag de feature— obliga a recompilar y redesplegar. Con veinte servicios y cuatro entornos (dev, test, staging, prod) la situación se vuelve inmanejable.
+Spring Cloud Config Server resuelve uno de los problemas fundamentales de las arquitecturas de microservicios: la dispersión de configuración. Cuando decenas de servicios tienen sus propios ficheros `application.properties` empaquetados dentro del JAR, cambiar una URL de base de datos o una clave de API requiere recompilar y redesplegar cada servicio afectado. Config Server centraliza toda la configuración en un repositorio externo (Git, filesystem, Vault, JDBC) y la sirve a través de una API REST, permitiendo cambios de configuración sin tocar el código ni reiniciar —opcionalmente— los servicios.
 
-Spring Cloud Config resuelve este problema mediante la **externalización de configuración**: un servidor centralizado (Config Server) almacena todas las propiedades en un backend externo (Git, filesystem, Vault…) y las sirve bajo demanda vía HTTP a cualquier microservicio (Config Client). El cliente arranca, llama al servidor, recibe sus propiedades y las inyecta en el contexto de Spring antes de que ningún bean se inicialice.
+> [CONCEPTO] Spring Cloud Config Server es un servidor HTTP que actúa como proxy entre los microservicios y un repositorio de configuración centralizado. Cada microservicio (Config Client) pregunta al servidor por su configuración al arrancar, usando la triple tupla `{application}/{profile}/{label}`.
 
-Sin Config Server, un cambio de configuración implica redeploy. Con Config Server, implica un `POST /actuator/refresh` —o nada si se usa Spring Cloud Bus con refresco automático.
+## Arquitectura del sistema
 
-> [CONCEPTO] Config Server no es un servicio de configuración de la aplicación: es la **fuente de verdad** de configuración del ecosistema de microservicios. Su disponibilidad es un prerequisito para que cualquier otro servicio arranque correctamente.
-
-## Diagrama: flujo de resolución cliente → servidor → backend
-
-El siguiente diagrama muestra las tres capas del sistema y el orden en que se produce la resolución de configuración durante el arranque de un microservicio.
+El flujo de resolución de configuración sigue un camino bien definido: el Config Client arranca, construye la URL de petición usando su nombre de aplicación, perfil activo y etiqueta (rama), y llama al Config Server. El servidor resuelve la configuración desde el backend (Git por defecto), fusiona los ficheros relevantes y devuelve un documento de propiedades al cliente.
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                   MICROSERVICIO (Config Client)          │
-│                                                         │
-│  1. Lee spring.config.import=configserver:              │
-│     http://config-server:8888                           │
-│  2. GET /order-service/prod/main                        │
-└──────────────────────┬──────────────────────────────────┘
-                       │  HTTP (puede ser HTTPS + Basic Auth)
-                       ▼
-┌─────────────────────────────────────────────────────────┐
-│                   CONFIG SERVER                         │
-│                                                         │
-│  @EnableConfigServer                                    │
-│  EnvironmentRepository (Git / native / Vault / ...)     │
-│                                                         │
-│  3. Resuelve: application + profile + label             │
-│  4. Devuelve PropertySource[] (JSON)                    │
-└──────────────────────┬──────────────────────────────────┘
-                       │  protocolo del backend
-                       ▼
-┌─────────────────────────────────────────────────────────┐
-│                   BACKEND DE CONFIGURACIÓN              │
-│                                                         │
-│  Git remoto / filesystem local / HashiCorp Vault /      │
-│  JDBC / AWS S3 / Composite                              │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                      ARQUITECTURA CONFIG                          │
+│                                                                   │
+│  ┌─────────────┐    GET /{app}/{profile}/{label}  ┌───────────┐  │
+│  │ Config      │ ─────────────────────────────→  │  Config   │  │
+│  │ Client      │ ←─────────────────────────────  │  Server   │  │
+│  │ (microsvs)  │     PropertySource[]             │           │  │
+│  └─────────────┘                                  └─────┬─────┘  │
+│                                                         │         │
+│                                           ┌─────────────▼──────┐ │
+│                                           │  Backend (Git/FS/  │ │
+│                                           │  Vault/JDBC)       │ │
+│                                           └────────────────────┘ │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-Los pasos ocurren **antes** de que Spring cree cualquier bean: el bootstrap de configuración es la primera fase del ciclo de vida del contexto.
+La triple tupla `{application}/{profile}/{label}` determina exactamente qué ficheros de configuración entrega el servidor:
+
+- **application**: el valor de `spring.application.name` del cliente (ej. `order-service`)
+- **profile**: el perfil activo del cliente (ej. `dev`, `prod`, `default`)
+- **label**: la rama, etiqueta o commit del repositorio Git (ej. `main`, `v2.1.0`)
+
+El servidor construye una lista de PropertySources por prioridad decreciente: primero `{application}-{profile}.yml`, luego `{application}.yml`, luego `application-{profile}.yml`, finalmente `application.yml`. Las claves del primer fichero tienen mayor precedencia.
+
+> [EXAMEN] La triple tupla `{application}/{profile}/{label}` es la pregunta más frecuente sobre Config Server. `application` = nombre del servicio cliente, `profile` = entorno, `label` = rama Git.
 
 ## Ejemplo central
 
-A continuación se muestra un Config Server mínimo y funcional con backend Git, incluyendo dependencias Maven y configuración completa.
+El siguiente ejemplo muestra un Config Server completo y operativo con backend Git. Incluye la clase principal, las dependencias Maven y la configuración mínima.
 
-### pom.xml (Config Server)
+**pom.xml (dependencias)**:
 
 ```xml
-<dependencies>
-    <!-- Spring Cloud Config Server -->
-    <dependency>
-        <groupId>org.springframework.cloud</groupId>
-        <artifactId>spring-cloud-config-server</artifactId>
-    </dependency>
-    <!-- Actuator para health y métricas -->
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-actuator</artifactId>
-    </dependency>
-</dependencies>
-
 <dependencyManagement>
-    <dependencies>
-        <dependency>
-            <groupId>org.springframework.cloud</groupId>
-            <artifactId>spring-cloud-dependencies</artifactId>
-            <version>2025.1.1</version>
-            <type>pom</type>
-            <scope>import</scope>
-        </dependency>
-    </dependencies>
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-dependencies</artifactId>
+      <version>2025.0.0</version>
+      <type>pom</type>
+      <scope>import</scope>
+    </dependency>
+  </dependencies>
 </dependencyManagement>
+
+<dependencies>
+  <dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-config-server</artifactId>
+  </dependency>
+  <dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+  </dependency>
+</dependencies>
 ```
 
-### ConfigServerApplication.java
+**ConfigServerApplication.java**:
 
 ```java
 package com.example.configserver;
@@ -92,7 +82,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.cloud.config.server.EnableConfigServer;
 
 @SpringBootApplication
-@EnableConfigServer          // activa el EnvironmentRepository y los endpoints HTTP
+@EnableConfigServer
 public class ConfigServerApplication {
 
     public static void main(String[] args) {
@@ -101,7 +91,7 @@ public class ConfigServerApplication {
 }
 ```
 
-### application.yml (Config Server)
+**application.yml (Config Server)**:
 
 ```yaml
 server:
@@ -114,68 +104,81 @@ spring:
     config:
       server:
         git:
-          uri: https://github.com/mi-org/mi-config-repo
+          uri: https://github.com/myorg/config-repo
           default-label: main
           clone-on-start: true
-
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health,info,env,refresh
+          search-paths: '{application}'
 ```
 
-Con esta configuración, el servidor responde peticiones del tipo:
+Con esta configuración, si un cliente llamado `order-service` con perfil `prod` arranca, el servidor responderá a `GET /order-service/prod/main` buscando ficheros en la carpeta `order-service/` del repositorio.
 
-```
-GET http://localhost:8888/order-service/prod
-GET http://localhost:8888/order-service/prod/main
-```
+> [ADVERTENCIA] `@EnableConfigServer` es OBLIGATORIO aunque el starter esté en el classpath. Sin esta anotación, el servidor no expone sus endpoints de configuración y arranca como una aplicación web vacía.
 
-y devuelve un JSON con la lista de `PropertySource` que el cliente inyecta en su contexto.
+## Tabla de propiedades clave del servidor
 
-> [PREREQUISITO] El repositorio Git configurado en `spring.cloud.config.server.git.uri` debe ser accesible desde la red del Config Server. Si es privado, configura autenticación SSH o HTTPS antes de arrancar (ver sección 1.4).
+Las siguientes propiedades controlan el comportamiento del servidor y son evaluadas directamente en el examen VMware Spring Professional.
 
-## Tabla de componentes
+| Propiedad | Tipo | Default | Descripción |
+|-----------|------|---------|-------------|
+| `spring.cloud.config.server.git.uri` | String | — | URI del repositorio Git (obligatoria con backend git) |
+| `spring.cloud.config.server.git.default-label` | String | `master` | Rama por defecto si el cliente no especifica label |
+| `spring.cloud.config.server.git.clone-on-start` | boolean | `false` | Clona el repo al arrancar en lugar de esperar la primera petición |
+| `spring.cloud.config.server.git.search-paths` | String[] | `[]` | Subdirectorios a buscar; acepta placeholder `{application}` |
+| `spring.cloud.config.server.git.force-pull` | boolean | `false` | Descarta cambios locales y fuerza pull del remoto |
 
-La siguiente tabla resume los cuatro componentes principales del ecosistema y su responsabilidad.
-
-| Componente | Clase / Anotación clave | Responsabilidad |
-|---|---|---|
-| Config Server | `@EnableConfigServer` | Servir configuración vía HTTP a los clientes |
-| EnvironmentRepository | `JGitEnvironmentRepository` (default) | Acceder al backend y construir el `Environment` |
-| Config Client | `spring-cloud-starter-config` | Importar configuración del servidor al arrancar |
-| Bootstrap / Import | `spring.config.import=configserver:` | Punto de entrada del cliente (modo moderno) |
-
-La separación entre **servidor** y **EnvironmentRepository** es el punto de extensión clave: implementar `EnvironmentRepository` es suficiente para conectar cualquier backend personalizado sin tocar la capa HTTP.
+> [EXAMEN] El valor por defecto de `default-label` es `master`, no `main`. En repositorios nuevos de GitHub/GitLab la rama principal es `main`, por lo que se debe cambiar explícitamente esta propiedad.
 
 ## Buenas y malas prácticas
 
-**Hacer:**
-- Activar `clone-on-start: true` en el backend Git para que el servidor valide la conexión al arrancar y no falle en la primera petición de un cliente.
-- Exponer únicamente los endpoints Actuator necesarios (`health`, `env`, `refresh`) y proteger el servidor con HTTP Basic o mTLS desde el día uno: el Config Server tiene acceso a **todos** los secretos del ecosistema.
-- Desplegarlo como servicio dedicado con su propio pipeline, sin colocarlo como módulo dentro de un microservicio de negocio.
+Hacer:
+- Añadir `@EnableConfigServer` explícitamente aunque el starter esté en el classpath, ya que documenta la intención y es obligatorio para activar el servidor.
+- Configurar `clone-on-start: true` en producción para detectar errores de acceso al repositorio en el arranque y no en la primera petición de un cliente.
+- Usar un puerto dedicado (8888 es el convencional) para el Config Server, separado del puerto de los microservicios de negocio.
+- Versionar el repositorio de configuración igual que el código: ramas por entorno o por release del servicio.
 
-**Evitar:**
-- Usar el Config Server como único punto de configuración sin `fail-fast: true` en los clientes: si el servidor cae, los clientes arrancan con un contexto vacío y producen `NullPointerException` en runtime, en lugar de fallar de forma rápida y evidente.
-- Almacenar secretos en texto plano en el repositorio Git del Config Server. Usar cifrado (`{cipher}`) o delegar en HashiCorp Vault.
-- Olvidar configurar `default-label` explícitamente: en entornos con ramas `main` vs `master` el comportamiento por defecto varía entre versiones y provoca resoluciones silenciosamente incorrectas.
+Evitar:
+- Empaquetar el Config Server junto a otro microservicio de negocio; si ese servicio falla, toda la configuración centralizada desaparece.
+- Usar el perfil `native` (filesystem local) en producción; es exclusivo para desarrollo y testing, no tiene persistencia ni versionado.
+- Confundir `spring.application.name` del Config Server con el del cliente; el nombre del servidor solo afecta cómo se registra en Eureka, no a la resolución de configuración.
+- Exponer el Config Server sin seguridad en entornos no aislados; cualquier cliente puede leer todas las propiedades de todos los servicios.
 
-## Comparación: @EnableConfigServer vs configuración sin Config Server
+## Comparación: Config Server vs configuración local
 
-La siguiente tabla contrasta el enfoque centralizado frente al modelo embebido que sustituye.
+La siguiente tabla compara el enfoque centralizado (Config Server) con la configuración local empaquetada en el JAR, para entender cuándo cada enfoque es apropiado.
 
-| Aspecto | Configuración embebida (sin Config Server) | Spring Cloud Config Server |
-|---|---|---|
-| Cambio de propiedad | Requiere rebuild + redeploy | `POST /actuator/refresh` o bus |
-| Secretos | En el artefacto o variables de entorno por servicio | Cifrados en un único repositorio auditado |
-| Auditoría de cambios | Difícil, distribuida | Historial Git completo |
-| Consistencia entre instancias | No garantizada | Un solo origen de verdad |
-| Complejidad operativa | Baja inicialmente | Añade un servicio a operar |
-| Disponibilidad como prerequisito | No aplica | Crítico: si cae, los clientes no arrancan |
+| Criterio | Config Server | Local (application.yml en JAR) |
+|----------|---------------|-------------------------------|
+| Cambio sin redeploy | Sí (con @RefreshScope) | No (requiere rebuild y redeploy) |
+| Versionado | Git nativo | Solo si el repo de código lo incluye |
+| Secretos cifrados | Sí ({cipher}prefix) | No (texto plano o Vault separado) |
+| Disponibilidad | Depende del servidor externo | Siempre disponible (embebido) |
+| Complejidad operacional | Alta (servidor adicional) | Baja |
+| Recomendado para | Producción con múltiples servicios | Proyectos pequeños o monolitos |
 
-> [EXAMEN] La pregunta más frecuente en entrevista sobre Config Server es: "¿Qué pasa si el Config Server no está disponible cuando arranca un microservicio?" La respuesta depende de `spring.cloud.config.fail-fast` y `retry.*` en el cliente — no de la configuración del servidor.
+## Verificación y práctica
+
+Para verificar que el Config Server está operativo, la forma más directa es hacer una petición a su endpoint de resolución con valores de prueba:
+
+```bash
+# Verificar estado del servidor
+curl http://localhost:8888/actuator/health
+
+# Solicitar configuración de "myapp" en perfil "default", rama "main"
+curl http://localhost:8888/myapp/default/main
+
+# El servidor debe responder con JSON conteniendo "propertySources"
+# Si responde con {"propertySources":[]} el repositorio está vacío o la ruta es incorrecta
+```
+
+**Preguntas estilo examen VMware Spring Professional:**
+
+1. ¿Cuál es la anotación obligatoria para activar el Config Server? ¿Es suficiente tener el starter en el classpath?
+2. La URL de resolución del Config Server es `/{application}/{profile}/{label}`. ¿Qué representa cada segmento? ¿Cuál es el valor de `label` por defecto si el cliente no lo especifica?
+3. Un microservicio `payment-service` con perfil `prod` solicita configuración al Config Server. ¿En qué orden el servidor fusiona los PropertySources devueltos?
+4. ¿Qué propiedad del cliente determina el valor de `{application}` en la URL de resolución?
+5. ¿Por qué el Config Server necesita `spring-cloud-config-server` y no solo `spring-cloud-starter-config`?
 
 ---
 
-← [Índice (README.md)](README.md) | [1.2 Config Client — configuración y arranque →](sc-config-client.md)
+← [Índice](README.md) | [Índice](README.md) | [1.2 Config Client](sc-config-client.md) →
+

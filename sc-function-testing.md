@@ -1,118 +1,57 @@
-# 12.10 Testing y verificación de Spring Cloud Function
+# 12.10 Spring Cloud Function — Testing y packaging
 
-← [12.9 Observabilidad y operación de funciones expuestas](sc-function-operations.md) | [Índice (README.md)](README.md) | [13.1 CQRS con Spring Cloud Stream y Gateway](sc-patrones-cqrs.md) →
+← [12.9 Tipos reactivos](sc-function-tipos-reactivos.md) | [Índice](README.md) | [13.1 Patrones: Descomposición por dominio →](sc-patrones-descomposicion-dominio.md)
 
 ---
 
 ## Introducción
 
-El problema de testing en Spring Cloud Function es la tentación de testear directamente el adaptador (HTTP, Lambda, Stream) en lugar de la función de negocio, lo que produce tests lentos, frágiles y dependientes de infraestructura. La fortaleza del modelo funcional de Spring Cloud Function es que la función es un POJO Java estándar: `Function<Order,Invoice>` puede testarse sin Spring, sin HTTP y sin Kafka. Este fichero establece la estrategia de testing por nivel: unitario puro para la lógica, integración con `FunctionCatalog` para la configuración, e integración HTTP con `MockMvc` o `WebTestClient` para el adaptador web.
+Spring Cloud Function facilita tres niveles de testing: el test unitario del bean funcional como POJO puro sin contexto Spring (el más rápido), el test de integración con contexto mínimo usando `FunctionalSpringBootTest` para verificar el registro en `FunctionCatalog`, y el test de extremo a extremo del endpoint HTTP con `WebTestClient`. Para el packaging, SCF soporta thin JAR, fat JAR y compilación nativa con GraalVM a través del soporte Spring AOT.
 
-> **[PREREQUISITO]** Requiere `sc-function-modelo.md` (12.1) y `sc-function-config.md` (12.2). JUnit 5 es provisto por `spring-boot-starter-test`; ver la [documentación de JUnit 5](https://junit.org/junit5/docs/current/user-guide/) para el framework de testing.
+> [CONCEPTO] Un bean `Function<I,O>` es un POJO Java estándar. Se puede instanciar directamente en un test unitario sin necesidad de Spring, simplemente llamando a `new MyFunction().apply(input)`. Esta es la forma más rápida de probar la lógica de negocio.
 
-## Representación visual
+> [CONCEPTO] `FunctionalSpringBootTest` es una anotación de SCF que levanta solo el contexto funcional mínimo (sin servidor HTTP embebido, sin autoconfiguración completa), adecuada para verificar el registro en `FunctionCatalog` y la composición de funciones.
 
-La pirámide de testing de Spring Cloud Function tiene cuatro niveles con distintos costes y cobertura.
+> [PREREQUISITO] `FunctionalSpringBootTest` requiere la dependencia `spring-cloud-function-context` en scope `test`.
+
+## Diagrama de estrategia de testing
+
+El siguiente diagrama muestra los tres niveles de testing y su alcance.
 
 ```
-              ┌──────────────────────────┐
-              │ Test HTTP (MockMvc /      │  Lento, tests del adaptador web
-              │ WebTestClient)            │  Verifica: serialización, path, status HTTP
-              └──────────────────────────┘
-             ┌────────────────────────────┐
-             │ Test de integración        │  Contexto Spring reducido
-             │ FunctionCatalog            │  Verifica: composición, lookup, binding
-             └────────────────────────────┘
-            ┌──────────────────────────────┐
-            │ Test de composición           │  Sin contexto Spring
-            │ Function.andThen()            │  Verifica: cadenas de transformación
-            └──────────────────────────────┘
-           ┌────────────────────────────────┐
-           │ Test unitario puro              │  Más rápido, más aislado
-           │ Function<T,R> como POJO         │  Verifica: lógica de negocio
-           └────────────────────────────────┘
+Nivel 1 — Test unitario (más rápido):
+  new UppercaseFunction().apply("hello") → "HELLO"
+  Sin Spring, sin contexto, sin dependencias
+  ✓ Verifica lógica de negocio pura
+
+Nivel 2 — Test de integración con FunctionalSpringBootTest:
+  @FunctionalSpringBootTest
+  @Autowired FunctionCatalog catalog
+  catalog.lookup("uppercase").apply("hello") → "HELLO"
+  Contexto Spring mínimo (solo SCF, sin HTTP)
+  ✓ Verifica registro, composición y tipos genéricos
+
+Nivel 3 — Test de extremo a extremo (más lento):
+  @SpringBootTest(webEnvironment = RANDOM_PORT)
+  WebTestClient.post().uri("/uppercase").bodyValue("hello")
+  Contexto completo con servidor HTTP
+  ✓ Verifica la integración HTTP completa
 ```
 
 ## Ejemplo central
 
-El ejemplo muestra los cuatro niveles de test para una función `processOrder` completa.
-
-### Dependencias Maven
-
-```xml
-<dependencies>
-  <dependency>
-    <groupId>org.springframework.cloud</groupId>
-    <artifactId>spring-cloud-function-web</artifactId>
-  </dependency>
-  <dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-web</artifactId>
-  </dependency>
-  <dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-test</artifactId>
-    <scope>test</scope>
-  </dependency>
-  <dependency>
-    <groupId>com.fasterxml.jackson.core</groupId>
-    <artifactId>jackson-databind</artifactId>
-  </dependency>
-</dependencies>
-```
-
-### application.yml (src/main/resources)
-
-```yaml
-spring:
-  cloud:
-    function:
-      definition: processOrder
-```
-
-### application-test.yml (src/test/resources)
-
-```yaml
-spring:
-  cloud:
-    function:
-      definition: processOrder
-```
-
-### Código Java completo — Producción
+El siguiente ejemplo muestra los tres niveles de testing para el mismo bean funcional.
 
 ```java
-package com.example.scfunction.testing;
+package com.example.demo;
 
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 
 import java.util.function.Function;
 
-@SpringBootApplication
-public class FunctionTestingApplication {
-
-    public static void main(String[] args) {
-        SpringApplication.run(FunctionTestingApplication.class, args);
-    }
-
-    public record Order(Long id, String item, double price) {}
-    public record Invoice(Long orderId, String description, double total) {}
-
-    @Bean
-    public Function<Order, Invoice> processOrder() {
-        return order -> {
-            if (order.price() <= 0) {
-                throw new IllegalArgumentException("El precio debe ser positivo");
-            }
-            return new Invoice(
-                order.id(),
-                "Factura: " + order.item(),
-                order.price() * 1.21
-            );
-        };
-    }
+@Configuration
+public class FunctionConfig {
 
     @Bean
     public Function<String, String> uppercase() {
@@ -126,193 +65,148 @@ public class FunctionTestingApplication {
 }
 ```
 
-### Código Java completo — Tests
+Test unitario puro (sin Spring):
 
 ```java
-package com.example.scfunction.testing;
+package com.example.demo;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.cloud.function.context.FunctionCatalog;
-import org.springframework.http.MediaType;
-import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-// ============================================================
-// NIVEL 1 — Test unitario puro (sin contexto Spring)
-// ============================================================
-class ProcessOrderFunctionTest {
+class UppercaseFunctionTest {
 
-    // Instancia directa del bean funcional como POJO — sin Spring
-    private final Function<FunctionTestingApplication.Order, FunctionTestingApplication.Invoice>
-        processOrder = new FunctionTestingApplication().processOrder();
+    private final Function<String, String> uppercase = String::toUpperCase;
 
     @Test
-    void deberiaCalcularIVACorrectamente() {
-        var order = new FunctionTestingApplication.Order(1L, "libro", 10.0);
-
-        var invoice = processOrder.apply(order);
-
-        assertThat(invoice.orderId()).isEqualTo(1L);
-        assertThat(invoice.total()).isEqualTo(12.1);
-        assertThat(invoice.description()).contains("libro");
-    }
-
-    @Test
-    void deberiaLanzarExcepcionConPrecioNegativo() {
-        var order = new FunctionTestingApplication.Order(2L, "item", -5.0);
-
-        assertThatThrownBy(() -> processOrder.apply(order))
-            .isInstanceOf(IllegalArgumentException.class)
-            .hasMessageContaining("positivo");
-    }
-}
-
-// ============================================================
-// NIVEL 2 — Test de composición (sin contexto Spring)
-// ============================================================
-class FunctionCompositionTest {
-
-    private final Function<String, String> uppercase = new FunctionTestingApplication().uppercase();
-    private final Function<String, String> trim = new FunctionTestingApplication().trim();
-
-    @Test
-    void deberiaComponerTrimConUppercase() {
-        // Composición manual con andThen (equivalente al pipe | de SCF)
-        Function<String, String> composed = trim.andThen(uppercase);
-
-        String result = composed.apply("  hello world  ");
-
+    void shouldConvertToUppercase() {
+        String result = uppercase.apply("hello world");
         assertThat(result).isEqualTo("HELLO WORLD");
     }
 
     @Test
-    void deberiaAplicarUppercaseSoloSiNecesario() {
-        Function<String, String> composed = trim.andThen(uppercase);
-
-        assertThat(composed.apply("already")).isEqualTo("ALREADY");
-        assertThat(composed.apply("  spaces  ")).isEqualTo("SPACES");
+    void shouldHandleEmptyString() {
+        String result = uppercase.apply("");
+        assertThat(result).isEqualTo("");
     }
 }
+```
 
-// ============================================================
-// NIVEL 3 — Test de integración con FunctionCatalog
-// ============================================================
-@SpringBootTest(classes = FunctionTestingApplication.class)
+Test de integración con `FunctionalSpringBootTest`:
+
+```java
+package com.example.demo;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cloud.function.context.FunctionCatalog;
+import org.springframework.cloud.function.context.test.FunctionalSpringBootTest;
+
+import java.util.function.Function;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+@FunctionalSpringBootTest
 class FunctionCatalogIntegrationTest {
 
     @Autowired
     private FunctionCatalog catalog;
 
     @Test
-    void deberiaRegistrarFuncionProcessOrderEnCatalogo() {
-        Function<FunctionTestingApplication.Order, FunctionTestingApplication.Invoice> fn =
-            catalog.lookup(Function.class, "processOrder");
-
-        assertThat(fn).isNotNull();
-
-        var order = new FunctionTestingApplication.Order(1L, "prueba", 100.0);
-        var invoice = fn.apply(order);
-
-        assertThat(invoice.total()).isEqualTo(121.0);
+    void shouldRegisterUppercaseFunction() {
+        Function<String, String> uppercase = catalog.lookup("uppercase");
+        assertThat(uppercase).isNotNull();
+        assertThat(uppercase.apply("hello")).isEqualTo("HELLO");
     }
 
     @Test
-    void deberiaRessolverComposicionTrimUppercaseDesdeCalatogo() {
-        Function<String, String> composed = catalog.lookup(Function.class, "trim|uppercase");
-
-        assertThat(composed).isNotNull();
-        assertThat(composed.apply("  test  ")).isEqualTo("TEST");
-    }
-}
-
-// ============================================================
-// NIVEL 4 — Test HTTP con MockMvc (contexto web completo)
-// ============================================================
-@SpringBootTest(classes = FunctionTestingApplication.class,
-    webEnvironment = SpringBootTest.WebEnvironment.MOCK)
-@AutoConfigureMockMvc
-class FunctionHttpTest {
-
-    @Autowired
-    private MockMvc mockMvc;
-
-    @Autowired
-    private ObjectMapper objectMapper;
-
-    @Test
-    void deberiaResponder200ConFacturaAlInvocarProcessOrderViaHTTP() throws Exception {
-        var order = new FunctionTestingApplication.Order(1L, "libro", 10.0);
-        String requestBody = objectMapper.writeValueAsString(order);
-
-        mockMvc.perform(
-                post("/processOrder")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content(requestBody)
-            )
-            .andExpect(status().isOk())
-            .andExpect(jsonPath("$.orderId").value(1))
-            .andExpect(jsonPath("$.total").value(12.1))
-            .andExpect(jsonPath("$.description").value("Factura: libro"));
+    void shouldLookupComposedFunction() {
+        // Verifica que la composición "uppercase|trim" está registrada
+        // cuando spring.cloud.function.definition: uppercase|trim
+        Function<String, String> composed = catalog.lookup("uppercase");
+        Function<String, String> trim = catalog.lookup("trim");
+        assertThat(composed.andThen(trim).apply("  hello  ")).isEqualTo("HELLO");
     }
 
     @Test
-    void deberiaResponder500ConPrecioNegativoViaHTTP() throws Exception {
-        var order = new FunctionTestingApplication.Order(2L, "item", -5.0);
-        String requestBody = objectMapper.writeValueAsString(order);
-
-        mockMvc.perform(
-                post("/processOrder")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content(requestBody)
-            )
-            .andExpect(status().is5xxServerError());
+    void shouldReturnNullForUnknownFunction() {
+        Function<String, String> unknown = catalog.lookup("nonExistent");
+        assertThat(unknown).isNull();
     }
 }
 ```
 
-> **[EXAMEN]** La ventaja de testear `Function<T,R>` como POJO puro (Nivel 1) es que el test no arranca el contexto Spring, no abre puertos y ejecuta en milisegundos. Un test de integración `@SpringBootTest` puede tardar 3-8 segundos en arrancar el contexto. En un proyecto con 200 funciones, la diferencia entre 200 tests unitarios puros (~2 segundos total) y 200 tests `@SpringBootTest` (~600 segundos total) es determinante para el feedback loop del desarrollador.
+Test de extremo a extremo con `WebTestClient`:
+
+```java
+package com.example.demo;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWebTestClient;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.web.reactive.server.WebTestClient;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@AutoConfigureWebTestClient
+class HttpAdapterE2ETest {
+
+    @Autowired
+    private WebTestClient webTestClient;
+
+    @Test
+    void shouldExposeUppercaseEndpoint() {
+        webTestClient.post()
+                .uri("/uppercase")
+                .bodyValue("hello world")
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody(String.class)
+                .isEqualTo("HELLO WORLD");
+    }
+}
+```
+
+> [ADVERTENCIA] `@FunctionalSpringBootTest` no levanta el servidor HTTP embebido. Para testear el adaptador HTTP se necesita `@SpringBootTest(webEnvironment = RANDOM_PORT)` con `WebTestClient` o `MockMvc`.
 
 ## Tabla de elementos clave
 
-Los elementos de testing específicos de Spring Cloud Function se recogen en la siguiente tabla.
+La siguiente tabla resume las opciones de packaging de SCF.
 
-| Elemento | Nivel | Descripción |
+| Formato | Descripción | Cuándo usar |
 |---|---|---|
-| Test unitario puro | Nivel 1 | `new MyApp().myFunction().apply(input)` — sin Spring, sin anotaciones |
-| `Function.andThen()` | Nivel 2 | Composición manual para testear cadenas de transformación sin catálogo |
-| `@SpringBootTest` | Nivel 3 y 4 | Carga el `ApplicationContext` completo; necesario para `FunctionCatalog` |
-| `FunctionCatalog.lookup()` | Nivel 3 | Verifica que la función está registrada con el nombre y tipo correctos |
-| `@AutoConfigureMockMvc` | Nivel 4 | Activa `MockMvc` para tests HTTP sin servidor real |
-| `MockMvc.perform(post(...))` | Nivel 4 | Invoca el endpoint HTTP de la función vía MockMvc |
-| `WebTestClient` | Nivel 4 (reactivo) | Alternativa reactiva a `MockMvc` para `spring-cloud-function-web` con WebFlux |
-| `SpringBootTest.WebEnvironment.MOCK` | Configuración | Contexto web simulado; sin puerto abierto, más rápido que `RANDOM_PORT` |
-| `SpringBootTest.WebEnvironment.RANDOM_PORT` | Configuración | Servidor real en puerto aleatorio; necesario para tests de integración completa |
+| Fat JAR (`spring-boot-maven-plugin`) | JAR auto-contenido con Tomcat/Netty embebido | Despliegue como microservicio en contenedor |
+| Shaded JAR (`maven-shade-plugin`) | JAR plano sin classloader de Spring Boot | AWS Lambda (obligatorio) |
+| Thin JAR | JAR sin dependencias (se descargan en runtime) | Reduce tamaño de imagen Docker |
+| GraalVM native image | Ejecutable nativo compilado con AOT | Cold start mínimo en serverless |
 
 ## Buenas y malas prácticas
 
-**Hacer:**
-- Comenzar siempre por el test unitario puro (Nivel 1) para toda la lógica de negocio: es el test más rápido, más aislado y el que aporta mayor densidad de cobertura por segundo de ejecución.
-- Incluir un test de `FunctionCatalog` (Nivel 3) para cada bean funcional para verificar que el nombre, el tipo y la composición están correctamente configurados: este test detecta errores de `spring.cloud.function.definition` incorrectos.
-- Usar `WebEnvironment.MOCK` con `MockMvc` en lugar de `WebEnvironment.RANDOM_PORT` para tests HTTP de funciones: es más rápido y no requiere un puerto disponible en el entorno de CI.
-- Testear los casos de error (excepción en la función) en el Nivel 1 con `assertThatThrownBy` y en el Nivel 4 con `status().is5xxServerError()` para verificar el comportamiento del adaptador HTTP ante excepciones.
+**Buenas prácticas:**
+- Empezar con tests unitarios puros para la lógica de la función — son los más rápidos y fáciles de mantener.
+- Usar `@FunctionalSpringBootTest` para verificar que el bean se registra correctamente y que la composición funciona.
+- Reservar los tests `@SpringBootTest` con servidor HTTP para la integración completa del adaptador.
+- Para AWS Lambda, validar el empaquetado con el shaded JAR en un entorno SAM local antes del despliegue.
 
-**Evitar:**
-- Evitar testear únicamente vía HTTP (`@SpringBootTest` + `MockMvc`): si el test HTTP pasa pero la función tiene un bug en un caso borde, el test de nivel 4 puede no detectarlo porque el adaptador serializa el error silenciosamente.
-- Evitar `@SpringBootTest` para tests que solo necesitan verificar la lógica de la función: añade entre 3 y 8 segundos de overhead de arranque de contexto innecesario.
-- Evitar omitir `spring.cloud.function.definition` en el `application-test.yml`: si el contexto de test tiene múltiples beans funcionales y la propiedad no está definida, el test lanzará `IllegalStateException` con un mensaje de ambigüedad que puede confundirse con un error de test.
-- Evitar testear `FunctionAroundWrapper` de forma aislada sin registrar también la función que envuelve: el wrapper depende de `FunctionInvocationWrapper` que solo existe en el contexto de una invocación real a través del catálogo.
+**Malas prácticas:**
+- Depender exclusivamente de tests `@SpringBootTest` para probar la lógica de negocio — son lentos e innecesariamente pesados.
+- Omitir la validación del lookup en `FunctionCatalog` con valor null — puede causar `NullPointerException` en producción.
+- Usar el fat JAR de Spring Boot como artefacto de AWS Lambda — causa error de classloader.
+
+## Verificación y práctica
+
+> [EXAMEN] ¿Cómo se prueba un bean `Function<String,String>` sin levantar el contexto Spring y qué ventaja ofrece este enfoque?
+
+> [EXAMEN] ¿Qué anotación levanta el contexto funcional mínimo de Spring Cloud Function para tests de integración sin servidor HTTP?
+
+> [EXAMEN] ¿Cómo se verifica en un test de integración que un bean funcional está correctamente registrado en `FunctionCatalog`?
+
+> [EXAMEN] ¿Qué tipo de JAR se requiere para desplegar una aplicación Spring Cloud Function en AWS Lambda y por qué no sirve el fat JAR estándar de Spring Boot?
+
+> [EXAMEN] ¿Qué anotación de test se usa para verificar el adaptador HTTP completo de Spring Cloud Function con `WebTestClient`?
 
 ---
 
-← [12.9 Observabilidad y operación de funciones expuestas](sc-function-operations.md) | [Índice (README.md)](README.md) | [13.1 CQRS con Spring Cloud Stream y Gateway](sc-patrones-cqrs.md) →
+← [12.9 Tipos reactivos](sc-function-tipos-reactivos.md) | [Índice](README.md) | [13.1 Patrones: Descomposición por dominio →](sc-patrones-descomposicion-dominio.md)

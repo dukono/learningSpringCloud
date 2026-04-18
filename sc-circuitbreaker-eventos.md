@@ -1,293 +1,189 @@
-# 5.12 Health check y eventos CircuitBreakerEvent en producción
+# 4.9 Eventos y Métricas — Observabilidad completa
 
-← [5.11 Métricas de Resilience4j con Micrometer y endpoints Actuator](sc-circuitbreaker-metricas.md) | [Índice](README.md) | [5.13 Integración del Circuit Breaker con OpenFeign, RestClient y WebClient](sc-circuitbreaker-feign.md) →
+← [4.8 Spring Cloud Circuit Breaker — Abstraction Layer](sc-circuitbreaker-sc-abstraction.md) | [Índice](README.md) | [4.10 Integración con Feign](sc-circuitbreaker-feign.md) →
+
+---
 
 ## Introducción
 
-Las métricas de Micrometer son el mecanismo pull de observabilidad: el sistema de monitoreo consulta el estado periódicamente. Los eventos `CircuitBreakerEvent` son el mecanismo push: el Circuit Breaker notifica en tiempo real cada transición, fallo o éxito a los suscriptores registrados. Esta diferencia es importante en producción porque permite reaccionar a eventos específicos (p.ej. transición a OPEN) en microsegundos, sin esperar el siguiente scrape de Prometheus.
+Los Circuit Breakers y los demás patrones de Resilience4j generan eventos internos que permiten observar su comportamiento en tiempo de ejecución sin necesidad de polling ni de leer logs: cuando un circuito abre, cuando una llamada es rechazada, cuando Retry agota sus intentos. Además, Resilience4j se integra con Micrometer para publicar métricas en sistemas de monitorización como Prometheus/Grafana, y con Spring Boot Actuator para exponer el estado mediante endpoints HTTP. Sin esta capa de observabilidad, los fallos en los patrones de resiliencia son invisibles hasta que producen incidentes en producción.
 
-El health check integrado con Spring Boot Actuator traduce el estado del Circuit Breaker al modelo de salud de la aplicación: un circuito OPEN puede marcar el servicio como DOWN en el endpoint `/actuator/health`, lo que interactúa directamente con los readiness probes de Kubernetes. Esta integración permite que Kubernetes retire el servicio del balanceo cuando detecta que sus dependencias están degradadas, evitando enviar tráfico a instancias que van a fallar igualmente.
+> [PREREQUISITO] Requiere `spring-boot-starter-actuator` y `resilience4j-micrometer` (o `resilience4j-spring-boot3` que los incluye) en el classpath para activar métricas y endpoints.
 
-> [ADVERTENCIA] Marcar la aplicación como DOWN en `/actuator/health` cuando un circuito está OPEN puede causar que Kubernetes reinicie los pods indefinidamente si todos los pods abren el mismo circuito simultáneamente. Evaluar cuidadosamente si la readiness probe debe depender del estado de los Circuit Breakers.
+## Sistema de eventos Resilience4j
 
-## Representación visual
+Cada instancia de CircuitBreaker, Retry, Bulkhead, RateLimiter y TimeLimiter expone un `EventPublisher` propio. Se registran listeners que se ejecutan sincrónicamente cuando ocurre el evento correspondiente.
 
-El modelo de eventos de Resilience4j y su integración con el health check de Spring Boot:
+Los tipos de eventos del CircuitBreaker son:
 
-```
-Circuit Breaker Events (push model):
-──────────────────────────────────────────────────────────────
-  CircuitBreaker emite eventos:
-  ┌─────────────────────────────────────────────────────┐
-  │  ON_SUCCESS          → llamada exitosa              │
-  │  ON_ERROR            → llamada fallida              │
-  │  ON_TIMEOUT          → llamada con timeout          │
-  │  ON_REJECTED_CALL    → llamada rechazada (CB OPEN)  │
-  │  ON_STATE_TRANSITION → cambio de estado             │
-  │  ON_RESET            → reset manual del circuito    │
-  └─────────────────────────────┬───────────────────────┘
-                                 │ EventPublisher
-                                 ▼
-  CircuitBreaker.getEventPublisher().onSuccess(e -> log(e))
-  CircuitBreaker.getEventPublisher().onStateTransition(e -> alert(e))
-
-Health Check Integration:
-──────────────────────────────────────────────────────────────
-  CircuitBreakerHealthIndicator
-         │
-         ├─ Estado CLOSED   → UP
-         ├─ Estado HALF_OPEN → UP (configurable)
-         └─ Estado OPEN     → DOWN
-
-  /actuator/health responde:
-  {
-    "status": "DOWN",
-    "components": {
-      "circuitBreakers": {
-        "status": "DOWN",
-        "details": {
-          "paymentService": { "status": "CIRCUIT_OPEN" },
-          "inventoryService": { "status": "CIRCUIT_CLOSED" }
-        }
-      }
-    }
-  }
-```
-
-| Tipo de evento               | Cuándo se emite                                                 | Información incluida                              |
-|------------------------------|-----------------------------------------------------------------|---------------------------------------------------|
-| `ON_SUCCESS`                 | Llamada completada sin excepción en tiempo aceptable            | Duración, nombre del CB                           |
-| `ON_ERROR`                   | Llamada lanzó excepción registrada como fallo                   | Excepción, duración, nombre del CB                |
-| `ON_TIMEOUT`                 | Llamada superó `slowCallDurationThreshold` o TimeLimiter        | Duración, nombre del CB                           |
-| `ON_REJECTED_CALL`           | Llamada rechazada porque el CB está OPEN                        | Nombre del CB, estado                             |
-| `ON_STATE_TRANSITION`        | Transición entre estados (CLOSED↔OPEN↔HALF_OPEN)               | Estado anterior, estado nuevo                     |
-| `ON_RESET`                   | Reset manual del circuito vía API o Actuator                    | Nombre del CB                                     |
-| `ON_IGNORED_ERROR`           | Excepción lanzada pero configurada en `ignore-exceptions`       | Excepción, duración                               |
+| Tipo de evento | Descripción |
+|----------------|-------------|
+| `SUCCESS` | La llamada fue exitosa |
+| `ERROR` | La llamada lanzó una excepción registrada como fallo |
+| `IGNORED_ERROR` | La llamada lanzó una excepción en `ignore-exceptions` |
+| `NOT_PERMITTED` | La llamada fue rechazada (CB en OPEN) |
+| `STATE_TRANSITION` | El CB cambió de estado |
+| `SLOW_CALL` | La llamada superó `slowCallDurationThreshold` |
+| `FAILURE_RATE_EXCEEDED` | La tasa de fallos superó el umbral |
+| `SLOW_CALL_RATE_EXCEEDED` | La tasa de llamadas lentas superó el umbral |
 
 ## Ejemplo central
 
-Servicio con suscripción a eventos de Circuit Breaker para alertas en tiempo real y configuración del health check para integración con Kubernetes readiness probes.
+El ejemplo muestra el registro de listeners de eventos para CircuitBreaker y Retry, junto con la configuración de métricas y el endpoint de Actuator:
 
-```xml
-<!-- pom.xml -->
-<dependencies>
-    <dependency>
-        <groupId>org.springframework.cloud</groupId>
-        <artifactId>spring-cloud-starter-circuitbreaker-resilience4j</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-actuator</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-web</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-aop</artifactId>
-    </dependency>
-</dependencies>
+```java
+package com.example.observability;
+
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import io.github.resilience4j.retry.RetryRegistry;
+import org.springframework.boot.ApplicationRunner;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class ResilienceObservabilityConfig {
+
+    @Bean
+    public ApplicationRunner registerEventListeners(
+            CircuitBreakerRegistry cbRegistry,
+            RetryRegistry retryRegistry) {
+        return args -> {
+            // Registro de listeners sobre la instancia "paymentService"
+            CircuitBreaker cb = cbRegistry.circuitBreaker("paymentService");
+
+            // Listener para transiciones de estado
+            cb.getEventPublisher().onStateTransition(event -> {
+                System.out.printf("[CIRCUIT BREAKER] '%s': %s → %s%n",
+                    event.getCircuitBreakerName(),
+                    event.getStateTransition().getFromState(),
+                    event.getStateTransition().getToState());
+            });
+
+            // Listener para llamadas rechazadas (estado OPEN)
+            cb.getEventPublisher().onCallNotPermitted(event -> {
+                System.out.printf("[CIRCUIT BREAKER] '%s': call not permitted%n",
+                    event.getCircuitBreakerName());
+            });
+
+            // Listener para fallos individuales
+            cb.getEventPublisher().onError(event -> {
+                System.out.printf("[CIRCUIT BREAKER] '%s': error after %.2fms — %s%n",
+                    event.getCircuitBreakerName(),
+                    event.getElapsedDuration().toMillis() * 1.0,
+                    event.getThrowable().getMessage());
+            });
+
+            // Listener para tasa de fallos superada
+            cb.getEventPublisher().onFailureRateExceeded(event -> {
+                System.out.printf("[CIRCUIT BREAKER] '%s': failure rate %.2f%%%n",
+                    event.getCircuitBreakerName(),
+                    event.getFailureRate());
+            });
+
+            // Listener de Retry
+            retryRegistry.retry("paymentService")
+                .getEventPublisher()
+                .onRetry(event -> System.out.printf(
+                    "[RETRY] '%s': attempt %d, last error: %s%n",
+                    event.getName(),
+                    event.getNumberOfRetryAttempts(),
+                    event.getLastThrowable().getMessage()))
+                .onSuccess(event -> System.out.printf(
+                    "[RETRY] '%s': succeeded after %d attempts%n",
+                    event.getName(),
+                    event.getNumberOfRetryAttempts()))
+                .onError(event -> System.out.printf(
+                    "[RETRY] '%s': all attempts exhausted%n",
+                    event.getName()));
+        };
+    }
+}
 ```
 
+Configuración Actuator para exponer endpoints y health:
+
 ```yaml
-# application.yml
-spring:
-  application:
-    name: order-service
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, circuitbreakers, circuitbreakerevents, retries, retryevents,
+                 bulkheads, ratelimiters
+  endpoint:
+    health:
+      show-details: always
+  health:
+    circuitbreakers:
+      enabled: true        # activa CircuitBreakerHealthIndicator
+    retryevents:
+      enabled: true
 
 resilience4j:
   circuitbreaker:
     instances:
       paymentService:
+        register-health-indicator: true   # incluye en /actuator/health
         sliding-window-size: 10
-        minimum-number-of-calls: 5
         failure-rate-threshold: 50
-        wait-duration-in-open-state: 30s
-        automatic-transition-from-open-to-half-open-enabled: true
-        register-health-indicator: true
-        # Número de eventos a retener en el buffer del EventPublisher
-        event-consumer-buffer-size: 50
-      inventoryService:
-        sliding-window-size: 20
-        minimum-number-of-calls: 5
-        failure-rate-threshold: 60
-        wait-duration-in-open-state: 15s
-        register-health-indicator: true
-
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health,circuitbreakers,circuitbreakerevents
-  endpoint:
-    health:
-      show-details: always
-      # Separar liveness de readiness (Kubernetes)
-      probes:
-        enabled: true
-  health:
-    circuitbreakers:
-      enabled: true
-    livenessstate:
-      enabled: true
-    readinessstate:
-      enabled: true
 ```
 
-```java
-// CircuitBreakerEventObserver.java — suscripción a eventos en tiempo real
-package com.example.orders.observability;
+## Métricas Micrometer disponibles
 
-import io.github.resilience4j.circuitbreaker.CircuitBreaker;
-import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
-import io.github.resilience4j.circuitbreaker.event.CircuitBreakerOnStateTransitionEvent;
-import io.github.resilience4j.circuitbreaker.event.CircuitBreakerOnErrorEvent;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
-import org.springframework.context.event.EventListener;
-import org.springframework.stereotype.Component;
+Resilience4j publica las siguientes métricas cuando `resilience4j-micrometer` está en classpath. Todas tienen el tag `name` con el nombre de la instancia y `kind` con el tipo de llamada.
 
-@Component
-public class CircuitBreakerEventObserver {
+| Métrica | Tags clave | Descripción |
+|---------|------------|-------------|
+| `resilience4j.circuitbreaker.calls` | `name`, `kind` (successful/failed/not_permitted/ignored) | Contador de llamadas por tipo |
+| `resilience4j.circuitbreaker.state` | `name`, `state` (closed/open/half_open) | Estado actual (0/1) |
+| `resilience4j.circuitbreaker.failure.rate` | `name` | Tasa de fallos actual (0-100) |
+| `resilience4j.circuitbreaker.slow.call.rate` | `name` | Tasa de llamadas lentas |
+| `resilience4j.retry.calls` | `name`, `kind` (successful_without_retry/successful_with_retry/failed_with_retry/failed_without_retry) | Reintentos por resultado |
+| `resilience4j.bulkhead.available.concurrent.calls` | `name` | Permisos libres en SEMAPHORE |
+| `resilience4j.ratelimiter.available.permissions` | `name` | Permisos disponibles en el período |
 
-    private static final Logger log = LoggerFactory.getLogger(CircuitBreakerEventObserver.class);
-    private final CircuitBreakerRegistry circuitBreakerRegistry;
+> [EXAMEN] La métrica `resilience4j.circuitbreaker.state` devuelve 1 cuando el estado coincide con el tag `state` y 0 cuando no coincide. Para saber si el CB está abierto, busca `resilience4j.circuitbreaker.state{name="X",state="open"} = 1`.
 
-    public CircuitBreakerEventObserver(CircuitBreakerRegistry circuitBreakerRegistry) {
-        this.circuitBreakerRegistry = circuitBreakerRegistry;
-    }
+## Endpoints Actuator de Resilience4j
 
-    /**
-     * Se registra en todos los Circuit Breakers cuando la aplicación está lista.
-     * Usar ApplicationReadyEvent garantiza que los CBs ya están registrados.
-     */
-    @EventListener(ApplicationReadyEvent.class)
-    public void registerEventSubscribers() {
-        circuitBreakerRegistry.getAllCircuitBreakers().forEach(this::registerEvents);
+Los endpoints expuestos cuando `management.endpoints.web.exposure.include` los incluye:
 
-        // También registrar en CBs que se creen después del arranque
-        circuitBreakerRegistry.getEventPublisher()
-                .onEntryAdded(event -> registerEvents(event.getAddedEntry()));
-    }
+| Endpoint | Descripción |
+|----------|-------------|
+| `GET /actuator/circuitbreakers` | Estado de todas las instancias |
+| `GET /actuator/circuitbreakerevents` | Últimos eventos de todas las instancias |
+| `GET /actuator/circuitbreakerevents/{name}` | Eventos de una instancia específica |
+| `GET /actuator/retries` | Estado de las instancias Retry |
+| `GET /actuator/retryevents` | Últimos eventos de Retry |
+| `GET /actuator/bulkheads` | Estado de las instancias Bulkhead |
+| `GET /actuator/ratelimiters` | Estado de las instancias RateLimiter |
+| `GET /actuator/health` | Incluye estado de CB si `register-health-indicator: true` |
 
-    private void registerEvents(CircuitBreaker cb) {
-        cb.getEventPublisher()
-                .onStateTransition(this::handleStateTransition)
-                .onError(this::handleError)
-                .onCallNotPermitted(event ->
-                        log.warn("[CB:{}] Llamada rechazada — circuito OPEN",
-                                event.getCircuitBreakerName()))
-                .onSuccess(event ->
-                        log.debug("[CB:{}] Llamada exitosa en {}ms",
-                                event.getCircuitBreakerName(),
-                                event.getElapsedDuration().toMillis()));
-    }
-
-    private void handleStateTransition(CircuitBreakerOnStateTransitionEvent event) {
-        String name = event.getCircuitBreakerName();
-        CircuitBreaker.StateTransition transition = event.getStateTransition();
-
-        log.warn("[CB:{}] Transición de estado: {} → {}",
-                name,
-                transition.getFromState(),
-                transition.getToState());
-
-        // Lógica de alerta específica para transición a OPEN
-        if (transition.getToState() == CircuitBreaker.State.OPEN) {
-            log.error("[CB:{}] CIRCUITO ABIERTO — las llamadas serán rechazadas durante {}",
-                    name, "waitDurationInOpenState configurado");
-            // Aquí se podría publicar un evento de aplicación, enviar a Slack, PagerDuty, etc.
-        }
-    }
-
-    private void handleError(CircuitBreakerOnErrorEvent event) {
-        log.error("[CB:{}] Error registrado: {} — duración: {}ms",
-                event.getCircuitBreakerName(),
-                event.getThrowable().getClass().getSimpleName(),
-                event.getElapsedDuration().toMillis());
-    }
-}
-```
-
-```java
-// CircuitBreakerManagementService.java — operaciones manuales en el CB (para testing/ops)
-package com.example.orders.service;
-
-import io.github.resilience4j.circuitbreaker.CircuitBreaker;
-import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
-import org.springframework.stereotype.Service;
-
-@Service
-public class CircuitBreakerManagementService {
-
-    private final CircuitBreakerRegistry registry;
-
-    public CircuitBreakerManagementService(CircuitBreakerRegistry registry) {
-        this.registry = registry;
-    }
-
-    /**
-     * Fuerza apertura del circuito manualmente (útil para mantenimiento).
-     * Equivalente al endpoint /actuator/circuitbreakers/{name} via PATCH.
-     */
-    public void forceOpen(String name) {
-        registry.circuitBreaker(name).transitionToOpenState();
-    }
-
-    /**
-     * Fuerza cierre del circuito (útil después de un mantenimiento programado).
-     */
-    public void forceClose(String name) {
-        registry.circuitBreaker(name).transitionToClosedState();
-    }
-
-    /**
-     * Reset completo del circuito: borra el estado de la ventana deslizante.
-     */
-    public void reset(String name) {
-        registry.circuitBreaker(name).reset();
-    }
-
-    public CircuitBreaker.State getState(String name) {
-        return registry.circuitBreaker(name).getState();
-    }
-}
-```
-
-## Tabla de elementos clave
-
-Propiedades y conceptos del health check y los eventos de Circuit Breaker.
-
-| Propiedad / Concepto                                         | Tipo / Valor           | Descripción                                                                          |
-|--------------------------------------------------------------|------------------------|--------------------------------------------------------------------------------------|
-| `management.health.circuitbreakers.enabled`                  | boolean                | Activa el `CircuitBreakerHealthIndicator` en `/actuator/health`                      |
-| `resilience4j.circuitbreaker.instances.[n].register-health-indicator` | boolean     | Incluye esta instancia en el health indicator                                        |
-| `resilience4j.circuitbreaker.instances.[n].event-consumer-buffer-size` | int         | Eventos retenidos en buffer del EventPublisher (circular); default `100`             |
-| `management.endpoint.health.probes.enabled`                  | boolean                | Activa endpoints `/actuator/health/liveness` y `/actuator/health/readiness`          |
-| `CircuitBreakerRegistry.getEventPublisher().onEntryAdded()`  | `Consumer<EntryAddedEvent<CircuitBreaker>>` | Callback cuando se añade un nuevo CB al registry          |
-| `CircuitBreaker.getEventPublisher().onStateTransition()`     | `Consumer<...>`        | Suscripción a cambios de estado                                                      |
-| `CircuitBreaker.transitionToOpenState()`                     | método                 | Fuerza apertura manual del circuito                                                  |
-| `CircuitBreaker.transitionToClosedState()`                   | método                 | Fuerza cierre manual del circuito                                                    |
-| `CircuitBreaker.reset()`                                     | método                 | Reset del circuito y borrado de la ventana deslizante                                |
-| Estado OPEN en health                                        | `DOWN` (default)       | Configurable via `CircuitBreakerHealthIndicator.allowHealthIndicatorToFail`          |
+> [CONCEPTO] `CircuitBreakerHealthIndicator` implementa `WritableHealthContributor` (API Spring Boot 3.x). El estado de salud es `UP` cuando el CB está CLOSED, `DOWN` cuando está OPEN, y `UNKNOWN` cuando está HALF_OPEN. Si un CB está DOWN, el endpoint `/actuator/health` devolverá HTTP 503.
 
 ## Buenas y malas prácticas
 
-**Hacer:**
+**Buenas prácticas:**
+- Registrar listeners `onStateTransition` en todos los CBs de producción para enviar alertas cuando el circuito abre.
+- Usar `register-health-indicator: true` selectivamente solo en los CBs de servicios críticos para evitar falsos positivos en `/actuator/health`.
+- Configurar retención de eventos (`event-consumer-buffer-size`) en Actuator para poder ver el historial de eventos en `/circuitbreakerevents`.
 
-- Usar `management.endpoint.health.probes.enabled: true` en producción con Kubernetes para separar la readiness probe de la liveness probe. La readiness debería incluir el estado de los CB; la liveness no (un CB abierto no significa que la aplicación deba reiniciarse).
-- Suscribirse a `onStateTransition` en el `EventPublisher` para enviar alertas cuando el circuito transiciona a OPEN. Esta notificación en tiempo real es más rápida que esperar el scrape de Prometheus.
-- Usar `CircuitBreakerRegistry.getEventPublisher().onEntryAdded()` para registrar suscriptores de forma dinámica en lugar de hacerlo en `@PostConstruct` por nombre. Esto garantiza que los CBs creados dinámicamente también tengan suscriptores.
-- Registrar en logs el tipo de excepción que causó la apertura del circuito (`event.getThrowable()`). Sin esta información, un incidente de "circuito abierto" requiere correlacionar logs de otros servicios para entender la causa raíz.
+**Malas prácticas:**
+- Registrar listeners que lanzan excepciones: los listeners se ejecutan en el mismo hilo de la llamada y un error en el listener puede afectar la llamada protegida.
+- Exponer `/actuator/circuitbreakerevents` sin autenticación en producción: puede revelar información de topología y patrones de fallo.
 
-**Evitar:**
+## Verificación y práctica
 
-- No configurar `management.health.circuitbreakers.enabled: true` si la readiness probe de Kubernetes apunta a `/actuator/health` sin evaluar cuidadosamente el impacto. Si todos los pods abren el circuito simultáneamente, Kubernetes los marcará como no-ready y dejará el servicio sin instancias disponibles.
-- Evitar `event-consumer-buffer-size` muy pequeño (< 20) en servicios con alto throughput. Con un buffer pequeño, los eventos antiguos se descartan antes de que un operador pueda consultarlos en `/actuator/circuitbreakerevents`.
-- No implementar lógica de negocio crítica en los suscriptores de eventos. Los suscriptores se ejecutan en el thread que llama al CB; una operación lenta o fallida en el suscriptor puede añadir latencia a todas las llamadas protegidas.
+> [EXAMEN] 1. ¿Qué dependencia activa la publicación de métricas de Resilience4j en Micrometer?
+
+> [EXAMEN] 2. ¿Qué propiedad YAML activa el `CircuitBreakerHealthIndicator` para una instancia específica?
+
+> [EXAMEN] 3. ¿Cuál es el nombre de la métrica que indica si un CircuitBreaker está actualmente en estado OPEN?
+
+> [EXAMEN] 4. Si `management.health.circuitbreakers.enabled=true` y el CB "paymentService" está en estado OPEN, ¿qué código HTTP devuelve `/actuator/health`?
+
+> [EXAMEN] 5. ¿Qué diferencia hay entre el evento `ERROR` y el evento `IGNORED_ERROR` en el `EventPublisher` del CircuitBreaker?
 
 ---
 
-← [5.11 Métricas de Resilience4j con Micrometer y endpoints Actuator](sc-circuitbreaker-metricas.md) | [Índice](README.md) | [5.13 Integración del Circuit Breaker con OpenFeign, RestClient y WebClient](sc-circuitbreaker-feign.md) →
+← [4.8 Spring Cloud Circuit Breaker — Abstraction Layer](sc-circuitbreaker-sc-abstraction.md) | [Índice](README.md) | [4.10 Integración con Feign](sc-circuitbreaker-feign.md) →

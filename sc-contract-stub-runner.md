@@ -1,249 +1,229 @@
-# 10.7 Stub Runner en el consumer
+# 10.7 Spring Cloud Contract — Stub Runner
 
-← [10.6 Stub JAR y modos de StubRunner](sc-contract-stubs.md) | [Índice](README.md) | [10.8 Contract Messaging — contratos de eventos](sc-contract-messaging.md) →
+← [10.6 Clases Base Productor](sc-contract-base-class.md) | [Índice](README.md) | [10.8 Repositorio de Stubs](sc-contract-stubs-repo.md) →
 
 ---
 
 ## Introducción
 
-El consumer de un contrato CDC no puede depender del producer real para ejecutar sus tests: el producer puede estar en desarrollo, en un entorno inaccesible o en una versión diferente. El Stub Runner resuelve este problema arrancando automáticamente un servidor WireMock local cargado con los stubs del producer, de modo que el consumer puede ejecutar sus tests con total independencia. La configuración del Stub Runner en el consumer es la pieza que cierra el ciclo CDC: sin ella, el consumer tiene contratos pero no puede verificar que su código los consume correctamente. Este fichero cubre todos los parámetros de `@AutoConfigureStubRunner`, las integraciones con Feign/RestTemplate/WebClient, el binding de puertos y la configuración programática.
+Stub Runner es el componente del lado **consumidor** en Spring Cloud Contract. Su función es localizar el JAR de stubs del productor, extraer los stubs WireMock contenidos en él y levantar un servidor WireMock local que responde exactamente según los contratos acordados. Con `@AutoConfigureStubRunner`, el consumidor puede ejecutar sus tests de integración contra un servidor HTTP local sin necesidad de que el productor esté desplegado. Conocer la sintaxis del campo `ids`, los modos de `stubsMode` y las propiedades de configuración es contenido directo de examen.
 
-> [TAREA] El desarrollador necesita configurar el Stub Runner en el consumer para que los tests de integración usen stubs en lugar de servicios reales.
+> [PREREQUISITO] Este nodo requiere haber comprendido el flujo CDC de [10.1 Fundamentos CDC](sc-contract-fundamentos.md) y la generación de stubs del productor de [10.5 Plugin Maven y Gradle](sc-contract-plugin-config.md).
 
-> [RESULTADO] Después de leer este fichero el desarrollador puede anotar un test con `@AutoConfigureStubRunner`, configurar `stubrunner.ids` con el formato completo, inyectar el puerto con `@StubRunnerPort` y verificar que su cliente Feign/RestTemplate llama al stub correcto.
+## @AutoConfigureStubRunner
 
-> [PREREQUISITO] Stub JAR generado y disponible (10.6); cliente HTTP del consumer (Feign, RestTemplate o WebClient) configurado.
-
-## Representación visual
-
-El siguiente diagrama muestra cómo el Stub Runner intercepta las llamadas del consumer y las redirige al servidor WireMock local.
-
-```
-[Test del Consumer]
-  @AutoConfigureStubRunner(ids="com.example:order-service:1.0.0:stubs:8090")
-         │
-         ▼
-[StubRunner arranca WireMock en :8090]
-  carga mappings desde stub JAR
-  └─ META-INF/com.example/order-service/1.0.0/mappings/
-         │
-         ▼
-[OrderClient (@FeignClient o RestTemplate)]
-  apuntado a http://localhost:8090
-         │
-         ▼
-[WireMock responde con el stub del contrato]
-         │
-         ▼
-[Test verifica comportamiento del consumer]
-```
-
-**Formato del parámetro `ids`:**
-
-```
-groupId : artifactId : version : classifier : port
-  com.example : order-service : 1.0.0 : stubs : 8090
-
-versión + = latest disponible
-puerto 0 = dinámico (usar @StubRunnerPort para inyectarlo)
-```
-
-## Ejemplo central
-
-Los siguientes ejemplos muestran la configuración completa del Stub Runner con los tres clientes HTTP más usados.
-
-**Con @FeignClient — configuración más común:**
+`@AutoConfigureStubRunner` es la anotación de Spring Cloud Contract que activa Stub Runner en los tests del consumidor. Se añade a la clase de test junto con `@SpringBootTest`.
 
 ```java
-// application.yml del consumer (test)
-// src/test/resources/application.yml
-```
+// src/test/java/com/example/consumer/OrderConsumerTest.java
+package com.example.consumer;
 
-```yaml
-# apuntar el FeignClient al stub WireMock
-order-service:
-  url: http://localhost:8090
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.cloud.contract.stubrunner.StubRunnerProperties;
+import org.springframework.cloud.contract.stubrunner.spring.AutoConfigureStubRunner;
+import static org.assertj.core.api.Assertions.assertThat;
 
-spring:
-  cloud:
-    openfeign:
-      client:
-        config:
-          order-service:
-            url: http://localhost:8090
-```
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
+@AutoConfigureStubRunner(
+    // ids: coordenadas del stub JAR + puerto donde se levanta el servidor WireMock
+    // Formato: groupId:artifactId:version:classifier:port
+    // Si se omite version, se usa '+' (último disponible)
+    // Si se omite classifier, se usa 'stubs' por defecto
+    ids = "com.example:order-service:1.0.0:stubs:8090",
 
-```java
-@FeignClient(name = "order-service", url = "${order-service.url}")
-public interface OrderClient {
-    @GetMapping("/orders/{id}")
-    OrderDTO getOrder(@PathVariable Long id);
+    // stubsMode: cómo se resuelven los stubs
+    // LOCAL: busca en el repositorio Maven local (~/.m2)
+    // CLASSPATH: busca el JAR en el classpath de test
+    // REMOTE: descarga desde repositoryRoot (Nexus/Artifactory/Git)
+    stubsMode = StubRunnerProperties.StubsMode.LOCAL
+)
+public class OrderConsumerTest {
+
+    @Autowired
+    OrderClient orderClient;  // cliente HTTP configurado para llamar a localhost:8090
+
+    @Test
+    void shouldGetConfirmedOrder() {
+        Order order = orderClient.getOrder(1L);
+        assertThat(order.getId()).isEqualTo(1L);
+        assertThat(order.getStatus()).isEqualTo("CONFIRMED");
+    }
 }
 ```
 
+> [CONCEPTO] El campo `ids` sigue el formato `groupId:artifactId:version:classifier:port`. El `classifier` es `stubs` por convención (es el clasificador del JAR generado por el plugin). El `port` es el puerto donde Stub Runner levanta el servidor WireMock. Si se especifican múltiples ids, Stub Runner levanta un servidor WireMock por cada uno.
+
+## Sintaxis completa del campo ids
+
+El campo `ids` acepta múltiples formatos según lo que se necesite especificar. Las partes opcionales pueden omitirse.
+
+```
+Formato completo:
+groupId:artifactId:version:classifier:port
+com.example:order-service:1.0.0:stubs:8090
+
+Formatos válidos:
+─────────────────────────────────────────────────────────────
+com.example:order-service                        # usa LATEST y puerto random
+com.example:order-service:+                      # '+' = versión más reciente disponible
+com.example:order-service:1.0.0                  # versión fija, puerto random
+com.example:order-service:1.0.0:stubs            # con classifier, puerto random
+com.example:order-service:1.0.0:stubs:8090       # versión fija, puerto fijo
+com.example:order-service:+:stubs:8090           # última versión, puerto fijo
+─────────────────────────────────────────────────────────────
+
+Múltiples stubs (array de Strings):
+ids = {
+    "com.example:order-service:+:stubs:8090",
+    "com.example:payment-service:+:stubs:8091"
+}
+```
+
+> [ADVERTENCIA] Cuando se usa `+` como versión, Stub Runner resuelve la versión más reciente disponible según el `stubsMode`. En modo `LOCAL`, busca en `~/.m2/repository`. En modo `CLASSPATH`, usa el JAR en el classpath. Usar `+` en modo `REMOTE` puede ser lento si hay muchas versiones publicadas.
+
+## Los tres modos de StubsMode
+
+`StubsMode` controla dónde busca Stub Runner los stubs. Cada modo tiene un caso de uso concreto.
+
 ```java
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+// StubsMode.LOCAL: busca en el repositorio Maven local (~/.m2)
+// Requiere que el productor haya ejecutado mvn install previamente
 @AutoConfigureStubRunner(
     ids = "com.example:order-service:1.0.0:stubs:8090",
-    stubsMode = StubRunnerProperties.StubsMode.CLASSPATH
+    stubsMode = StubRunnerProperties.StubsMode.LOCAL
 )
-class OrderConsumerFeignTest {
 
-    @Autowired
-    private OrderClient orderClient;
-
-    @Test
-    void shouldFetchOrderFromStub() {
-        OrderDTO order = orderClient.getOrder(42L);
-        assertThat(order.getId()).isEqualTo(42L);
-        assertThat(order.getNif()).isNotBlank();
-    }
-}
-```
-
-**Con RestTemplate y puerto dinámico:**
-
-```java
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+// StubsMode.CLASSPATH: busca el JAR de stubs en el classpath de test
+// El JAR debe estar en las dependencias de test del consumidor
+// Requiere spring.cloud.contract.stubrunner.generate-stubs=true para generación automática
 @AutoConfigureStubRunner(
-    ids = "com.example:order-service:+:stubs",  // puerto dinámico
+    ids = "com.example:order-service:+:stubs:8090",
     stubsMode = StubRunnerProperties.StubsMode.CLASSPATH
 )
-class OrderConsumerRestTemplateTest {
 
-    @StubRunnerPort("order-service")  // inyecta el puerto asignado dinámicamente
-    private int stubPort;
-
-    @Autowired
-    private RestTemplate restTemplate;
-
-    @Test
-    void shouldFetchOrderDynamicPort() {
-        String url = "http://localhost:" + stubPort + "/orders/42";
-        OrderDTO order = restTemplate.getForObject(url, OrderDTO.class);
-        assertThat(order).isNotNull();
-        assertThat(order.getAmount()).isPositive();
-    }
-}
-```
-
-**Con WebClient (API reactiva):**
-
-```java
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+// StubsMode.REMOTE: descarga de un repositorio remoto (Nexus/Artifactory/Git)
+// Requiere que repositoryRoot apunte al repositorio
 @AutoConfigureStubRunner(
-    ids = "com.example:order-service:+:stubs",
-    stubsMode = StubRunnerProperties.StubsMode.CLASSPATH
+    ids = "com.example:order-service:1.0.0:stubs:8090",
+    stubsMode = StubRunnerProperties.StubsMode.REMOTE,
+    repositoryRoot = "https://nexus.example.com/repository/maven-releases"
 )
-class OrderConsumerWebClientTest {
-
-    @StubRunnerPort("order-service")
-    private int stubPort;
-
-    private WebClient webClient;
-
-    @BeforeEach
-    void setup() {
-        webClient = WebClient.builder()
-            .baseUrl("http://localhost:" + stubPort)
-            .build();
-    }
-
-    @Test
-    void shouldFetchOrderReactive() {
-        OrderDTO order = webClient.get()
-            .uri("/orders/42")
-            .retrieve()
-            .bodyToMono(OrderDTO.class)
-            .block(Duration.ofSeconds(5));
-        assertThat(order.getId()).isEqualTo(42L);
-    }
-}
 ```
 
-**Múltiples stubs en un mismo test:**
+| Modo | Fuente de stubs | Requiere | Cuándo usar |
+|---|---|---|---|
+| `LOCAL` | Repositorio Maven local `~/.m2` | `mvn install` del productor | Desarrollo local, test entre servicios del mismo equipo |
+| `CLASSPATH` | JAR en el classpath de test | Dependencia de test declarada | CI con stubs embebidos en el classpath |
+| `REMOTE` | Nexus/Artifactory/Git | `repositoryRoot` configurado | Pipeline CI/CD con repositorio compartido |
 
-```java
-@AutoConfigureStubRunner(
-    ids = {
-        "com.example:order-service:+:stubs:8090",
-        "com.example:payment-service:+:stubs:8091",
-        "com.example:inventory-service:+:stubs:8092"
-    },
-    stubsMode = StubRunnerProperties.StubsMode.CLASSPATH
-)
-class OrderFlowConsumerTest { ... }
-```
+## Configuración via application.yml
 
-**Configuración programática con StubRunnerOptions:**
-
-```java
-@Bean
-public StubRunnerOptions stubRunnerOptions() {
-    return StubRunnerOptionsBuilder.newInstance()
-        .withStubsMode(StubRunnerProperties.StubsMode.CLASSPATH)
-        .withStubs("com.example:order-service:+:stubs:8090")
-        .build();
-}
-```
-
-**application.yml — mover configuración fuera del código:**
+Todos los atributos de `@AutoConfigureStubRunner` pueden configurarse como propiedades en `application.yml` o `application.properties` del módulo de test. Esto permite centralizar la configuración sin repetirla en cada clase de test.
 
 ```yaml
-stubrunner:
-  stubs-mode: classpath
-  ids:
-    - com.example:order-service:+:stubs:8090
-  # para modo REMOTE:
-  # repository-root: http://nexus:8081/repository/maven-releases/
-  # stubs-mode: remote
+# src/test/resources/application.yml del CONSUMIDOR
+spring:
+  cloud:
+    contract:
+      stubrunner:
+        # ids: uno o más stubs con sus coordenadas
+        ids:
+          - "com.example:order-service:+:stubs:8090"
+          - "com.example:payment-service:+:stubs:8091"
+        # stubsMode: LOCAL, CLASSPATH o REMOTE
+        stubs-mode: LOCAL
+        # repositoryRoot: URL del repositorio remoto (solo para REMOTE)
+        # repository-root: https://nexus.example.com/repository/maven-releases
+        # generate-stubs: habilita la generación de stubs en modo classpath
+        # Cuando está activado, SCC genera los stubs WireMock automáticamente
+        # en el classpath en lugar de requerir un JAR precompilado
+        generate-stubs: false
 ```
 
-## Tabla de elementos clave
+> [CONCEPTO] La propiedad `spring.cloud.contract.stubrunner.generate-stubs=true` habilita la generación automática de stubs WireMock en modo CLASSPATH. Con esta propiedad activa, Stub Runner genera los stubs directamente desde los contratos en el classpath sin necesitar un JAR de stubs precompilado. Es útil en entornos donde el productor y consumidor se prueban en el mismo build.
 
-Los parámetros de `@AutoConfigureStubRunner` y `stubrunner.*` que un profesional senior debe dominar.
+## spring-cloud-contract-wiremock como módulo estándar
 
-| Parámetro | Tipo | Default | Descripción |
-|---|---|---|---|
-| `ids` | String[] | — | Formato: `groupId:artifactId:version:classifier:port`; `+` = latest |
-| `stubsMode` | enum | `CLASSPATH` | Origen de los stubs; sobreescribe `stubrunner.stubs-mode` |
-| `repositoryRoot` | String | — | URL Nexus/Artifactory para `StubsMode.REMOTE` |
-| `@StubRunnerPort(name)` | Anotación | — | Inyecta el puerto asignado dinámicamente al stub identificado por `name` |
-| `stubrunner.ids` | String | — | Alternativa YAML a `ids` en la anotación |
-| `stubrunner.stubs-mode` | enum | `CLASSPATH` | Alternativa YAML a `stubsMode` |
-| `stubrunner.repository-root` | String | — | Alternativa YAML a `repositoryRoot` |
-| `classifier` | String | `stubs` | Classifier del JAR de stubs |
-| `port=0` | int | — | Asignación dinámica de puerto; requiere `@StubRunnerPort` para inyectarlo |
-| `StubRunnerOptions` | Clase | — | Configuración programática; útil para beans condicionales por entorno |
+En Spring Cloud Contract 4.x (2025.x), `spring-cloud-contract-wiremock` es el módulo estándar que el Stub Runner usa como motor de ejecución de stubs. Este módulo incluye WireMock y provee la integración necesaria para que Stub Runner levante los servidores HTTP.
+
+```xml
+<!-- pom.xml del CONSUMIDOR -->
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-contract-stub-runner</artifactId>
+    <scope>test</scope>
+</dependency>
+<!--
+  spring-cloud-contract-wiremock se incluye transitivamente mediante
+  spring-cloud-starter-contract-stub-runner en SC 4.x.
+  Si se necesita @AutoConfigureWireMock directamente, declarar explícitamente:
+-->
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-contract-wiremock</artifactId>
+    <scope>test</scope>
+</dependency>
+```
+
+## Ejemplo completo con repositorio remoto
+
+El siguiente ejemplo muestra la configuración del consumidor cuando los stubs se publican en un repositorio Nexus compartido en el pipeline CI.
+
+```java
+// Test del consumidor que descarga stubs de Nexus
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
+@AutoConfigureStubRunner(
+    ids = "com.example:order-service:1.2.3:stubs:8090",
+    stubsMode = StubRunnerProperties.StubsMode.REMOTE,
+    repositoryRoot = "https://nexus.example.com/repository/maven-releases"
+)
+public class OrderConsumerIntegrationTest {
+
+    // El servidor WireMock está disponible en localhost:8090
+    // con los stubs del order-service versión 1.2.3
+
+    @Value("${order.service.url:http://localhost:8090}")
+    String orderServiceUrl;
+
+    @Test
+    void shouldGetOrderFromStub() {
+        // El cliente HTTP real llama al servidor WireMock local en 8090
+        RestTemplate restTemplate = new RestTemplate();
+        ResponseEntity<Order> response = restTemplate.getForEntity(
+            orderServiceUrl + "/orders/1", Order.class);
+        assertThat(response.getStatusCode().value()).isEqualTo(200);
+    }
+}
+```
 
 ## Buenas y malas prácticas
 
-**Hacer:**
+**Buenas prácticas**:
+- Fijar la versión del stub (ej: `1.2.3`) en pipelines CI/CD para reproducibilidad; usar `+` solo en desarrollo local.
+- Configurar los stubs via `application.yml` de test en lugar de repetir atributos en cada clase de test.
+- Usar `stubsMode = LOCAL` en desarrollo local para ciclos rápidos sin depender de red.
+- Verificar que el puerto del stub (`8090`) coincide con la URL configurada en el cliente HTTP del consumidor.
 
-- Usar puerto fijo (ej: `8090`) solo en tests de integración con docker-compose donde el puerto está declarado; en todos los demás casos usar puerto dinámico (`ids=...::0`) e inyectar con `@StubRunnerPort` para evitar conflictos de puerto en CI cuando varios tests arrancan en paralelo.
-- Externalizar `stubrunner.stubs-mode` y `stubrunner.repository-root` en `src/test/resources/application.yml` en lugar de codificarlos en la anotación; así se pueden cambiar por perfil (`-Dspring.profiles.active=ci`) sin recompilar.
-- Añadir `@StubRunnerPort("artifactId")` usando el `artifactId` sin sufijo `-service`; si el ID completo del stub es `com.example:order-service`, la anotación es `@StubRunnerPort("order-service")`.
-- Verificar que el FeignClient, RestTemplate o WebClient apunta a `localhost:${stubPort}` en el perfil de test; un cliente apuntando al host de producción ignora el stub y falla con `Connection refused` o, peor, llama al servicio real.
+**Malas prácticas**:
+- Usar `stubsMode = REMOTE` sin caché en CI — genera dependencia de red y tests lentos o inestables.
+- Omitir el `port` en `ids` y confiar en puertos aleatorios sin inyectarlos en el cliente — el cliente llamará al puerto incorrecto.
+- Confundir `stubsMode = LOCAL` (repositorio Maven local) con `CLASSPATH` (JAR en classpath de test).
+- Usar la misma configuración de ids en todos los tests sin verificar que el stub del productor es compatible con la versión consumida.
 
-**Evitar:**
+## Verificación y práctica
 
-- No usar `stubsMode = StubsMode.LOCAL` en el pipeline CI si el producer no ha ejecutado `mvn install` previamente en el mismo agente: el stub JAR no estará en `~/.m2` y el test fallará con `StubNotFoundException`, camuflando el error como un problema del consumer.
-- No declarar más de 5-6 stubs simultáneos en un test si cada uno usa puerto fijo numerado secuencialmente (8090, 8091, ...): en entornos CI con alta concurrencia, los puertos entran en conflicto entre builds paralelas. Usar puertos dinámicos.
-- No olvidar `<exclusions>*:*</exclusions>` al añadir el stub JAR como dependencia en `pom.xml`: sin exclusiones, las dependencias transitivas del producer pueden entrar en conflicto con las del consumer, causando `NoSuchMethodError` difíciles de diagnosticar.
-- No usar `@AutoConfigureStubRunner` en tests de producción que acaban en el classpath de producción (fuera de `src/test`): el starter `spring-cloud-starter-contract-stub-runner` tiene scope `test` por diseño; usarlo en producción añade WireMock al runtime innecesariamente.
+> [EXAMEN] 1. ¿Cuál es el formato del campo `ids` en `@AutoConfigureStubRunner` y qué significa cada parte?
 
-## Comparación: configuración via anotación vs YAML
+> [EXAMEN] 2. ¿Cuál es la diferencia entre `StubsMode.LOCAL` y `StubsMode.CLASSPATH`?
 
-Ambas formas son funcionalmente equivalentes; la elección afecta la mantenibilidad del proyecto.
+> [EXAMEN] 3. ¿Qué propiedad de `application.yml` habilita la generación automática de stubs WireMock en modo classpath?
 
-| Criterio | `@AutoConfigureStubRunner(...)` | `application.yml` (stubrunner.*) |
-|---|---|---|
-| Visibilidad en código | Alta (en el test) | Baja (en fichero externo) |
-| Reutilización entre tests | Baja (repetición en cada test) | Alta (hereda todos los tests) |
-| Override por perfil CI | No sin recompilar | Sí con `-Dspring.profiles.active=ci` |
-| Ideal para | Tests únicos con config específica | Suite de tests con config compartida |
+> [EXAMEN] 4. ¿Qué módulo de Spring Cloud Contract 4.x provee WireMock como motor de ejecución de stubs?
+
+> [EXAMEN] 5. ¿Cómo se configura `@AutoConfigureStubRunner` para descargar stubs desde un repositorio Nexus remoto?
 
 ---
 
-← [10.6 Stub JAR y modos de StubRunner](sc-contract-stubs.md) | [Índice](README.md) | [10.8 Contract Messaging — contratos de eventos](sc-contract-messaging.md) →
-
+← [10.6 Clases Base Productor](sc-contract-base-class.md) | [Índice](README.md) | [10.8 Repositorio de Stubs](sc-contract-stubs-repo.md) →

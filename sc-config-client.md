@@ -1,216 +1,216 @@
-# 1.2 Config Client — configuración y arranque
+# 1.2 Config Client — bootstrap context y propiedades clave
 
-← [1.1 Arquitectura y concepto del Config Server](sc-config-arquitectura.md) | [Índice (README.md)](README.md) | [1.3 Resolución de configuración por perfiles y labels →](sc-config-resolucion.md)
+← [1.1 Arquitectura Config Server](sc-config-arquitectura.md) | [Índice](README.md) | [1.3.1 Backend Git](sc-config-git-backend.md) →
 
 ---
 
 ## Introducción
 
-Un microservicio se convierte en Config Client en el momento en que necesita obtener su configuración del Config Server en lugar de leerla de un fichero local. La pregunta no es si hacerlo —en un ecosistema con Config Server es el comportamiento estándar— sino cómo configurar el cliente correctamente para que la importación ocurra en el momento preciso del ciclo de vida de Spring Boot.
+El Config Client es cualquier microservicio Spring Boot que obtiene su configuración del Config Server en lugar de (o además de) sus ficheros locales. El problema que resuelve es la carga temprana: la configuración debe estar disponible antes de que el contexto de aplicación Spring se inicialice, porque beans como `DataSource` o clientes HTTP necesitan propiedades que pueden venir del servidor remoto. Spring Boot 3.x resolvió este problema con `spring.config.import`, sustituyendo el mecanismo anterior basado en bootstrap context.
 
-El reto técnico está en el **orden de inicialización**: las propiedades deben estar disponibles antes de que cualquier bean se cree, lo que obliga a que la importación del Config Server ocurra durante la fase de carga del `Environment`, antes del refresh del contexto. En Spring Boot 4.0.x, este mecanismo se implementa mediante `spring.config.import`. El modo anterior (bootstrap context) existía para el mismo fin pero con una arquitectura más compleja que está desaconsejada en las versiones actuales.
+> [CONCEPTO] En Spring Boot 3.x (Spring Cloud 2022+), la forma canónica de conectar un cliente al Config Server es `spring.config.import=configserver:http://localhost:8888`. Esta propiedad se puede declarar en `application.yml` y Spring la procesa en una fase de importación antes de que finalice la carga del contexto.
 
-> [ADVERTENCIA] En Spring Cloud 2025.1.1 con Spring Boot 4.0.x, el bootstrap context está **desaconsejado**. El modo canónico es `spring.config.import=configserver:`. El bootstrap context se documenta aquí únicamente como referencia de migración de proyectos legacy.
+> [PREREQUISITO] El Config Server debe estar levantado y accesible antes de que el cliente arranque, a menos que se configure `spring.cloud.config.fail-fast=false` (no recomendado en producción).
 
-> [PREREQUISITO] El Config Server debe estar levantado y accesible en la URL configurada antes de arrancar el cliente. Si no está disponible y `fail-fast=true`, el cliente fallará al iniciar. Si `fail-fast=false` (default), el cliente arrancará con un contexto de propiedades vacío, lo que puede causar errores en runtime difíciles de diagnosticar.
+## Evolución del mecanismo de conexión
 
-## Diagrama: ciclo de carga de configuración en Spring Boot 4.0.x
-
-El siguiente diagrama muestra en qué fase del arranque de Spring Boot interviene el Config Client y por qué debe ocurrir antes que la creación de beans.
+Entender la evolución histórica es crítico para el examen porque preguntas de distintas versiones mezclan ambos mecanismos. Hasta Spring Boot 2.3, la conexión usaba un "bootstrap context" separado que cargaba `bootstrap.yml` antes que `application.yml`. Desde Spring Boot 2.4 y especialmente en 3.x, el mecanismo de importación (`spring.config.import`) hace innecesario el bootstrap context.
 
 ```
-ARRANQUE Spring Boot 4.0.x
-        │
-        ▼
-1. Carga application.properties / application.yml local
-        │
-        ▼
-2. Procesa spring.config.import=configserver:http://config-server:8888
-        │
-        │  ──► GET /order-service/prod/main  (al Config Server)
-        │  ◄── PropertySource[] (JSON)
-        │
-        ▼
-3. Environment completo (local + remoto, por precedencia)
-        │
-        ▼
-4. Creación del ApplicationContext
-   - Creación de beans (@Component, @Service, @RestController…)
-   - Inyección de @Value, @ConfigurationProperties   ← ya disponibles
-        │
-        ▼
-5. Aplicación lista para recibir peticiones
+┌─────────────────────────────────────────────────────────────────┐
+│              EVOLUCIÓN DEL MECANISMO DE CONEXIÓN                │
+│                                                                  │
+│  Spring Boot ≤ 2.3 (Spring Cloud Hoxton)                        │
+│  ┌─────────────────┐     ┌──────────────────────────────────┐   │
+│  │  bootstrap.yml  │────▶│  bootstrap context (separado)    │   │
+│  │  spring.cloud   │     │  → carga config remota           │   │
+│  │  .config.uri    │     │  → luego crea ApplicationContext  │   │
+│  └─────────────────┘     └──────────────────────────────────┘   │
+│                                                                  │
+│  Spring Boot 3.x (Spring Cloud 2022.x / 2025.x)                 │
+│  ┌─────────────────┐     ┌──────────────────────────────────┐   │
+│  │  application.yml│────▶│  spring.config.import phase      │   │
+│  │  spring.config  │     │  → importa configserver:http://  │   │
+│  │  .import=...    │     │  → fusiona propiedades           │   │
+│  └─────────────────┘     └──────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-Si el import falla en el paso 2, el contexto no llega al paso 4: el fallo es explícito y temprano.
+[LEGACY] El mecanismo bootstrap (`bootstrap.yml` + `spring-cloud-starter-bootstrap`) sigue funcionando en Spring Boot 3.x si se añade el starter `spring-cloud-starter-bootstrap`, pero es un patrón legado. No usarlo en proyectos nuevos.
+
+> [ADVERTENCIA] Usar `bootstrap.yml` en Spring Boot 3.x sin añadir `spring-cloud-starter-bootstrap` al classpath hace que el fichero sea ignorado completamente. El cliente arranca sin configuración remota y no emite ningún error obvio.
 
 ## Ejemplo central
 
-A continuación se muestra la configuración completa de un Config Client en Spring Boot 4.0.x, incluyendo dependencias, propiedades y gestión de fallos.
+El siguiente ejemplo muestra un microservicio Config Client completo con Spring Boot 3.x, incluyendo dependencias, configuración y un bean que usa una propiedad del Config Server.
 
-### pom.xml (fragmento de dependencias)
+**pom.xml (dependencias del cliente)**:
 
 ```xml
-<dependencies>
-    <!-- Config Client -->
-    <dependency>
-        <groupId>org.springframework.cloud</groupId>
-        <artifactId>spring-cloud-starter-config</artifactId>
-    </dependency>
-    <!-- Actuator (necesario para /actuator/refresh) -->
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-actuator</artifactId>
-    </dependency>
-    <!-- Retry (necesario para spring.cloud.config.retry.*) -->
-    <dependency>
-        <groupId>org.springframework.retry</groupId>
-        <artifactId>spring-retry</artifactId>
-    </dependency>
-    <!-- AOP necesario para que spring-retry funcione -->
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-aop</artifactId>
-    </dependency>
-</dependencies>
-
 <dependencyManagement>
-    <dependencies>
-        <dependency>
-            <groupId>org.springframework.cloud</groupId>
-            <artifactId>spring-cloud-dependencies</artifactId>
-            <version>2025.1.1</version>
-            <type>pom</type>
-            <scope>import</scope>
-        </dependency>
-    </dependencies>
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-dependencies</artifactId>
+      <version>2025.0.0</version>
+      <type>pom</type>
+      <scope>import</scope>
+    </dependency>
+  </dependencies>
 </dependencyManagement>
+
+<dependencies>
+  <dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-config</artifactId>
+  </dependency>
+  <dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+  </dependency>
+  <dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-actuator</artifactId>
+  </dependency>
+</dependencies>
 ```
 
-### application.yml (Config Client — modo moderno)
+**application.yml (Config Client)**:
 
 ```yaml
 spring:
   application:
-    name: order-service          # se usa como {application} en la resolución del servidor
-
+    name: order-service          # Determina qué ficheros pide al Config Server
   config:
-    import: "configserver:http://config-server:8888"   # modo canónico Spring Boot 4.x
-
+    import: "configserver:http://localhost:8888"
   cloud:
     config:
-      profile: ${spring.profiles.active:default}       # se puede omitir; usa el perfil activo
-      label: main                                       # rama/tag/commit del Git backend
-      fail-fast: true                                   # falla al arrancar si el servidor no responde
+      profile: ${spring.profiles.active:default}
+      label: main                # Rama del repositorio Git
+      fail-fast: true            # Falla el arranque si Config Server no responde
       retry:
-        max-attempts: 6          # reintentos antes de fallar definitivamente
-        initial-interval: 1000   # ms entre el primer y segundo intento
-        multiplier: 1.5          # factor de backoff exponencial
-        max-interval: 2000       # techo de espera entre intentos (ms)
-      # Autenticación básica al Config Server (si el servidor la requiere):
-      username: ${CONFIG_SERVER_USER:config}
-      password: ${CONFIG_SERVER_PASSWORD:secret}
+        max-attempts: 6
+        initial-interval: 1000
+        max-interval: 2000
+        multiplier: 1.1
 
 management:
   endpoints:
     web:
       exposure:
-        include: health,refresh
+        include: health,info,refresh
 ```
 
-### Consumo de propiedades con @ConfigurationProperties
-
-```java
-package com.example.orderservice.config;
-
-import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.cloud.context.config.annotation.RefreshScope;
-
-// @RefreshScope aquí permite recargar las propiedades sin reiniciar
-// Ver sección 1.6 para el mecanismo de refresco completo
-@RefreshScope
-@ConfigurationProperties(prefix = "order")
-public record OrderProperties(
-        String paymentServiceUrl,
-        int maxRetries,
-        boolean asyncProcessing
-) {}
-```
+**OrderServiceApplication.java**:
 
 ```java
 package com.example.orderservice;
 
-import com.example.orderservice.config.OrderProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
 
 @SpringBootApplication
-@EnableConfigurationProperties(OrderProperties.class)
 public class OrderServiceApplication {
+
     public static void main(String[] args) {
         SpringApplication.run(OrderServiceApplication.class, args);
     }
 }
 ```
 
-El fichero `order-service.yml` en el repositorio Git del Config Server contendría:
+**AppConfig.java (bean que consume propiedad remota)**:
 
-```yaml
-order:
-  payment-service-url: http://payment-service:8080
-  max-retries: 3
-  async-processing: false
+```java
+package com.example.orderservice.config;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.cloud.context.config.annotation.RefreshScope;
+import org.springframework.stereotype.Component;
+
+@Component
+@RefreshScope
+public class AppConfig {
+
+    @Value("${order.max-items:100}")
+    private int maxItems;
+
+    @Value("${order.service.url:http://localhost:9090}")
+    private String serviceUrl;
+
+    public int getMaxItems() {
+        return maxItems;
+    }
+
+    public String getServiceUrl() {
+        return serviceUrl;
+    }
+}
 ```
 
-## Tabla de parámetros del Config Client
+Con esta configuración, al arrancar `order-service` con perfil `dev`, el cliente solicita `GET http://localhost:8888/order-service/dev/main` y recibe las propiedades fusionadas de todos los ficheros relevantes del repositorio.
 
-La siguiente tabla lista los parámetros que un profesional senior debe conocer de memoria, con sus valores por defecto y su efecto real.
+## Tabla de propiedades clave del cliente
 
-| Parámetro | Tipo | Default | Descripción |
-|---|---|---|---|
-| `spring.config.import` | `String` | — | URL del Config Server con prefijo `configserver:`. Obligatorio en modo moderno. |
-| `spring.application.name` | `String` | `application` | Nombre con el que el cliente se identifica ante el servidor (`{application}`). |
-| `spring.cloud.config.uri` | `String` | `http://localhost:8888` | URL del servidor. Alternativa a incluirla en `spring.config.import`. |
-| `spring.cloud.config.profile` | `String` | perfil activo | Perfil a resolver (`{profile}`). Por defecto toma `spring.profiles.active`. |
-| `spring.cloud.config.label` | `String` | (del servidor) | Rama/tag/commit del backend Git. |
-| `spring.cloud.config.fail-fast` | `boolean` | `false` | Si `true`, falla al arrancar si el servidor no responde. **Recomendado `true` en producción.** |
-| `spring.cloud.config.retry.max-attempts` | `int` | `6` | Número de reintentos antes de fallar. Requiere `spring-retry` en el classpath. |
-| `spring.cloud.config.retry.initial-interval` | `long` | `1000` | Milisegundos de espera antes del primer reintento. |
-| `spring.cloud.config.retry.multiplier` | `double` | `1.1` | Factor de backoff exponencial entre reintentos. |
-| `spring.cloud.config.retry.max-interval` | `long` | `2000` | Techo de espera entre reintentos (ms). |
-| `spring.cloud.config.username` | `String` | — | Usuario para HTTP Basic auth contra el Config Server. |
-| `spring.cloud.config.password` | `String` | — | Contraseña para HTTP Basic auth. |
-| `spring.cloud.config.token` | `String` | — | Token de Vault que el cliente pasa al servidor para resolver secretos de Vault. |
+Todas las propiedades relevantes del cliente se configuran bajo los prefijos `spring.config.*` y `spring.cloud.config.*`.
+
+| Propiedad | Tipo | Default | Descripción |
+|-----------|------|---------|-------------|
+| `spring.application.name` | String | `application` | Determina el `{application}` en la URL de resolución |
+| `spring.config.import` | String | — | Fuente externa: `configserver:http://host:8888` |
+| `spring.cloud.config.uri` | String | `http://localhost:8888` | URL del Config Server (alternativa a import) |
+| `spring.cloud.config.label` | String | — | Rama/tag Git (si no se pone, usa el default-label del servidor) |
+| `spring.cloud.config.fail-fast` | boolean | `false` | Si true, falla el arranque cuando el servidor no responde |
+| `spring.cloud.config.retry.max-attempts` | int | `6` | Número máximo de reintentos de conexión al servidor |
+| `spring.cloud.config.retry.initial-interval` | long | `1000` | Espera inicial entre reintentos (ms) |
+| `spring.cloud.config.retry.max-interval` | long | `2000` | Espera máxima entre reintentos (ms) |
+| `spring.cloud.config.retry.multiplier` | double | `1.1` | Factor de backoff exponencial entre reintentos |
+| `spring.cloud.config.allow-override` | boolean | `true` | Permite que propiedades locales sobreescriban las del Config Server |
+
+> [EXAMEN] `spring.application.name` es la propiedad más importante del cliente: determina qué ficheros pide al servidor. Si se llama `order-service`, el servidor buscará `order-service.yml`, `order-service-dev.yml`, etc. Un `spring.application.name` incorrecto significa que el cliente recibe solo la configuración global (`application.yml`).
 
 ## Buenas y malas prácticas
 
-**Hacer:**
-- Establecer `fail-fast: true` en todos los entornos no locales. Un cliente que arranca sin configuración del servidor produce errores en runtime que son mucho más difíciles de diagnosticar que un fallo explícito en el arranque.
-- Combinar `fail-fast: true` con `retry.*`: el cliente reintenta la conexión N veces con backoff antes de fallar, lo que tolera reinicios temporales del Config Server sin que el cliente falle de inmediato.
-- Externalizar las credenciales del Config Server (`username`, `password`) en variables de entorno, no en `application.yml`: son las únicas propiedades que no pueden venir del propio Config Server.
-- Usar `@ConfigurationProperties` (record o clase) en lugar de `@Value` para grupos de propiedades relacionadas: es más seguro frente a typos, permite validación con `@Validated` y funciona mejor con `@RefreshScope`.
+Hacer:
+- Establecer `fail-fast: true` con retry configurado en producción; así un reinicio del cliente espera a que el Config Server esté disponible en lugar de arrancar con valores por defecto incorrectos.
+- Usar valores por defecto con `${property:default}` en todas las anotaciones `@Value`; así la aplicación funciona aunque el Config Server no entregue esa propiedad.
+- Siempre incluir `spring-boot-starter-actuator` y exponer el endpoint `refresh` en el cliente para poder actualizar configuración en caliente.
+- Especificar `spring.config.import` con la URL completa en lugar de depender de variables de entorno no documentadas.
 
-**Evitar:**
-- Poner `spring.config.import` en un fichero que a su vez viene del Config Server: se produce un ciclo de bootstrap imposible de resolver. La propiedad `spring.config.import` debe estar en el fichero local `application.yml` o como variable de entorno.
-- Usar `spring.cloud.config.uri` y `spring.config.import` simultáneamente apuntando a URLs distintas: el comportamiento es confuso y puede resultar en resoluciones duplicadas o contradictorias.
-- Omitir `spring.application.name`: sin él, el cliente solicita al servidor la aplicación llamada `application`, que solo devuelve la configuración global compartida, no la específica del servicio.
+Evitar:
+- Usar `bootstrap.yml` en Spring Boot 3.x sin añadir `spring-cloud-starter-bootstrap`; el fichero se ignora silenciosamente.
+- Configurar `fail-fast: false` en producción; permite arranques con configuración incorrecta que generan errores difíciles de diagnosticar.
+- Omitir `spring.application.name`; el cliente usará el nombre `application` por defecto y recibirá solo la configuración global, no la específica del servicio.
+- Usar `spring.cloud.config.uri` y `spring.config.import` simultáneamente; generan precedencia ambigua.
 
-## Comparación: spring.config.import vs bootstrap context
+## Verificación y práctica
 
-La siguiente tabla compara el modo moderno (canónico en Spring Boot 4.0.x) con el modo legacy basado en bootstrap context.
+La forma más directa de verificar que el cliente ha recibido configuración del servidor es el endpoint Actuator `env`:
 
-| Aspecto | `spring.config.import` (moderno) | Bootstrap context [LEGACY] |
-|---|---|---|
-| Disponibilidad | Spring Boot 2.4+ / Spring Cloud 2020.0+ | Todas las versiones anteriores |
-| Dependencia extra | No (incluida en `spring-cloud-starter-config`) | Requiere `spring-cloud-starter-bootstrap` |
-| Orden de carga | Integrado en el mecanismo estándar de `ConfigDataLoader` | Contexto hijo separado, cargado antes del contexto principal |
-| Propiedades de config | En `application.yml` bajo `spring.config.import` | En `bootstrap.yml` / `bootstrap.properties` |
-| Depuración | Más predecible con `--debug` de Spring Boot | Contexto extra dificulta el trazado de resolución |
-| Estado en 2025.1.1 | **Recomendado** | Desaconsejado; mantener solo en proyectos sin migrar |
+```bash
+# Ver todas las propiedades activas y sus fuentes
+curl http://localhost:8080/actuator/env
 
-> [ADVERTENCIA] Si coexisten `bootstrap.yml` y `spring.config.import` en el mismo proyecto (situación habitual durante una migración), las propiedades del bootstrap context tienen precedencia sobre las del import. Esto puede causar que propiedades del servidor sean silenciosamente sobreescritas por valores del bootstrap. Completar la migración antes de pasar a producción.
+# Buscar una propiedad específica
+curl http://localhost:8080/actuator/env/order.max-items
+
+# La respuesta mostrará la fuente: "configserver:..."
+# {
+#   "property": {
+#     "source": "configserver:https://github.com/myorg/config-repo/order-service/order-service.yml",
+#     "value": "50"
+#   }
+# }
+```
+
+**Preguntas estilo examen VMware Spring Professional:**
+
+1. ¿Qué mecanismo reemplaza a `bootstrap.yml` en Spring Boot 3.x para conectar el cliente al Config Server?
+2. ¿Qué propiedad del cliente determina el segmento `{application}` en la URL de resolución del Config Server?
+3. Si `spring.cloud.config.fail-fast=true` y el Config Server no está disponible, ¿qué ocurre con el arranque del cliente?
+4. ¿Por qué se recomienda usar valores por defecto (`${prop:default}`) en las anotaciones `@Value` del cliente?
+5. ¿Qué hace `spring.cloud.config.allow-override=false`? ¿En qué escenario se usaría?
 
 ---
 
-← [1.1 Arquitectura y concepto del Config Server](sc-config-arquitectura.md) | [Índice (README.md)](README.md) | [1.3 Resolución de configuración por perfiles y labels →](sc-config-resolucion.md)
+← [1.1 Arquitectura Config Server](sc-config-arquitectura.md) | [Índice](README.md) | [1.3.1 Backend Git](sc-config-git-backend.md) →
+

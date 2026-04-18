@@ -1,241 +1,215 @@
-# 5.11 Métricas de Resilience4j con Micrometer y endpoints Actuator
+# 4.12 Métricas avanzadas y Health Indicators
 
-← [5.10 Anotaciones AOP de Resilience4j y orden de decoradores combinados](sc-circuitbreaker-aop.md) | [Índice](README.md) | [5.12 Health check y eventos CircuitBreakerEvent en producción](sc-circuitbreaker-eventos.md) →
+← [4.11 Integración con Spring Cloud Gateway](sc-circuitbreaker-gateway.md) | [Índice](README.md) | [4.13 Testing con Resilience4j](sc-circuitbreaker-testing.md) →
+
+---
 
 ## Introducción
 
-Resilience4j se integra con Micrometer para exportar métricas de todos sus componentes (Circuit Breaker, Retry, Bulkhead, RateLimiter) al sistema de observabilidad de la aplicación. Esta integración es lo que hace que el patrón de resiliencia sea operable en producción: sin métricas, el Circuit Breaker funciona pero es opaco; con métricas, se puede detectar cuándo el circuito está abriendo, con qué frecuencia se reintentan llamadas, y si el bulkhead está rechazando peticiones antes de que un incidente se escale.
+Las métricas básicas de Resilience4j cubiertas en [4.9 Eventos y Métricas](sc-circuitbreaker-eventos.md) son suficientes para la observabilidad del día a día. Este fichero profundiza en la integración avanzada con Prometheus, las convenciones de naming de métricas, las métricas de Bulkhead y RateLimiter, los Health Indicators para Kubernetes readiness/liveness probes, y la estructura de dashboards Grafana para Resilience4j. Este nivel de detalle es relevante para la configuración de producción y para algunas preguntas de examen sobre la API de Spring Boot 3.x.
 
-Spring Boot Actuator expone endpoints específicos de Resilience4j que complementan las métricas de Micrometer: mientras las métricas son series temporales apropiadas para Prometheus/Grafana, los endpoints de Actuator proporcionan el estado instantáneo de cada instancia y el historial de eventos recientes.
+> [PREREQUISITO] Requiere `resilience4j-spring-boot3` (o `resilience4j-micrometer`) y `spring-boot-starter-actuator` en el classpath. Las métricas solo aparecen si existe al menos una instancia de cada patrón configurada.
 
-> [PREREQUISITO] Las métricas de Resilience4j requieren `spring-boot-starter-actuator` en el classpath y la dependencia `resilience4j-micrometer` (incluida transitivamente en el starter de Spring Cloud Circuit Breaker). No es necesario código adicional para la exportación.
+## Métricas completas por patrón
 
-## Representación visual
+Resilience4j publica un conjunto específico de métricas para cada patrón. Todas siguen la convención de Micrometer con tags para distinguir instancias.
 
-El flujo de métricas desde los componentes de Resilience4j hasta el sistema de observabilidad:
+Las métricas del CircuitBreaker y sus tags disponibles:
 
-```
-Resilience4j componentes:
-  CircuitBreaker ─┐
-  Retry          ─┤  registran métricas en
-  Bulkhead       ─┤──────────────────────→ MeterRegistry (Spring Boot)
-  RateLimiter    ─┘                              │
-                                                  ├──→ /actuator/metrics/resilience4j.*
-                                                  ├──→ Prometheus endpoint /actuator/prometheus
-                                                  └──→ Grafana, Datadog, etc.
+| Métrica | Tipo | Tags | Descripción |
+|---------|------|------|-------------|
+| `resilience4j.circuitbreaker.calls` | Counter | `name`, `kind` | Llamadas por tipo: successful, failed, not_permitted, ignored |
+| `resilience4j.circuitbreaker.state` | Gauge | `name`, `state` | 1 si el CB está en ese estado, 0 si no |
+| `resilience4j.circuitbreaker.failure.rate` | Gauge | `name` | Tasa de fallos actual (%) en la sliding window |
+| `resilience4j.circuitbreaker.slow.call.rate` | Gauge | `name` | Tasa de llamadas lentas actual (%) |
+| `resilience4j.circuitbreaker.buffered.calls` | Gauge | `name`, `kind` | Llamadas en la sliding window |
+| `resilience4j.circuitbreaker.max.buffered.calls` | Gauge | `name` | Tamaño de la sliding window |
 
-Endpoints específicos de Resilience4j (via Actuator):
-  /actuator/circuitbreakers         → estado de todas las instancias CB
-  /actuator/circuitbreakerevents    → historial de eventos CB
-  /actuator/retries                 → estado de todas las instancias Retry
-  /actuator/retryevents             → historial de eventos Retry
-```
+Métricas del Retry:
 
-| Familia de métricas                    | Nombre de la métrica                                          | Tags principales                   |
-|----------------------------------------|---------------------------------------------------------------|------------------------------------|
-| Circuit Breaker — llamadas             | `resilience4j.circuitbreaker.calls`                           | `name`, `kind` (successful/failed/not_permitted/ignored) |
-| Circuit Breaker — estado               | `resilience4j.circuitbreaker.state`                           | `name`, `state` (0=closed,1=open,2=half_open) |
-| Circuit Breaker — tasa de fallos       | `resilience4j.circuitbreaker.failure.rate`                    | `name`                             |
-| Circuit Breaker — llamadas lentas      | `resilience4j.circuitbreaker.slow.call.rate`                  | `name`                             |
-| Retry                                  | `resilience4j.retry.calls`                                    | `name`, `kind` (successful_with_retry/without_retry/failed_with_retry/without_retry) |
-| Bulkhead                               | `resilience4j.bulkhead.available.concurrent.calls`            | `name`                             |
-| Bulkhead                               | `resilience4j.bulkhead.max.allowed.concurrent.calls`          | `name`                             |
-| RateLimiter                            | `resilience4j.ratelimiter.available.permissions`              | `name`                             |
-| RateLimiter                            | `resilience4j.ratelimiter.waiting.threads`                    | `name`                             |
+| Métrica | Tags | Descripción |
+|---------|------|-------------|
+| `resilience4j.retry.calls` | `name`, `kind` | Kind: successful_without_retry, successful_with_retry, failed_with_retry, failed_without_retry |
+
+Métricas del Bulkhead:
+
+| Métrica | Tags | Descripción |
+|---------|------|-------------|
+| `resilience4j.bulkhead.available.concurrent.calls` | `name` | Permisos libres (SEMAPHORE) |
+| `resilience4j.bulkhead.max.allowed.concurrent.calls` | `name` | Máximo de llamadas concurrentes (SEMAPHORE) |
+| `resilience4j.thread.pool.bulkhead.available.queue.capacity` | `name` | Capacidad libre de la queue (THREADPOOL) |
+| `resilience4j.thread.pool.bulkhead.active.thread.count` | `name` | Threads activos en el pool (THREADPOOL) |
+
+Métricas del RateLimiter:
+
+| Métrica | Tags | Descripción |
+|---------|------|-------------|
+| `resilience4j.ratelimiter.available.permissions` | `name` | Permisos disponibles en el período actual |
+| `resilience4j.ratelimiter.waiting.threads` | `name` | Threads esperando permiso |
 
 ## Ejemplo central
 
-Configuración completa con exportación a Prometheus, consulta de métricas por Actuator y una alerta básica con PromQL para detectar Circuit Breakers abiertos.
+El ejemplo muestra la configuración completa para Prometheus, el scraping de métricas y la configuración de Health Indicators:
 
 ```xml
-<!-- pom.xml -->
-<dependencies>
-    <dependency>
-        <groupId>org.springframework.cloud</groupId>
-        <artifactId>spring-cloud-starter-circuitbreaker-resilience4j</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-actuator</artifactId>
-    </dependency>
-    <!-- Exportación a Prometheus -->
-    <dependency>
-        <groupId>io.micrometer</groupId>
-        <artifactId>micrometer-registry-prometheus</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-web</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-aop</artifactId>
-    </dependency>
-</dependencies>
+<!-- pom.xml — dependencias necesarias -->
+<!-- resilience4j-spring-boot3 incluye spring-boot-starter-actuator y micrometer -->
+<dependency>
+    <groupId>io.github.resilience4j</groupId>
+    <artifactId>resilience4j-spring-boot3</artifactId>
+</dependency>
+<dependency>
+    <groupId>io.micrometer</groupId>
+    <artifactId>micrometer-registry-prometheus</artifactId>
+</dependency>
 ```
 
 ```yaml
-# application.yml — configuración de Actuator y métricas
-spring:
-  application:
-    name: order-service
-
-resilience4j:
-  circuitbreaker:
-    instances:
-      paymentService:
-        sliding-window-size: 10
-        minimum-number-of-calls: 5
-        failure-rate-threshold: 50
-        wait-duration-in-open-state: 30s
-        automatic-transition-from-open-to-half-open-enabled: true
-        # Activar registro de indicadores de salud
-        register-health-indicator: true
-  retry:
-    instances:
-      paymentService:
-        max-attempts: 3
-        wait-duration: 500ms
-
+# application.yml — configuración de métricas y health indicators
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus,circuitbreakers,circuitbreakerevents,retries,retryevents
+        include: health, metrics, prometheus, circuitbreakers, circuitbreakerevents
   endpoint:
     health:
       show-details: always
-  health:
-    circuitbreakers:
+      show-components: always
+    prometheus:
       enabled: true
-  # Etiquetas comunes a todas las métricas (útil para distinguir instancias en Grafana)
   metrics:
     tags:
-      application: ${spring.application.name}
-      environment: production
+      application: ${spring.application.name}  # tag global en todas las métricas
+  health:
+    circuitbreakers:
+      enabled: true   # activa CircuitBreakerHealthIndicator global
+    retryevents:
+      enabled: true
+
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        register-health-indicator: true    # añade al /actuator/health
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+    instances:
+      paymentService:
+        base-config: default
+      inventoryService:
+        base-config: default
+        register-health-indicator: false   # excluir del health check
 ```
 
-```java
-// MetricsObserver.java — lectura programática de métricas Resilience4j vía Micrometer
-package com.example.orders.observability;
-
-import io.micrometer.core.instrument.Gauge;
-import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.search.Search;
-import org.springframework.stereotype.Component;
-import java.util.Optional;
-
-@Component
-public class MetricsObserver {
-
-    private final MeterRegistry meterRegistry;
-
-    public MetricsObserver(MeterRegistry meterRegistry) {
-        this.meterRegistry = meterRegistry;
-    }
-
-    /**
-     * Consulta programática del estado del Circuit Breaker via Micrometer.
-     * Útil para lógica de negocio que necesita saber el estado actual del CB.
-     * En producción, preferir las alertas de Prometheus sobre código ad-hoc.
-     */
-    public double getCircuitBreakerFailureRate(String name) {
-        return Optional.ofNullable(
-                meterRegistry.find("resilience4j.circuitbreaker.failure.rate")
-                        .tag("name", name)
-                        .gauge()
-        ).map(Gauge::value).orElse(0.0);
-    }
-
-    public boolean isCircuitBreakerOpen(String name) {
-        // state: 0=closed, 1=open, 2=half_open, 3=disabled, 4=metrics_only
-        double state = Optional.ofNullable(
-                meterRegistry.find("resilience4j.circuitbreaker.state")
-                        .tag("name", name)
-                        .tag("state", "open")
-                        .gauge()
-        ).map(Gauge::value).orElse(0.0);
-        return state == 1.0;
-    }
-}
-```
-
-```java
-// Uso en un endpoint de diagnóstico (opcional, solo para demostración)
-package com.example.orders.web;
-
-import com.example.orders.observability.MetricsObserver;
-import org.springframework.web.bind.annotation.*;
-import java.util.Map;
-
-@RestController
-@RequestMapping("/internal/diagnostics")
-public class DiagnosticsController {
-
-    private final MetricsObserver metricsObserver;
-
-    public DiagnosticsController(MetricsObserver metricsObserver) {
-        this.metricsObserver = metricsObserver;
-    }
-
-    @GetMapping("/circuit-breaker/{name}")
-    public Map<String, Object> circuitBreakerStatus(@PathVariable String name) {
-        return Map.of(
-                "name", name,
-                "isOpen", metricsObserver.isCircuitBreakerOpen(name),
-                "failureRate", metricsObserver.getCircuitBreakerFailureRate(name)
-        );
-    }
-}
-```
+Consultas PromQL útiles para Grafana:
 
 ```promql
-# Ejemplos de alertas PromQL para Grafana/Prometheus
+# Tasa de fallos del CircuitBreaker "paymentService" en los últimos 5 minutos
+rate(resilience4j_circuitbreaker_calls_total{name="paymentService",kind="failed"}[5m])
+/
+rate(resilience4j_circuitbreaker_calls_total{name="paymentService",kind=~"failed|successful"}[5m])
+* 100
 
-# Alerta: Circuit Breaker abierto
-resilience4j_circuitbreaker_state{state="open"} == 1
+# Estado actual del CircuitBreaker (1 = OPEN)
+resilience4j_circuitbreaker_state{name="paymentService", state="open"}
 
-# Alerta: tasa de fallos superior al 40% durante más de 2 minutos
-resilience4j_circuitbreaker_failure_rate > 40
+# Llamadas rechazadas por CB abierto (alertar si > 0 durante más de 30s)
+increase(resilience4j_circuitbreaker_calls_total{kind="not_permitted"}[1m])
 
-# Dashboard: llamadas exitosas vs fallidas por servicio
-sum by (name, kind) (rate(resilience4j_circuitbreaker_calls_seconds_count[1m]))
-
-# Alerta: muchos threads esperando en RateLimiter (saturación de la API externa)
-resilience4j_ratelimiter_waiting_threads > 5
+# Permisos disponibles en RateLimiter (alertar si cerca de 0)
+resilience4j_ratelimiter_available_permissions{name="externalApi"}
 ```
 
-## Tabla de elementos clave
+## CircuitBreakerHealthIndicator y Spring Boot 3.x
 
-Configuración de Actuator para exponer los endpoints de Resilience4j.
+`CircuitBreakerHealthIndicator` implementa `WritableHealthContributor`, que es la API de Spring Boot 3.x para contribuyentes de salud jerárquicos. Esta API permite que el estado de un CB se muestre como sub-componente del health endpoint.
 
-| Endpoint / Propiedad                                           | Descripción                                                                       |
-|----------------------------------------------------------------|-----------------------------------------------------------------------------------|
-| `GET /actuator/circuitbreakers`                                | Lista todas las instancias CB con su estado actual y configuración                |
-| `GET /actuator/circuitbreakerevents`                           | Historial de eventos de todos los CB (últimos 100 por defecto)                    |
-| `GET /actuator/circuitbreakerevents/{name}`                    | Eventos de una instancia CB específica                                            |
-| `GET /actuator/retries`                                        | Estado de todas las instancias Retry                                              |
-| `GET /actuator/retryevents`                                    | Historial de eventos de Retry                                                     |
-| `GET /actuator/metrics/resilience4j.circuitbreaker.calls`     | Métrica de llamadas del CB con todos sus tags                                     |
-| `management.health.circuitbreakers.enabled`                    | `true` para incluir CBs en `/actuator/health`                                     |
-| `resilience4j.circuitbreaker.instances.[name].register-health-indicator` | `true` para incluir la instancia en el health indicator          |
-| `management.endpoints.web.exposure.include`                    | Debe incluir `circuitbreakers,circuitbreakerevents` para exponer los endpoints    |
+```
+GET /actuator/health
+
+{
+  "status": "DOWN",
+  "components": {
+    "circuitBreakers": {
+      "status": "DOWN",
+      "details": {
+        "paymentService": {
+          "status": "DOWN",
+          "details": {
+            "failureRate": "52.0%",
+            "failureRateThreshold": "50.0%",
+            "slowCallRate": "0.0%",
+            "slowCallRateThreshold": "100.0%",
+            "bufferedCalls": 10,
+            "failedCalls": 6,
+            "notPermittedCalls": 0,
+            "state": "OPEN"
+          }
+        },
+        "inventoryService": {
+          "status": "UP",
+          ...
+        }
+      }
+    }
+  }
+}
+```
+
+La tabla de mapeo estado CB → estado Health:
+
+| Estado Circuit Breaker | Estado Health | Código HTTP /actuator/health |
+|----------------------|---------------|------------------------------|
+| CLOSED | UP | 200 |
+| HALF_OPEN | UNKNOWN | 200 |
+| OPEN | DOWN | 503 |
+| DISABLED | UP | 200 |
+| FORCED_OPEN | DOWN | 503 |
+
+> [EXAMEN] Si cualquier CircuitBreaker con `register-health-indicator: true` está en estado OPEN, el endpoint `/actuator/health` devolverá HTTP 503 (no 200). Esto puede afectar a los health checks de Kubernetes si no se configura correctamente qué CBs contribuyen al health.
+
+## Configuración para Kubernetes liveness/readiness
+
+En Kubernetes, es común configurar el health endpoint de forma diferente para liveness y readiness probes para evitar que un CB abierto cause reinicios innecesarios:
+
+```yaml
+management:
+  endpoint:
+    health:
+      group:
+        liveness:
+          include: ping, diskSpace    # liveness: solo checks básicos, NO circuit breakers
+        readiness:
+          include: circuitBreakers    # readiness: si CB abierto, pod no recibe tráfico
+```
+
+Con esta configuración:
+- `/actuator/health/liveness` → responde UP siempre que el proceso esté vivo.
+- `/actuator/health/readiness` → responde DOWN si algún CB está OPEN, sacando el pod del load balancer.
 
 ## Buenas y malas prácticas
 
-**Hacer:**
+**Buenas prácticas:**
+- Añadir el tag global `application: ${spring.application.name}` a todas las métricas para filtrar por servicio en Grafana.
+- Separar liveness y readiness en Kubernetes para que un CB abierto no cause reinicios.
+- Crear alertas sobre `resilience4j_circuitbreaker_state{state="open"} > 0` con un umbral de duración (ej: alerta si OPEN durante más de 2 minutos).
 
-- Añadir tags de aplicación y entorno a las métricas con `management.metrics.tags.*`. Sin estos tags, las métricas de diferentes servicios o entornos se mezclan en Grafana y es imposible distinguirlos.
-- Crear alertas de Prometheus/Grafana sobre `resilience4j.circuitbreaker.state{state="open"}` para recibir notificaciones cuando un circuito abre. Una alerta que se dispara en menos de un minuto tras la apertura del circuito permite reaccionar antes de que el incidente escale.
-- Revisar periódicamente el endpoint `/actuator/circuitbreakerevents` durante incidentes. Los eventos incluyen el tipo de error que causó el fallo, lo que acelera el diagnóstico.
-- Monitorizar `resilience4j.retry.calls{kind="failed_with_retry"}`: un valor alto indica que los reintentos están fallando sistemáticamente, señal de un problema más profundo que los fallos transitorios.
+**Malas prácticas:**
+- Activar `register-health-indicator: true` en todos los CBs sin separar liveness/readiness: puede causar reinicios en cascada en Kubernetes.
+- Exponer `/actuator/prometheus` sin autenticación: las métricas pueden revelar la topología y el comportamiento del sistema.
 
-**Evitar:**
+## Verificación y práctica
 
-- No exponer los endpoints de Actuator sin autenticación en producción. Los endpoints `/actuator/circuitbreakers` y `/actuator/circuitbreakerevents` pueden revelar información sobre la topología de servicios y los modos de fallo del sistema.
-- Evitar leer métricas de Resilience4j desde código de negocio con `MeterRegistry` para tomar decisiones de flujo. El state management del CB es interno a Resilience4j; interferir desde fuera puede causar comportamientos inconsistentes.
-- No confiar solo en las métricas de Actuator para el monitoreo en tiempo real. Los endpoints de Actuator son síncronos y muestran el estado en el momento de la consulta; Prometheus con alertas reactivas es más adecuado para producción.
+> [EXAMEN] 1. ¿Qué valor devuelve la métrica `resilience4j.circuitbreaker.state{name="X",state="open"}` cuando el CB está en estado CLOSED?
+
+> [EXAMEN] 2. ¿Cómo se configura en application.yml que solo `paymentService` contribuya al health check de Kubernetes readiness?
+
+> [EXAMEN] 3. ¿Qué implementación de Spring Boot 3.x usa `CircuitBreakerHealthIndicator` y qué permite esta interfaz?
+
+> [EXAMEN] 4. ¿Cuál es la diferencia entre las métricas `resilience4j.circuitbreaker.calls{kind="failed"}` y `resilience4j.circuitbreaker.calls{kind="not_permitted"}`?
+
+> [EXAMEN] 5. ¿Qué métrica de Micrometer indica cuántos threads están esperando un permiso de RateLimiter?
 
 ---
 
-← [5.10 Anotaciones AOP de Resilience4j y orden de decoradores combinados](sc-circuitbreaker-aop.md) | [Índice](README.md) | [5.12 Health check y eventos CircuitBreakerEvent en producción](sc-circuitbreaker-eventos.md) →
+← [4.11 Integración con Spring Cloud Gateway](sc-circuitbreaker-gateway.md) | [Índice](README.md) | [4.13 Testing con Resilience4j](sc-circuitbreaker-testing.md) →

@@ -1,221 +1,175 @@
-# 12.4 Routing dinámico con RoutingFunction y expresiones SpEL
+# 12.7 Spring Cloud Function — Routing dinámico
 
-← [12.3 Manejo de tipos, inferencia y serialización](sc-function-tipos.md) | [Índice (README.md)](README.md) | [12.5.1 Despliegue en AWS Lambda](sc-function-aws.md) →
+← [12.6 Message y MessageHeaders](sc-function-message-headers.md) | [Índice](README.md) | [12.8 Integración con Spring Cloud Stream →](sc-function-integracion-stream.md)
 
 ---
 
 ## Introducción
 
-El problema que resuelve `RoutingFunction` es la necesidad de un único punto de entrada que despache la invocación a distintas funciones según el contenido del mensaje o de sus headers, sin duplicar código de routing en cada función. En arquitecturas event-driven, distintos tipos de evento llegan al mismo canal pero deben procesarse con lógica diferente: un `OrderCreatedEvent` va a `orderProcessor` y un `OrderCancelledEvent` va a `cancellationHandler`. Sin `RoutingFunction`, el desarrollador implementa un switch manual dentro de una función monolítica que viola el principio de responsabilidad única y dificulta el testing.
+`RoutingFunction` es una función especial de Spring Cloud Function que actúa como dispatcher dinámico: recibe un mensaje y decide, en tiempo de ejecución, a qué función del catálogo delegarlo. El routing puede configurarse de forma declarativa mediante una expresión SpEL en `spring.cloud.function.routing-expression`, o de forma programática implementando la interfaz `MessageRoutingCallback`. Cuando se activa el routing, el nombre reservado `functionRouter` queda disponible como función en el catálogo.
 
-`RoutingFunction` es una función especial registrada por Spring Cloud Function que evalúa en runtime la función destino mediante: (1) el header `spring.cloud.function.definition` del mensaje entrante, o (2) una expresión SpEL configurada en `spring.cloud.function.routing-expression`. Se activa automáticamente cuando `spring.cloud.function.routing-expression` está definido en las propiedades o cuando el mensaje entrante contiene el header `spring.cloud.function.definition`.
+> [CONCEPTO] `RoutingFunction` tiene el nombre reservado `functionRouter` en el `FunctionCatalog`. No es un bean que se declara manualmente — SCF lo registra automáticamente cuando detecta la propiedad `routing-expression` o un bean `MessageRoutingCallback`.
 
-> **[PREREQUISITO]** Requiere `sc-function-modelo.md` (12.1), `sc-function-config.md` (12.2) y `sc-function-tipos.md` (12.3). El lector debe entender `FunctionCatalog` y `Message<T>` antes de estudiar el routing.
+> [CONCEPTO] `spring.cloud.function.routing-expression` es una expresión SpEL que se evalúa contra el `Message<?>` entrante. Debe devolver el nombre de la función a invocar (String).
 
-## Representación visual
+> [PREREQUISITO] Para usar `RoutingFunction` con el adaptador HTTP, la URL del endpoint es `POST /functionRouter`.
 
-El flujo de routing dinámico parte del mensaje entrante y evalúa la función destino antes de delegar la invocación. La siguiente figura muestra los dos mecanismos de decisión.
+## Diagrama de RoutingFunction
+
+El siguiente diagrama muestra el flujo de despacho dinámico según el valor de un header.
 
 ```
-  Mensaje entrante
-  ┌─────────────────────────────────────────────────────┐
-  │  Headers: spring.cloud.function.definition=orderProc│
-  │  Body: {"id":1,"item":"book"}                       │
-  └──────────────────────┬──────────────────────────────┘
-                         │
-                         ▼
-               RoutingFunction
-          (registro automático SCF)
-                         │
-          ┌──────────────┴──────────────┐
-          │                             │
-          ▼                             ▼
-  Mecanismo 1:               Mecanismo 2:
-  Header                     SpEL expression
-  spring.cloud.function      spring.cloud.function
-  .definition                .routing-expression
-  "orderProcessor"           headers['type']=='ORDER'
-                             ?'orderProcessor'
-                             :'cancellationHandler'
-          │                             │
-          └──────────────┬──────────────┘
-                         │
-                         ▼
-              FunctionCatalog.lookup(destino)
-                         │
-               ┌─────────┴────────────┐
-               ▼                      ▼
-        orderProcessor      cancellationHandler
-        Function<Order,      Function<Order,
-         Invoice>              Void>
+POST /functionRouter
+  Header: X-Function-Name: uppercase
+  Body: "hello"
+         │
+         ▼
+  RoutingFunction ("functionRouter")
+         │
+         ├── routing-expression: headers['X-Function-Name']
+         │   → evalúa a "uppercase"
+         │
+         ▼
+  FunctionCatalog.lookup("uppercase")
+         │
+         ▼
+  Function<String,String> uppercase
+  apply("hello") → "HELLO"
+         │
+         ▼
+  HTTP 200: "HELLO"
 ```
 
 ## Ejemplo central
 
-El ejemplo implementa un router que despacha a tres funciones distintas según el header `eventType`. Se muestra tanto la configuración via SpEL como el uso del header directo en el mensaje.
-
-### Dependencias Maven
-
-```xml
-<dependencyManagement>
-  <dependencies>
-    <dependency>
-      <groupId>org.springframework.cloud</groupId>
-      <artifactId>spring-cloud-dependencies</artifactId>
-      <version>2025.1.1</version>
-      <type>pom</type>
-      <scope>import</scope>
-    </dependency>
-  </dependencies>
-</dependencyManagement>
-
-<dependencies>
-  <dependency>
-    <groupId>org.springframework.cloud</groupId>
-    <artifactId>spring-cloud-function-web</artifactId>
-  </dependency>
-  <dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-web</artifactId>
-  </dependency>
-  <dependency>
-    <groupId>com.fasterxml.jackson.core</groupId>
-    <artifactId>jackson-databind</artifactId>
-  </dependency>
-</dependencies>
-```
-
-### application.yml
-
-```yaml
-spring:
-  cloud:
-    function:
-      # Activa RoutingFunction como función por defecto
-      # La expresión SpEL evalúa el header 'eventType' para elegir la función destino
-      routing-expression: >
-        headers['eventType'] == 'ORDER_CREATED' ? 'processOrder' :
-        headers['eventType'] == 'ORDER_CANCELLED' ? 'cancelOrder' :
-        'defaultHandler'
-```
-
-### Código Java completo
+El siguiente ejemplo muestra las dos formas de configurar el routing: mediante expresión SpEL y mediante `MessageRoutingCallback` programático.
 
 ```java
-package com.example.scfunction.routing;
+package com.example.demo;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cloud.function.context.MessageRoutingCallback;
 import org.springframework.context.annotation.Bean;
 import org.springframework.messaging.Message;
-import org.springframework.messaging.support.MessageBuilder;
 
 import java.util.function.Function;
 
 @SpringBootApplication
-public class FunctionRoutingApplication {
+public class RoutingApplication {
 
     public static void main(String[] args) {
-        SpringApplication.run(FunctionRoutingApplication.class, args);
+        SpringApplication.run(RoutingApplication.class, args);
     }
 
-    public record OrderEvent(Long id, String item, String status) {}
-    public record ProcessResult(Long orderId, String outcome) {}
-
-    // Función destino 1: procesa pedidos creados
     @Bean
-    public Function<Message<OrderEvent>, Message<ProcessResult>> processOrder() {
-        return message -> {
-            OrderEvent event = message.getPayload();
-            ProcessResult result = new ProcessResult(event.id(), "PROCESSED: " + event.item());
-            return MessageBuilder.withPayload(result)
-                .setHeader("X-Handler", "processOrder")
-                .build();
-        };
+    public Function<String, String> uppercase() {
+        return String::toUpperCase;
     }
 
-    // Función destino 2: cancela pedidos
     @Bean
-    public Function<Message<OrderEvent>, Message<ProcessResult>> cancelOrder() {
-        return message -> {
-            OrderEvent event = message.getPayload();
-            ProcessResult result = new ProcessResult(event.id(), "CANCELLED: " + event.item());
-            return MessageBuilder.withPayload(result)
-                .setHeader("X-Handler", "cancelOrder")
-                .build();
-        };
+    public Function<String, String> lowercase() {
+        return String::toLowerCase;
     }
 
-    // Función destino 3: manejador por defecto
     @Bean
-    public Function<Message<OrderEvent>, Message<ProcessResult>> defaultHandler() {
+    public Function<String, String> reverse() {
+        return value -> new StringBuilder(value).reverse().toString();
+    }
+
+    /**
+     * MessageRoutingCallback: lógica de routing programática en Java.
+     * Se evalúa antes que routing-expression si ambos están presentes.
+     */
+    @Bean
+    public MessageRoutingCallback customRoutingCallback() {
         return message -> {
-            OrderEvent event = message.getPayload();
-            ProcessResult result = new ProcessResult(event.id(), "DEFAULT: " + event.item());
-            return MessageBuilder.withPayload(result)
-                .setHeader("X-Handler", "defaultHandler")
-                .build();
+            // Leer el header de operación
+            String operation = (String) message.getHeaders().get("X-Operation");
+            if (operation == null) {
+                return "uppercase"; // función por defecto
+            }
+            return switch (operation.toLowerCase()) {
+                case "upper" -> "uppercase";
+                case "lower" -> "lowercase";
+                case "reverse" -> "reverse";
+                default -> "uppercase";
+            };
         };
     }
 }
 ```
 
-Invocación con routing vía SpEL (header `eventType` evaluado por la expresión):
-```bash
-# Ruta a processOrder
-curl -X POST http://localhost:8080/ \
-  -H "Content-Type: application/json" \
-  -H "eventType: ORDER_CREATED" \
-  -d '{"id":1,"item":"book","status":"new"}'
-# Respuesta: {"orderId":1,"outcome":"PROCESSED: book"}
+Configuración SpEL en `application.yml`:
 
-# Ruta a cancelOrder
-curl -X POST http://localhost:8080/ \
-  -H "Content-Type: application/json" \
-  -H "eventType: ORDER_CANCELLED" \
-  -d '{"id":2,"item":"pen","status":"active"}'
-# Respuesta: {"orderId":2,"outcome":"CANCELLED: pen"}
+```yaml
+spring:
+  cloud:
+    function:
+      # Routing por header HTTP: el valor del header determina la función
+      routing-expression: "headers['X-Function-Name']"
+      # Alternativa: routing por campo del payload (requiere parsing)
+      # routing-expression: "payload.startsWith('{') ? 'jsonProcessor' : 'textProcessor'"
 ```
 
-Invocación con routing vía header `spring.cloud.function.definition` (sin SpEL configurado):
+Ejemplo de invocación con routing por header:
+
 ```bash
-curl -X POST http://localhost:8080/ \
-  -H "Content-Type: application/json" \
-  -H "spring.cloud.function.definition: processOrder" \
-  -d '{"id":3,"item":"notebook","status":"new"}'
+# Invocar uppercase via routing
+curl -X POST http://localhost:8080/functionRouter \
+  -H "Content-Type: text/plain" \
+  -H "X-Function-Name: uppercase" \
+  -d "hello world"
+# Respuesta: "HELLO WORLD"
+
+# Invocar reverse via routing
+curl -X POST http://localhost:8080/functionRouter \
+  -H "Content-Type: text/plain" \
+  -H "X-Function-Name: reverse" \
+  -d "hello"
+# Respuesta: "olleh"
 ```
 
-> **[CONCEPTO]** Cuando `spring.cloud.function.routing-expression` está configurado, Spring Cloud Function registra automáticamente un bean llamado `functionRouter` en `FunctionCatalog`. Este bean es el que recibe todas las invocaciones al path raíz `/` y evalúa la expresión SpEL con el contexto del mensaje para determinar la función destino.
+> [ADVERTENCIA] Si la expresión SpEL devuelve un nombre de función que no existe en `FunctionCatalog`, SCF lanza una excepción en tiempo de ejecución. Se recomienda validar el nombre o configurar una función de fallback.
 
-> **[ADVERTENCIA]** Si la expresión SpEL retorna un nombre de función que no existe en `FunctionCatalog`, `RoutingFunction` lanza `FunctionNotFoundException` en runtime. Es obligatorio incluir siempre un caso por defecto en la expresión (`? 'fn1' : 'defaultHandler'`) o manejar la excepción.
+> [ADVERTENCIA] `MessageRoutingCallback` tiene precedencia sobre `routing-expression`. Si ambos están configurados, el callback se evalúa primero.
 
 ## Tabla de elementos clave
 
-La siguiente tabla resume los mecanismos de routing dinámico y sus propiedades de configuración.
+La siguiente tabla resume los mecanismos de routing disponibles.
 
-| Elemento | Tipo | Descripción |
-|---|---|---|
-| `RoutingFunction` | Clase interna SCF | Función especial que evalúa destino en runtime; se registra como `functionRouter` |
-| `spring.cloud.function.routing-expression` | Propiedad String (SpEL) | Expresión evaluada con el `Message` como contexto; retorna nombre de función destino |
-| `spring.cloud.function.definition` (header) | Header del mensaje | Header del mensaje entrante que especifica la función destino; tiene prioridad sobre SpEL |
-| `headers['key']` | SpEL en routing | Acceso a headers del mensaje en la expresión de routing |
-| `payload['field']` | SpEL en routing | Acceso a campos del payload en la expresión de routing (requiere tipo resuelto) |
-| `FunctionNotFoundException` | Excepción SCF | Lanzada cuando el nombre resuelto no existe en `FunctionCatalog` |
-| Path raíz `/` | Endpoint HTTP | `RoutingFunction` se mapea al path raíz cuando está activa |
+| Mecanismo | Configuración | Prioridad | Cuándo usar |
+|---|---|---|---|
+| `MessageRoutingCallback` | Bean `@Bean MessageRoutingCallback` | Alta (primero) | Lógica compleja en Java |
+| SpEL `routing-expression` | `spring.cloud.function.routing-expression` | Media | Routing simple por headers/payload |
+| Header `spring.cloud.function.definition` | Header en el mensaje | Baja | Routing explícito por mensaje |
+| URL directa | `POST /functionName` | N/A | Sin routing dinámico |
 
 ## Buenas y malas prácticas
 
-**Hacer:**
-- Incluir siempre un caso `else` o ternario por defecto en la expresión SpEL para evitar `FunctionNotFoundException` con eventos no reconocidos en producción.
-- Usar el header `spring.cloud.function.definition` en integraciones con Spring Cloud Stream cuando el routing debe ser por mensaje (cada mensaje decide su función destino) y la expresión SpEL global no es suficientemente específica.
-- Mantener las expresiones SpEL simples y delegables en un solo header de tipo: expresiones complejas que acceden al `payload` requieren que el tipo esté resuelto previamente, lo que introduce dependencia con la configuración de tipos.
-- Testear la expresión SpEL con `SpelExpressionParser` de forma aislada antes de integrarla en la propiedad, para verificar que todos los casos posibles retornan un nombre de función válido.
+**Buenas prácticas:**
+- Usar `routing-expression` con SpEL para casos simples de routing por header.
+- Implementar `MessageRoutingCallback` para lógica de routing con múltiples condiciones o validaciones.
+- Definir siempre una función por defecto en `MessageRoutingCallback` para el caso en que el header no exista.
+- Documentar los valores de header válidos para el routing como contrato de la API.
 
-**Evitar:**
-- Evitar acceder al payload en expresiones SpEL (`payload['field']`) con POJOs complejos: si el tipo no se ha resuelto aún en el ciclo de evaluación, el payload puede llegar como `LinkedHashMap` y la expresión produce `NullPointerException`.
-- Evitar mezclar routing por header y routing por SpEL sin documentar la precedencia: el header `spring.cloud.function.definition` tiene prioridad sobre `routing-expression`, lo que puede producir comportamiento inesperado si ambos están activos.
-- Evitar usar `RoutingFunction` cuando todas las rutas son estáticas y conocidas en compilación: en ese caso, la composición declarativa con `spring.cloud.function.definition=a|b` es más eficiente y predecible.
+**Malas prácticas:**
+- Usar routing dinámico cuando el caso de uso es siempre la misma función — añade complejidad innecesaria.
+- Omitir el caso por defecto en `MessageRoutingCallback` — puede causar excepciones en runtime.
+- Configurar tanto `routing-expression` como `MessageRoutingCallback` sin entender el orden de prioridad.
+
+## Verificación y práctica
+
+> [EXAMEN] ¿Cuál es el nombre reservado bajo el que `RoutingFunction` queda registrada en el `FunctionCatalog` y cuál es la URL del endpoint HTTP correspondiente?
+
+> [EXAMEN] ¿Cómo se configura `RoutingFunction` para seleccionar la función a invocar según el valor de un header `X-Function-Name`?
+
+> [EXAMEN] ¿Qué interfaz permite implementar la lógica de routing dinámico programáticamente en Java, y cuál es su prioridad respecto a la expresión SpEL?
+
+> [EXAMEN] ¿Qué ocurre en tiempo de ejecución si la expresión de routing devuelve el nombre de una función que no existe en el catálogo?
+
+> [EXAMEN] ¿En qué casos conviene usar `RoutingFunction` en lugar de definir directamente la función en la URL del adaptador HTTP?
 
 ---
 
-← [12.3 Manejo de tipos, inferencia y serialización](sc-function-tipos.md) | [Índice (README.md)](README.md) | [12.5.1 Despliegue en AWS Lambda](sc-function-aws.md) →
+← [12.6 Message y MessageHeaders](sc-function-message-headers.md) | [Índice](README.md) | [12.8 Integración con Spring Cloud Stream →](sc-function-integracion-stream.md)

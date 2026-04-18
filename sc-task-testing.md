@@ -1,240 +1,279 @@
-# 11.9 Testing de Spring Cloud Task
+# 11.9 Spring Cloud Task — Testing
 
-← [11.8 Métricas, observabilidad y trazabilidad](sc-task-observability.md) | [Índice (README.md)](README.md) | [12.1 Modelo de programación funcional: Function, Consumer, Supplier y FunctionCatalog](sc-function-modelo.md) →
+← [11.8 Composed Tasks](sc-task-composed.md) | [Índice](README.md) | [11.10 Troubleshooting](sc-task-troubleshooting.md) →
 
 ---
 
-Una tarea de Spring Cloud Task tiene dos responsabilidades verificables: ejecutar correctamente su lógica de negocio y registrar correctamente su ejecución en la tabla `TASK_EXECUTION`. El test unitario cubre la primera; el test de integración cubre la segunda. La peculiaridad de testear Spring Cloud Task es que el ciclo de vida —`TaskLifecycleListener` iniciando y cerrando la ejecución— solo actúa con el contexto completo de Spring y una `DataSource` disponible. Un test que no incluye `@EnableTask` ni `DataSource` no está testeando Spring Cloud Task: está testeando solo el `CommandLineRunner`.
+## Introducción
 
-> [PREREQUISITO] Requiere `spring-cloud-starter-task` y una `DataSource` para tests de integración. Usar H2 en memoria (`com.h2database:h2` con `scope test`) para aislar los tests de la base de datos de producción.
+El testing de Spring Cloud Task verifica que la lógica de negocio del runner se ejecuta correctamente Y que el ciclo de vida de la ejecución queda registrado en la base de datos. Los tests de integración usan H2 en memoria para simular la persistencia sin necesidad de una base de datos real. `TaskExplorer` permite hacer assertions sobre las `TaskExecution` registradas, verificando nombre, `EXIT_CODE`, argumentos y timestamps.
 
-## Niveles de testing de Spring Cloud Task
+> [CONCEPTO] Un test completo de Spring Cloud Task debe verificar dos aspectos: (1) la lógica de negocio del runner produce el resultado esperado, y (2) la `TaskExecution` se registró correctamente en la base de datos con los valores esperados de `EXIT_CODE`, `taskName` y argumentos.
 
-La elección de estrategia depende de qué aspecto del ciclo de vida se quiere verificar.
+## Estrategia de testing
 
-| Estrategia | Contexto Spring | DataSource | Verifica |
-|---|---|---|---|
-| 1 — Test unitario del runner | No | No | Lógica de negocio del CommandLineRunner en aislamiento |
-| 2 — Test de integración con @SpringBootTest | Sí | H2 en memoria | Registro en TASK_EXECUTION, exit code, TaskLifecycle |
-| 3 — Test de integración con TaskExplorer | Sí | H2 en memoria | Aserciones sobre TaskExecution: estado, duración, exit code |
+Los tests de Spring Cloud Task se organizan en tres niveles según el alcance de verificación y la velocidad de ejecución.
 
-## Estrategia 1: Test unitario del `CommandLineRunner`
+```
+Nivel 1 — Tests unitarios del runner:
+  → Mock de dependencias externas
+  → Sin contexto Spring, sin BD
+  → Verifican lógica de negocio pura
+  → Rápidos: ms
 
-El runner es un `@Component` estándar. Su lógica de negocio puede testearse en aislamiento sin levantar el contexto de Spring ni necesitar base de datos.
+Nivel 2 — Tests de integración con H2:
+  → @SpringBootTest con H2 en memoria
+  → TASK_EXECUTION se crea automáticamente
+  → TaskExplorer verifica lo que se persistió
+  → Velocidad: segundos
 
-```xml
-<!-- pom.xml -->
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-test</artifactId>
-    <scope>test</scope>
-</dependency>
+Nivel 3 — Tests con Spring Batch integrado:
+  → @SpringBootTest con H2 para Task + Batch
+  → Verifica TASK_TASK_BATCH además de TASK_EXECUTION
+  → TaskExplorer + JobExplorer para verificación completa
+  → Velocidad: segundos
 ```
 
-```java
-package com.example.task;
+## Ejemplo central
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.*;
-
-@ExtendWith(MockitoExtension.class)
-class InventorySyncRunnerTest {
-
-    @Mock
-    private InventoryRepository inventoryRepository;
-
-    @InjectMocks
-    private InventorySyncRunner runner;
-
-    @Test
-    void whenRunSucceeds_thenExitCodeIsZero() throws Exception {
-        when(inventoryRepository.findPending()).thenReturn(java.util.List.of());
-
-        runner.run();
-
-        assertThat(runner.getExitCode()).isEqualTo(0);
-        verify(inventoryRepository).findPending();
-    }
-
-    @Test
-    void whenRepositoryThrows_thenExitCodeIsOneAndExceptionPropagated() {
-        when(inventoryRepository.findPending())
-            .thenThrow(new RuntimeException("DB error"));
-
-        assertThatThrownBy(() -> runner.run())
-            .isInstanceOf(RuntimeException.class)
-            .hasMessageContaining("DB error");
-
-        assertThat(runner.getExitCode()).isEqualTo(1);
-    }
-}
-```
-
-## Estrategia 2: Test de integración con `@SpringBootTest` y H2
-
-Este nivel verifica que `@EnableTask` registra correctamente la ejecución en `TASK_EXECUTION` y que el `TaskLifecycleListener` funciona con el contexto real.
-
-```xml
-<dependency>
-    <groupId>org.springframework.cloud</groupId>
-    <artifactId>spring-cloud-starter-task</artifactId>
-</dependency>
-<dependency>
-    <groupId>com.h2database</groupId>
-    <artifactId>h2</artifactId>
-    <scope>test</scope>
-</dependency>
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-test</artifactId>
-    <scope>test</scope>
-</dependency>
-```
+El siguiente ejemplo muestra un test de integración completo que arranca el contexto Spring con H2, ejecuta una Task y verifica mediante `TaskExplorer` que la ejecución se registró correctamente con el `EXIT_CODE` y los argumentos esperados.
 
 ```java
 package com.example.task;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.ApplicationArguments;
+import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.cloud.task.configuration.EnableTask;
 import org.springframework.cloud.task.repository.TaskExecution;
 import org.springframework.cloud.task.repository.TaskExplorer;
-
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.stereotype.Component;
+import org.springframework.test.context.TestPropertySource;
+import static org.assertj.core.api.Assertions.assertThat;
 import java.util.List;
 
-import static org.assertj.core.api.Assertions.assertThat;
+// La aplicación Task bajo test
+@SpringBootApplication
+@EnableTask
+class SampleTaskApp {
+    public static void main(String[] args) {
+        SpringApplication.run(SampleTaskApp.class, args);
+    }
+}
 
-@SpringBootTest(properties = {
-    // H2 en memoria — los schemas de Task se crean automáticamente
-    "spring.datasource.url=jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1",
-    "spring.datasource.driver-class-name=org.h2.Driver",
-    "spring.datasource.username=sa",
-    "spring.datasource.password=",
-    "spring.sql.init.schema-locations=classpath:org/springframework/cloud/task/schema-h2.sql",
-    // Nombre único por test para no colisionar en la tabla TASK_EXECUTION
-    "spring.application.name=test-inventory-sync"
+@Component
+class SampleRunner implements ApplicationRunner {
+    @Override
+    public void run(ApplicationArguments args) throws Exception {
+        // Lógica de la tarea
+        System.out.println("Ejecutando tarea de ejemplo");
+    }
+}
+
+// Test de integración
+@SpringBootTest(
+    classes = SampleTaskApp.class,
+    args = {"--report.date=2025-01-01", "--dry-run"}
+)
+@TestPropertySource(properties = {
+    "spring.cloud.task.name=test-task",
+    "spring.cloud.task.initialize-enabled=true",
+    // H2 en memoria configurado por spring-boot-test automáticamente
+    // cuando h2 está en test scope del classpath
 })
-class InventorySyncTaskIntegrationTest {
+class SampleTaskIntegrationTest {
 
     @Autowired
     private TaskExplorer taskExplorer;
 
     @Test
-    void whenTaskRuns_thenExecutionRegisteredInDatabase() {
-        // La tarea se ejecuta automáticamente al arrancar el contexto Spring
-        // (CommandLineRunner se invoca durante el refresh del contexto)
-        List<TaskExecution> executions =
-            taskExplorer.findTaskExecutions("test-inventory-sync", null).getContent();
+    void taskExecutionShouldBeRegisteredWithExitCodeZero() {
+        // Consulta todas las ejecuciones de la tarea "test-task"
+        Page<TaskExecution> executions = taskExplorer
+            .findTaskExecutionsByName("test-task", PageRequest.of(0, 10));
 
-        assertThat(executions).isNotEmpty();
+        assertThat(executions.getContent()).isNotEmpty();
 
-        TaskExecution execution = executions.get(0);
-        assertThat(execution.getTaskName()).isEqualTo("test-inventory-sync");
-        // Exit code 0 = éxito; null = tarea aún en ejecución (no debería ocurrir aquí)
+        TaskExecution execution = executions.getContent().get(0);
+
+        // Verifica EXIT_CODE exitoso
         assertThat(execution.getExitCode()).isEqualTo(0);
+
+        // Verifica nombre de la tarea
+        assertThat(execution.getTaskName()).isEqualTo("test-task");
+
+        // Verifica que START_TIME y END_TIME están registrados
         assertThat(execution.getStartTime()).isNotNull();
         assertThat(execution.getEndTime()).isNotNull();
-        assertThat(execution.getEndTime()).isAfterOrEqualTo(execution.getStartTime());
+
+        // Verifica que los argumentos se registraron en TASK_EXECUTION_PARAMS
+        List<String> arguments = execution.getArguments();
+        assertThat(arguments).contains("--report.date=2025-01-01", "--dry-run");
+
+        // Verifica que no hay mensaje de error
+        assertThat(execution.getErrorMessage()).isNull();
+    }
+
+    @Test
+    void latestTaskExecutionShouldBeRetrievable() {
+        TaskExecution latest = taskExplorer
+            .getLatestTaskExecutionForTaskName("test-task");
+
+        assertThat(latest).isNotNull();
+        assertThat(latest.getExitCode()).isEqualTo(0);
     }
 }
 ```
 
-> [CONCEPTO] `TaskExplorer` es el bean que Spring Cloud Task proporciona para leer las ejecuciones registradas en `TASK_EXECUTION`. Es el equivalente de `JdbcTemplate` pero tipado para el modelo de Task: `findTaskExecutions(name, pageable)`, `getTaskExecutionCount()`, `getRunningTaskExecutionCount()`.
-
-## Estrategia 3: Verificación de `TaskExecution` con aserciones avanzadas
-
-Cuando el test necesita verificar el `EXIT_MESSAGE`, los argumentos de lanzamiento o el manejo de errores, se usan aserciones más específicas sobre el objeto `TaskExecution`.
+Test adicional que verifica que una tarea con runner que falla registra `EXIT_CODE ≠ 0`:
 
 ```java
 package com.example.task;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.ApplicationArguments;
+import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.cloud.task.configuration.EnableTask;
 import org.springframework.cloud.task.repository.TaskExecution;
 import org.springframework.cloud.task.repository.TaskExplorer;
-import org.springframework.data.domain.PageRequest;
-
+import org.springframework.stereotype.Component;
+import org.springframework.test.context.TestPropertySource;
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest(
-    args = {"--mode=full", "--source=catalog"},
-    properties = {
-        "spring.datasource.url=jdbc:h2:mem:testdb2;DB_CLOSE_DELAY=-1",
-        "spring.datasource.driver-class-name=org.h2.Driver",
-        "spring.datasource.username=sa",
-        "spring.datasource.password=",
-        "spring.sql.init.schema-locations=classpath:org/springframework/cloud/task/schema-h2.sql",
-        "spring.application.name=test-task-args"
+@SpringBootApplication
+@EnableTask
+class FailingTaskApp {
+    public static void main(String[] args) {
+        // SpringApplication no lanza excepción al main;
+        // registra el fallo en TASK_EXECUTION y termina con exit code 1
+        SpringApplication.run(FailingTaskApp.class, args);
     }
+}
+
+@Component
+class FailingRunner implements ApplicationRunner {
+    @Override
+    public void run(ApplicationArguments args) throws Exception {
+        throw new IllegalStateException("Fallo de prueba intencional");
+    }
+}
+
+@SpringBootTest(
+    classes = FailingTaskApp.class,
+    // Spring Boot captura la excepción del runner pero la Task la registra
+    properties = "spring.cloud.task.name=failing-task"
 )
-class TaskExecutionArgumentsTest {
+@TestPropertySource(properties = "spring.cloud.task.initialize-enabled=true")
+class FailingTaskIntegrationTest {
 
     @Autowired
     private TaskExplorer taskExplorer;
 
     @Test
-    void whenTaskRunsWithArgs_thenArgumentsPersistedInExecution() {
+    void failedTaskShouldRegisterNonZeroExitCode() {
         TaskExecution execution = taskExplorer
-            .findTaskExecutions("test-task-args", PageRequest.of(0, 1))
-            .getContent()
-            .get(0);
+            .getLatestTaskExecutionForTaskName("failing-task");
 
-        // Los args de @SpringBootTest(args=...) deben persistirse
-        assertThat(execution.getArguments())
-            .contains("--mode=full", "--source=catalog");
-
-        // Exit code 0 indica éxito
-        assertThat(execution.getExitCode()).isEqualTo(0);
-
-        // EXIT_MESSAGE solo se rellena en fallos
-        assertThat(execution.getExitMessage()).isNullOrEmpty();
+        assertThat(execution).isNotNull();
+        assertThat(execution.getExitCode()).isNotEqualTo(0);
+        assertThat(execution.getErrorMessage()).contains("Fallo de prueba intencional");
     }
 }
 ```
-
-> [ADVERTENCIA] Cada `@SpringBootTest` lanza la tarea al iniciar el contexto. Si múltiples tests de integración de Task comparten el mismo contexto (`spring.application.name` y `DataSource` iguales), las aserciones sobre `findTaskExecutions` pueden encontrar más de una ejecución. Usar nombres de aplicación distintos (`spring.application.name` en `properties`) para aislar cada test.
-
-### Tabla resumen: cuándo usar cada estrategia
-
-| Situación | Estrategia recomendada |
-|---|---|
-| Verificar lógica del CommandLineRunner con mocks | 1 — Test unitario con Mockito |
-| Verificar registro en TASK_EXECUTION | 2 — @SpringBootTest con H2 y TaskExplorer |
-| Verificar exit code y manejo de excepciones | 2 — @SpringBootTest + assertThat(execution.getExitCode()) |
-| Verificar argumentos persistidos en TASK_EXECUTION | 3 — @SpringBootTest(args=...) con aserciones sobre execution.getArguments() |
-| Verificar EXIT_MESSAGE en casos de fallo | 2/3 — simular fallo con mock del repositorio + @SpringBootTest |
 
 ## Tabla de elementos clave
 
-| Componente / Método | Descripción |
-|---|---|
-| `TaskExplorer` | Bean de Spring Cloud Task para consultar TASK_EXECUTION; métodos: `findTaskExecutions`, `getTaskExecutionCount`, `getRunningTaskExecutionCount` |
-| `TaskExecution` | POJO con los campos de una ejecución: `taskName`, `startTime`, `endTime`, `exitCode`, `exitMessage`, `arguments` |
-| `schema-h2.sql` | Schema SQL de Spring Cloud Task para H2; en `spring-cloud-task-core.jar` bajo `org/springframework/cloud/task/` |
-| `spring.application.name` | Determina el `taskName` en `TASK_EXECUTION`; esencial para identificar la tarea en `TaskExplorer` |
-| `@SpringBootTest(args=...)` | Permite pasar argumentos de lanzamiento al `CommandLineRunner` en tests de integración |
+Los componentes disponibles para testing son los siguientes, agrupados por su responsabilidad.
+
+| Componente | Uso en Test | Descripción |
+|---|---|---|
+| `@SpringBootTest` | Test de integración | Levanta contexto Spring completo con H2 si está en classpath |
+| `TaskExplorer` | Assertions | API de solo lectura para consultar `TASK_EXECUTION`; se inyecta como `@Autowired` |
+| `TaskExecutionDao` | Assertions avanzadas | Acceso directo a DAO si se necesitan operaciones que `TaskExplorer` no expone |
+| `SimpleTaskRepository` | Tests unitarios | Se puede instanciar sin contexto Spring para tests de integración ligeros |
+| `H2` | Datasource de test | Base de datos en memoria; `spring.cloud.task.initialize-enabled=true` crea el schema |
+| `TaskExecutionDaoConfiguration` | Configuración | Importar explícitamente si el contexto de test no lo detecta automáticamente |
+
+## Verificación de integración Task + Batch
+
+Cuando la Task incluye Spring Batch, el test debe verificar también la tabla `TASK_TASK_BATCH`. Para esto se inyecta tanto `TaskExplorer` como `JobExplorer` de Spring Batch.
+
+```java
+package com.example.task;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.batch.core.explore.JobExplorer;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.cloud.task.repository.TaskExecution;
+import org.springframework.cloud.task.repository.TaskExplorer;
+import static org.assertj.core.api.Assertions.assertThat;
+import java.util.List;
+
+@SpringBootTest(properties = {
+    "spring.cloud.task.name=batch-task",
+    "spring.cloud.task.initialize-enabled=true",
+    "spring.batch.initialize-schema=always"
+})
+class BatchTaskIntegrationTest {
+
+    @Autowired
+    private TaskExplorer taskExplorer;
+
+    @Autowired
+    private JobExplorer jobExplorer;
+
+    @Test
+    void batchJobShouldBeLinkedToTaskExecution() {
+        // Verifica que se creó al menos una TaskExecution
+        TaskExecution taskExecution = taskExplorer
+            .getLatestTaskExecutionForTaskName("batch-task");
+        assertThat(taskExecution).isNotNull();
+        assertThat(taskExecution.getExitCode()).isEqualTo(0);
+
+        // Verifica que el Job de Batch se ejecutó
+        assertThat(jobExplorer.getJobNames()).contains("reportJob");
+        assertThat(jobExplorer.getJobInstances("reportJob", 0, 1)).isNotEmpty();
+    }
+}
+```
 
 ## Buenas y malas prácticas
 
-**Hacer:**
-- Usar H2 en memoria con el schema DDL de Spring Cloud Task (`schema-h2.sql`) para tests de integración; evita dependencias de infraestructura en CI y garantiza aislamiento entre tests.
-- Usar `spring.application.name` diferente en cada test de integración de Task para evitar colisiones en `TASK_EXECUTION` cuando varios tests comparten el mismo contexto.
-- Testear el exit code explícitamente con `assertThat(execution.getExitCode()).isEqualTo(0)`: es la única forma de verificar que `ExitCodeGenerator` y `ExitCodeExceptionMapper` están configurados correctamente.
-- Añadir tests de integración que verifican el campo `arguments` de `TaskExecution` cuando la tarea acepta argumentos: garantiza que el parsing de argumentos y su persistencia funcionan de extremo a extremo.
+**Buenas prácticas:**
+- Usar `@TestPropertySource(properties = "spring.cloud.task.name=test-task")` para fijar el nombre de la tarea en tests: evita dependencias del nombre del artefacto.
+- Verificar tanto `EXIT_CODE` como `getErrorMessage()` en los tests de escenarios de fallo.
+- Añadir H2 como dependencia de test (`<scope>test</scope>`) para que el schema de Task se cree automáticamente sin BD real.
 
-**Evitar:**
-- Testear solo el `CommandLineRunner` con tests unitarios y omitir los tests de integración: no detecta problemas de configuración de `@EnableTask`, esquema de base de datos incorrecto, o errores en el `TaskLifecycleListener`.
-- Usar la misma `DataSource` de producción en tests de integración: contamina `TASK_EXECUTION` con registros de test y puede interferir con el monitoring de producción.
-- Omitir la llamada a `System.exit(SpringApplication.exit(...))` en tests que verifican exit codes: en contexto de `@SpringBootTest`, el exit code no se propaga al OS, pero sí debe registrarse correctamente en `TASK_EXECUTION`.
+**Malas prácticas:**
+- Asumir que el contexto Spring se reinicia entre tests en la misma clase: `@SpringBootTest` reutiliza el contexto si las propiedades son iguales; usar `@DirtiesContext` si se necesita aislamiento.
+- Hacer assertions sobre timestamps exactos en `START_TIME` y `END_TIME`: usar `isNotNull()` en lugar de comparar fechas concretas.
+- Olvidar `spring.cloud.task.initialize-enabled=true` en tests con H2: el schema no se crea y los tests fallan con error de tabla no encontrada.
+
+> [ADVERTENCIA] En tests de integración con `@SpringBootTest`, si el runner lanza una excepción, `SpringApplication.run()` puede retornar un código de salida no cero. Dependiendo de la configuración, esto puede o no propagar una excepción en el test. Verificar el comportamiento con `SpringApplication.exit()`.
+
+## Verificación y práctica
+
+> [EXAMEN] **Pregunta 1:** ¿Qué interfaz se inyecta en los tests de Spring Cloud Task para consultar las `TaskExecution` registradas en base de datos?
+
+> [EXAMEN] **Pregunta 2:** ¿Qué propiedad debe estar en `true` para que Spring Cloud Task cree el schema de tablas automáticamente en H2 durante los tests?
+
+> [EXAMEN] **Pregunta 3:** ¿Cómo se verifica en un test que los argumentos de línea de comandos se registraron correctamente en `TASK_EXECUTION_PARAMS`?
+
+> [EXAMEN] **Pregunta 4:** En un test de integración que combina Task y Batch, ¿qué dos `Explorer` se inyectan para verificar la relación en `TASK_TASK_BATCH`?
+
+> [EXAMEN] **Pregunta 5:** ¿Por qué es recomendable usar `@TestPropertySource` para fijar `spring.cloud.task.name` en tests de integración?
 
 ---
 
-← [11.8 Métricas, observabilidad y trazabilidad](sc-task-observability.md) | [Índice (README.md)](README.md) | [12.1 Modelo de programación funcional: Function, Consumer, Supplier y FunctionCatalog](sc-function-modelo.md) →
+← [11.8 Composed Tasks](sc-task-composed.md) | [Índice](README.md) | [11.10 Troubleshooting](sc-task-troubleshooting.md) →

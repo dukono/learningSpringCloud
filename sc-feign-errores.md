@@ -1,223 +1,299 @@
-# 4.8 Manejo de errores HTTP — FeignException, ErrorDecoder personalizado y excepciones de dominio
+# 3.4.2 ErrorDecoder — manejo de errores HTTP
 
-<- [4.7 Logging](sc-feign-logging.md) | [Índice](README.md) | [4.9 Fallback y Circuit Breaker](sc-feign-fallback.md) ->
+← [3.4.1 Logger.Level y configuración dual de logging](sc-feign-logging.md) | [Índice](README.md) | [3.5 Interceptores de petición — RequestInterceptor](sc-feign-interceptores.md) →
 
 ---
 
 ## Introducción
 
-Cuando un servicio remoto devuelve un código HTTP de error (4xx o 5xx), Feign no lanza automáticamente la excepción correcta de dominio. Por defecto, cualquier respuesta no-2xx pasa por `ErrorDecoder.Default`, que la convierte en una `FeignException` genérica con el código de estado y el cuerpo de respuesta como string. Esta excepción llega al llamador sin semántica de dominio: el código que recibe la llamada debe inspeccionar el status de la `FeignException` para saber si fue un 404, un 409 o un 503, acoplando el código de negocio a los detalles del protocolo HTTP.
+Por defecto, cuando un servicio remoto responde con un código HTTP de error (4xx o 5xx), Feign lanza una `FeignException` genérica que incluye el código de estado y el cuerpo de la respuesta como texto. Este comportamiento es insuficiente para una arquitectura de microservicios bien diseñada: el servicio consumidor necesita distinguir un `404 Not Found` (entidad no existe) de un `503 Service Unavailable` (reintentar) o un `400 Bad Request` (error del cliente). El `ErrorDecoder` es la interfaz que resuelve este problema: intercepta respuestas de error y permite transformarlas en excepciones de dominio significativas, con la lógica de mapeo que cada aplicación requiere.
 
-El `ErrorDecoder` personalizado es la solución: intercepta cada respuesta de error antes de que llegue al llamador y la convierte en la excepción de dominio adecuada. El resultado es que el servicio consumidor trabaja con `ProductNotFoundException` o `PaymentDeclinedException` en lugar de con `FeignException` + inspección de status.
+> [PREREQUISITO] Feign solo invoca al `ErrorDecoder` para respuestas con status >= 300 cuando no es una redirección seguida automáticamente. Para respuestas 2xx el flujo sigue al `Decoder` normal.
 
-> [ADVERTENCIA] `ErrorDecoder` y `Decoder` son mutuamente excluyentes por código de estado. El `Decoder` procesa respuestas 2xx. El `ErrorDecoder` procesa el resto. Si `decode404=true` está activo en el cliente, las respuestas 404 van al `Decoder`, no al `ErrorDecoder`. Ver 4.2 para detalles sobre `decode404`.
+## Ciclo de vida del ErrorDecoder
 
----
-
-## Diagrama: jerarquía de FeignException
-
-El siguiente diagrama muestra la jerarquía de excepciones que `ErrorDecoder.Default` puede lanzar según el rango del código HTTP.
+El `ErrorDecoder` se invoca después de que Feign recibe la respuesta HTTP. El flujo de decisión determina si es el decoder normal o el error decoder quien procesa la respuesta.
 
 ```
- RuntimeException
- └── FeignException
-      ├── FeignClientException  (4xx — errores del cliente)
-      │    ├── BadRequest         (400)
-      │    ├── Unauthorized       (401)
-      │    ├── Forbidden          (403)
-      │    ├── NotFound           (404)
-      │    ├── MethodNotAllowed   (405)
-      │    ├── Gone               (410)
-      │    ├── UnprocessableEntity(422)
-      │    └── TooManyRequests    (429)
-      └── FeignServerException  (5xx — errores del servidor)
-           ├── InternalServerError (500)
-           ├── NotImplemented      (501)
-           ├── BadGateway          (502)
-           ├── ServiceUnavailable  (503)
-           └── GatewayTimeout      (504)
-
- RetryableException  (no extiende FeignException; activa reintentos en Feign)
+  Respuesta HTTP recibida
+          │
+          ▼
+  ¿Status >= 300?
+   /            \
+  No            Sí
+  │              │
+  ▼              ▼
+Decoder      ¿Es redirección
+(normal)     3xx y followRedirects=true?
+               /            \
+             Sí             No
+             │               │
+             ▼               ▼
+        Seguir           ErrorDecoder.decode()
+        redirect         (methodKey, response)
+                              │
+                              ▼
+                        Exception (lanzada
+                        al llamador)
 ```
-
----
 
 ## Ejemplo central
 
-El siguiente ejemplo muestra un `ErrorDecoder` completo que convierte respuestas de error en excepciones de dominio, incluyendo el manejo del header `Retry-After` para errores 429 y 503 retryables.
-
-**Excepciones de dominio (deben extender `RuntimeException` para ser unchecked):**
+El siguiente ejemplo muestra un `ErrorDecoder` completo que mapea distintos códigos HTTP a excepciones de dominio específicas. También muestra el patrón para leer el cuerpo de la respuesta de error y extraer mensajes estructurados del JSON de error.
 
 ```java
-package com.example.orderservice.exception;
+// Excepciones de dominio del módulo de inventario
+package com.example.orders.exception;
 
-public class ProductNotFoundException extends RuntimeException {
-    private final String productId;
+public class InventoryItemNotFoundException extends RuntimeException {
+    private final Long itemId;
 
-    public ProductNotFoundException(String productId) {
-        super("Producto no encontrado: " + productId);
-        this.productId = productId;
+    public InventoryItemNotFoundException(Long itemId) {
+        super("Ítem de inventario no encontrado: " + itemId);
+        this.itemId = itemId;
     }
 
-    public String getProductId() { return productId; }
-}
-
-public class CatalogConflictException extends RuntimeException {
-    public CatalogConflictException(String message) { super(message); }
-}
-
-public class CatalogUnavailableException extends RuntimeException {
-    public CatalogUnavailableException(String message) { super(message); }
+    public Long getItemId() { return itemId; }
 }
 ```
 
-**CatalogErrorDecoder.java — implementación completa:**
+```java
+package com.example.orders.exception;
+
+public class InventoryServiceException extends RuntimeException {
+    private final int httpStatus;
+
+    public InventoryServiceException(String message, int httpStatus) {
+        super(message);
+        this.httpStatus = httpStatus;
+    }
+
+    public int getHttpStatus() { return httpStatus; }
+}
+```
 
 ```java
-package com.example.orderservice.feign;
+package com.example.orders.exception;
 
-import com.example.orderservice.exception.CatalogConflictException;
-import com.example.orderservice.exception.CatalogUnavailableException;
-import com.example.orderservice.exception.ProductNotFoundException;
+public class InventoryBadRequestException extends RuntimeException {
+    public InventoryBadRequestException(String message) {
+        super(message);
+    }
+}
+```
+
+```java
+// ErrorDecoder personalizado con mapeo completo por status
+package com.example.orders.feign;
+
+import com.example.orders.exception.InventoryBadRequestException;
+import com.example.orders.exception.InventoryItemNotFoundException;
+import com.example.orders.exception.InventoryServiceException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import feign.Response;
-import feign.RetryableException;
+import feign.Util;
 import feign.codec.ErrorDecoder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
-import java.util.Collection;
-import java.util.Date;
-import java.util.Map;
 
-public class CatalogErrorDecoder implements ErrorDecoder {
+@Component  // Registrado como @Component para ser referenciable por propiedades (FQN)
+public class InventoryErrorDecoder implements ErrorDecoder {
 
-    private static final Logger log = LoggerFactory.getLogger(CatalogErrorDecoder.class);
+    private static final Logger log = LoggerFactory.getLogger(InventoryErrorDecoder.class);
+    private final ErrorDecoder defaultDecoder = new Default();
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Override
     public Exception decode(String methodKey, Response response) {
-        String body = readBody(response);
-        int status   = response.status();
+        // methodKey tiene el formato "InterfazCliente#nombreMetodo(TipoParam)"
+        // Ejemplo: "InventoryClient#getItem(Long)"
+        log.warn("Error en llamada Feign [{}]: HTTP {}", methodKey, response.status());
 
-        return switch (status) {
-            case 404 -> new ProductNotFoundException(extractProductId(response.request().url()));
-            case 409 -> new CatalogConflictException(
-                    "Conflicto al procesar " + methodKey + ": " + body);
-            case 429, 503 -> buildRetryableException(response, methodKey, status);
+        String body = extractBody(response);
+
+        return switch (response.status()) {
+            case 400 -> new InventoryBadRequestException(
+                "Petición inválida a inventory-service [" + methodKey + "]: " + body
+            );
+            case 404 -> {
+                // Intentar extraer el ID del methodKey para construir excepción más informativa
+                Long itemId = extractItemIdFromBody(body);
+                yield new InventoryItemNotFoundException(itemId);
+            }
+            case 503 -> {
+                // Para 503, RetryableException hace que Feign reintente si hay Retryer configurado
+                yield new feign.RetryableException(
+                    response.status(),
+                    "inventory-service no disponible [" + methodKey + "]",
+                    response.request().httpMethod(),
+                    null,
+                    response.request()
+                );
+            }
             default -> {
-                log.error("Error no esperado desde catalog-service. status={}, method={}, body={}",
-                        status, methodKey, body);
-                yield new ErrorDecoder.Default().decode(methodKey, response);
+                if (response.status() >= 500) {
+                    yield new InventoryServiceException(
+                        "Error del servidor en inventory-service [" + methodKey + "]: " + body,
+                        response.status()
+                    );
+                }
+                // Para otros códigos no manejados, delegar al decoder por defecto
+                yield defaultDecoder.decode(methodKey, response);
             }
         };
     }
 
-    /**
-     * Construye RetryableException respetando el header Retry-After si existe.
-     * Feign solo reintentará si la excepción es de tipo RetryableException.
-     */
-    private RetryableException buildRetryableException(Response response, String methodKey, int status) {
-        Date retryAfter = extractRetryAfter(response.headers());
-        log.warn("Servicio no disponible temporalmente ({}). method={}, retryAfter={}",
-                status, methodKey, retryAfter);
-
-        return new RetryableException(
-                status,
-                "Servicio no disponible (status=" + status + ")",
-                response.request().httpMethod(),
-                retryAfter,
-                response.request()
-        );
-    }
-
-    private Date extractRetryAfter(Map<String, Collection<String>> headers) {
-        Collection<String> retryAfterHeader = headers.get("Retry-After");
-        if (retryAfterHeader == null || retryAfterHeader.isEmpty()) return null;
-
-        String value = retryAfterHeader.iterator().next();
+    private String extractBody(Response response) {
+        if (response.body() == null) return "(sin cuerpo)";
         try {
-            // Retry-After puede ser segundos (integer) o fecha HTTP-date
-            long seconds = Long.parseLong(value);
-            return new Date(System.currentTimeMillis() + seconds * 1000);
-        } catch (NumberFormatException e) {
-            try {
-                ZonedDateTime zdt = ZonedDateTime.parse(value, DateTimeFormatter.RFC_1123_DATE_TIME);
-                return Date.from(zdt.toInstant());
-            } catch (Exception ex) {
-                return null;
-            }
-        }
-    }
-
-    private String readBody(Response response) {
-        if (response.body() == null) return "[sin cuerpo]";
-        try {
-            return new String(response.body().asInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            return Util.toString(response.body().asReader(StandardCharsets.UTF_8));
         } catch (IOException e) {
-            return "[error leyendo cuerpo: " + e.getMessage() + "]";
+            log.debug("No se pudo leer el cuerpo de la respuesta de error", e);
+            return "(error leyendo cuerpo)";
         }
     }
 
-    private String extractProductId(String url) {
-        // Extrae el último segmento de la URL como ID del producto
-        String[] parts = url.split("/");
-        return parts.length > 0 ? parts[parts.length - 1] : "desconocido";
+    private Long extractItemIdFromBody(String body) {
+        try {
+            JsonNode node = objectMapper.readTree(body);
+            JsonNode idNode = node.get("itemId");
+            return idNode != null ? idNode.asLong() : -1L;
+        } catch (Exception e) {
+            return -1L;
+        }
     }
 }
 ```
 
-**Registro del ErrorDecoder en la configuración del cliente:**
-
 ```java
-package com.example.orderservice.config;
+// Clase de configuración Feign que registra el ErrorDecoder personalizado
+package com.example.orders.feign.config;
 
-import com.example.orderservice.feign.CatalogErrorDecoder;
+import com.example.orders.feign.InventoryErrorDecoder;
 import feign.codec.ErrorDecoder;
 import org.springframework.context.annotation.Bean;
 
-public class CatalogFeignConfig {
+// Sin @Configuration para evitar scope global
+public class InventoryFeignConfig {
+
+    private final InventoryErrorDecoder inventoryErrorDecoder;
+
+    public InventoryFeignConfig(InventoryErrorDecoder inventoryErrorDecoder) {
+        this.inventoryErrorDecoder = inventoryErrorDecoder;
+    }
 
     @Bean
-    public ErrorDecoder catalogErrorDecoder() {
-        return new CatalogErrorDecoder();
+    public ErrorDecoder errorDecoder() {
+        return inventoryErrorDecoder;
     }
 }
 ```
 
-> [CONCEPTO] `RetryableException` es la única excepción que hace que Feign active su mecanismo de reintento nativo (`Retryer`). Cualquier otra excepción lanzada por el `ErrorDecoder` se propaga directamente al llamador sin reintento, independientemente de la configuración del `Retryer`.
+```java
+// Cliente Feign con la configuración que incluye el ErrorDecoder
+package com.example.orders.clients;
 
----
+import com.example.orders.dto.InventoryResponse;
+import com.example.orders.feign.config.InventoryFeignConfig;
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 
-## Tabla de elementos clave
+@FeignClient(
+    name = "inventory-service",
+    path = "/api/v1",
+    configuration = InventoryFeignConfig.class
+)
+public interface InventoryClient {
 
-| Elemento | Tipo | Descripción |
-|---|---|---|
-| `ErrorDecoder` | interfaz | Contrato para convertir respuestas HTTP de error en excepciones |
-| `ErrorDecoder.Default` | implementación | Convierte errores HTTP en `FeignException` o sus subtipos |
-| `FeignException` | `RuntimeException` | Excepción base para errores de Feign; contiene status y body |
-| `FeignClientException` | `FeignException` | Para códigos 4xx; tiene subtipos por status concreto |
-| `FeignServerException` | `FeignException` | Para códigos 5xx; tiene subtipos por status concreto |
-| `RetryableException` | `RuntimeException` | Activa el `Retryer` de Feign; acepta fecha `Retry-After` |
-| `methodKey` en `decode()` | `String` | Identificador del método Feign: `"InterfaceName#methodName(ParamTypes)"` |
-| `Response.body()` | `Response.Body` | InputStream de un solo uso; leer antes de cerrar la respuesta |
+    @GetMapping("/items/{id}")
+    InventoryResponse getItem(@PathVariable("id") Long id);
+}
+```
 
----
+```java
+// Servicio que consume el cliente y maneja las excepciones de dominio
+package com.example.orders.service;
+
+import com.example.orders.clients.InventoryClient;
+import com.example.orders.dto.InventoryResponse;
+import com.example.orders.exception.InventoryItemNotFoundException;
+import com.example.orders.exception.InventoryServiceException;
+import org.springframework.stereotype.Service;
+
+@Service
+public class OrderService {
+
+    private final InventoryClient inventoryClient;
+
+    public OrderService(InventoryClient inventoryClient) {
+        this.inventoryClient = inventoryClient;
+    }
+
+    public InventoryResponse fetchItem(Long itemId) {
+        try {
+            return inventoryClient.getItem(itemId);
+        } catch (InventoryItemNotFoundException e) {
+            // Manejo específico: el ítem no existe
+            throw new RuntimeException("No se puede crear el pedido: " + e.getMessage(), e);
+        } catch (InventoryServiceException e) {
+            // Error del servidor — el ítem podría existir pero el servicio falló
+            throw new RuntimeException("Servicio de inventario no disponible", e);
+        }
+    }
+}
+```
+
+## Tabla de comportamientos del ErrorDecoder
+
+La firma del método `decode` y los códigos que activan su invocación son fundamentales:
+
+| Aspecto | Valor |
+|---|---|
+| Firma del método | `Exception decode(String methodKey, Response response)` |
+| Códigos que lo activan | Cualquier status >= 300 no gestionado como redirección |
+| `methodKey` formato | `"NombreInterfaz#nombreMetodo(TipoParam1,TipoParam2)"` |
+| `FeignException` (default) | Lanzada si no se configura `ErrorDecoder` personalizado |
+| `RetryableException` | Si se lanza, Feign invoca al `Retryer` para reintentar |
+| Cuerpo de respuesta | Accesible via `response.body().asReader(charset)` |
+
+## FeignException vs excepción de dominio
+
+El `ErrorDecoder.Default` lanza `FeignException` con subclases por cada código HTTP (`FeignException.NotFound`, `FeignException.ServiceUnavailable`, etc.). El problema de este enfoque es que el código consumidor queda acoplado a detalles de transporte HTTP. Al usar excepciones de dominio se separan las responsabilidades.
+
+`FeignException` incluye el cuerpo de la respuesta como `byte[]` accesible con `feignException.content()`, lo que permite leerlo pero con acoplamiento al framework Feign.
 
 ## Buenas y malas prácticas
 
-**Hacer:**
-- Usar el parámetro `methodKey` en el `ErrorDecoder` para incluir el contexto en el mensaje de error. En un servicio con 20 clientes Feign, saber que el error viene de `CatalogClient#getProduct(String)` en lugar de solo "404" reduce el tiempo de diagnóstico.
-- Leer el cuerpo de la respuesta en el `ErrorDecoder` y guardarlo en el mensaje de la excepción. Es la única oportunidad de acceder al cuerpo de error; una vez que el `decode()` retorna, el `InputStream` se cierra.
-- Crear `RetryableException` para errores 503 con cabecera `Retry-After`. Feign puede respetar ese tiempo de espera si el `Retryer` está configurado con un `maxAttempts > 0`.
+**Buenas prácticas:**
+- Siempre leer y liberar el cuerpo de la respuesta en el `ErrorDecoder` para evitar conexiones bloqueadas (connection pool leak).
+- Lanzar `RetryableException` para errores transitorios (503, 504) si hay un `Retryer` configurado, permitiendo reintentos automáticos.
+- Mapear cada código HTTP relevante a una excepción de dominio en lugar de exponer `FeignException`.
 
-**Evitar:**
-- Lanzar excepciones checked desde el `ErrorDecoder`. La firma del método es `Exception decode(...)`, lo que técnicamente permite excepciones checked, pero Feign las envuelve en `UndeclaredThrowableException`. El llamador las recibe como `RuntimeException` con causa anidada, lo que dificulta el `catch` por tipo.
-- Registrar el mismo `ErrorDecoder` como bean global (`defaultConfiguration`) cuando su lógica es específica de un servicio. Un `ProductNotFoundException` no tiene sentido cuando el error viene del servicio de pagos. Los `ErrorDecoder` deben ser locales al cliente que los justifica.
-- Ignorar el status 429 (Too Many Requests) sin `RetryableException`. Un 429 sin reintento implica que el consumidor trata el rate limiting como un error permanente. Si la API del servicio remoto está correctamente diseñada, respetará el `Retry-After` y el reintento tendrá éxito.
+**Malas prácticas:**
+- Ignorar el cuerpo de la respuesta: se pierde el mensaje de error del servidor remoto.
+- Lanzar `RuntimeException` genéricas: el servicio consumidor no puede manejar diferentes escenarios de error.
+- Registrar el `ErrorDecoder` en una clase con `@Configuration` global: se convierte en el decoder de todos los clientes Feign.
+
+> [ADVERTENCIA] Si el `ErrorDecoder` no lee el cuerpo de la respuesta (`response.body()`), la conexión HTTP puede no liberarse correctamente al connection pool, causando agotamiento del pool bajo carga. Siempre llama a `Util.toString(response.body().asReader(charset))` o cierra el body explícitamente.
+
+## Verificación y práctica
+
+> [EXAMEN] **1.** ¿Cuándo invoca Feign al `ErrorDecoder`? ¿Se invoca para una respuesta HTTP 200? ¿Y para una 201?
+
+> [EXAMEN] **2.** ¿Qué excepción lanza el `ErrorDecoder.Default` cuando recibe un HTTP 404? ¿Cuál es su nombre de clase completo?
+
+> [EXAMEN] **3.** ¿Para qué sirve lanzar `RetryableException` desde el `ErrorDecoder` y qué componente de Feign se activa cuando se hace esto?
+
+> [EXAMEN] **4.** Describe el formato del parámetro `methodKey` en `ErrorDecoder.decode(String methodKey, Response response)`. Ejemplo: si la interfaz es `InventoryClient` y el método `getItem(Long id)`, ¿cuál sería el valor de `methodKey`?
+
+> [EXAMEN] **5.** ¿Cómo se implementa un `ErrorDecoder` que lanza `InventoryNotFoundException` para 404 y `InventoryServerException` para cualquier status >= 500?
 
 ---
 
-<- [4.7 Logging](sc-feign-logging.md) | [Índice](README.md) | [4.9 Fallback y Circuit Breaker](sc-feign-fallback.md) ->
+← [3.4.1 Logger.Level y configuración dual de logging](sc-feign-logging.md) | [Índice](README.md) | [3.5 Interceptores de petición — RequestInterceptor](sc-feign-interceptores.md) →

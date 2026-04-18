@@ -1,261 +1,237 @@
-# 9.11 Leader Election con Spring Cloud Kubernetes
+# 9.8 Spring Cloud Kubernetes — Leader Election
 
-← [9.10 Health Indicators de Spring Cloud Kubernetes](sc-kubernetes-health.md) | [Índice (README.md)](README.md) | [9.12 Testing de Spring Cloud Kubernetes](sc-kubernetes-testing.md) →
+← [9.7 Reload de Configuración](sc-kubernetes-reload.md) | [Índice](README.md) | [9.9 Integración con Istio](sc-kubernetes-istio.md) →
 
 ---
 
 ## Introducción
 
-Cuando un microservicio tiene múltiples réplicas en Kubernetes, ciertas tareas deben ejecutarse en una única instancia: el envío de notificaciones diarias, la ejecución de jobs de reconciliación, la rotación de datos. Sin coordinación, todas las réplicas ejecutarían la tarea simultáneamente, causando duplicados, condiciones de carrera o conflictos sobre recursos compartidos. Spring Cloud Kubernetes Leader usa un `ConfigMap` de Kubernetes como mecanismo de lock distribuido: la instancia que logra escribir su identidad en el ConfigMap (con garantía de write-once via optimistic locking de Kubernetes) se convierte en líder y ejecuta las tareas exclusivas. Las demás instancias quedan en espera y están listas para tomar el liderazgo si el líder actual falla o renuncia. Este mecanismo es más simple que Zookeeper o etcd para este propósito, pero requiere que el ServiceAccount tenga permisos de **escritura** sobre ConfigMaps.
+En arquitecturas donde múltiples réplicas de un pod deben ejecutar una tarea que solo puede realizarse en una instancia a la vez —un scheduler, un consumidor de cola singleton, un proceso de limpieza— se necesita un mecanismo de coordinación de liderazgo. Spring Cloud Kubernetes ofrece una implementación de leader election basada en ConfigMaps de Kubernetes como distributed lock. El bean que obtiene el liderazgo recibe la notificación mediante la interfaz `Candidate` y los events `OnGrantedEvent`/`OnRevokedEvent`, mientras que `LeaderInitiator` orquesta el proceso de competición.
 
-> **[PREREQUISITO]** Leader Election requiere añadir el verbo `update` (y opcionalmente `create`/`patch`) sobre `configmaps` al Role del ServiceAccount. El Role mínimo de [9.5 Namespace awareness y RBAC](sc-kubernetes-namespace-rbac.md) solo incluye `get`/`list`/`watch` y debe ser ampliado explícitamente para este módulo.
+## Diagrama de leader election
 
-> **[ADVERTENCIA]** El permiso `update` sobre `configmaps` concedido para Leader Election permite también modificar el ConfigMap de configuración de la aplicación (el que SCK usa como PropertySource). En entornos de alta seguridad, crear un ConfigMap dedicado para el lock y restringir el `update` a ese ConfigMap específico usando un `ResourceName` en el Role.
-
-## Representación visual
-
-El diagrama muestra el ciclo de vida del leader election y las transiciones entre instancias candidatas.
+El siguiente diagrama muestra cómo tres réplicas de un pod compiten por el liderazgo usando un ConfigMap como lock.
 
 ```
-Kubernetes Cluster — 3 réplicas de mi-app
-                │
-    ┌───────────┼───────────┐
-    │           │           │
-  Pod-1       Pod-2       Pod-3
- (Candidato) (Candidato) (Candidato)
-    │           │           │
-    └─────────┬─┘           │
-              │  Todos intentan escribir en:
-              ▼
-  ConfigMap "leader-lock" (namespace: produccion)
-  {
-    "leader": "pod-1",          ← Primera escritura gana
-    "acquireTime": "2025-04-16T10:00:00Z",
-    "renewTime":   "2025-04-16T10:00:10Z"
-  }
-              │
-    ┌─────────┴──────────┐
-    │                    │
-  Pod-1 gana          Pod-2 y Pod-3 pierden
-  onGranted() llamado  esperan hasta lease-duration
-    │                    │
-    ▼                    ▼
-  Ejecuta tareas       Intentan de nuevo si
-  de líder             Pod-1 deja de renovar
-                       (renew-deadline excedido)
+Pod-1 (Candidate)   Pod-2 (Candidate)   Pod-3 (Candidate)
+      │                    │                    │
+      └────────────────────┴────────────────────┘
+                           │
+              Intentan adquirir el lock vía:
+              PUT /api/v1/namespaces/default/configmaps/leader-lock
+              con anotación "leader.election.kubernetes.io/leader"
+                           │
+              K8s garantiza consistencia (etcd MVCC)
+              Solo uno gana → LÍDER
+                           │
+              ┌────────────┴───────────┐
+              │                        │
+         Pod-1 LÍDER              Pod-2, Pod-3
+         onGranted() llamado       esperan TTL
+         ejecuta tarea singleton   del lease
 ```
 
-> **[CONCEPTO]** El mecanismo de lock usa las anotaciones del ConfigMap y el `resourceVersion` de Kubernetes como sistema de optimistic locking. Solo una instancia puede hacer `update` con un `resourceVersion` concreto; las demás reciben un error `409 Conflict` y reintentarán tras `retry-period`. Kubernetes garantiza que solo una actualización con el mismo `resourceVersion` tiene éxito, lo que hace el lock atómico sin necesidad de un coordinador externo como ZooKeeper.
+> [CONCEPTO] Spring Cloud Kubernetes usa el mecanismo de `ResourceVersion` de la API de Kubernetes para implementar el lock optimista. Cuando dos pods intentan actualizar el mismo ConfigMap simultáneamente, la API de Kubernetes rechaza la segunda actualización con un `409 Conflict`, garantizando que solo uno obtiene el lock.
+
+> [CONCEPTO] La interfaz `Candidate` define dos métodos: `onGranted(Context ctx)`, llamado cuando el pod obtiene el liderazgo, y `onRevoked()`, llamado cuando lo pierde (por expiración del lease, partición de red, o fallo del pod). El contexto (`Context`) permite ceder voluntariamente el liderazgo llamando a `ctx.yield()`.
+
+> [PREREQUISITO] El starter de leader election es independiente del starter principal. Para el cliente oficial se necesita `spring-cloud-kubernetes-client-leader`; para Fabric8, `spring-cloud-kubernetes-fabric8-leader`. El ServiceAccount necesita verbos `get`, `create`, `update` sobre `configmaps` para gestionar el lock.
 
 ## Ejemplo central
 
-El siguiente ejemplo muestra la implementación completa de Leader Election con Spring Cloud Kubernetes: configuración, implementación de `Candidate` y un servicio que ejecuta tareas periódicas solo cuando es líder.
-
-**pom.xml**:
+El siguiente ejemplo implementa un scheduler singleton que solo ejecuta en el pod líder, con manejo correcto de los eventos de concesión y revocación del liderazgo.
 
 ```xml
-<dependencies>
-  <dependency>
+<!-- pom.xml — Starter de leader election con cliente oficial -->
+<dependency>
     <groupId>org.springframework.cloud</groupId>
-    <artifactId>spring-cloud-starter-kubernetes-fabric8-all</artifactId>
-  </dependency>
-  <!-- Módulo específico de leader election -->
-  <dependency>
+    <artifactId>spring-cloud-starter-kubernetes-client-all</artifactId>
+</dependency>
+<dependency>
     <groupId>org.springframework.cloud</groupId>
-    <artifactId>spring-cloud-kubernetes-fabric8-leader</artifactId>
-  </dependency>
-  <dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-web</artifactId>
-  </dependency>
-</dependencies>
+    <artifactId>spring-cloud-kubernetes-client-leader</artifactId>
+</dependency>
 ```
-
-**application.yml**:
 
 ```yaml
-spring:
-  application:
-    name: reconciliador-service
-  config:
-    import: "kubernetes:configmap/reconciliador-config"
-
-spring:
-  cloud:
-    kubernetes:
-      leader:
-        enabled: true
-        config-map-name: reconciliador-leader-lock   # ConfigMap dedicado para el lock
-        namespace: produccion
-        role: reconciliador-lider                    # Rol del candidato (identificador lógico)
-        lease-duration: 15          # Segundos que dura el liderazgo sin renovación
-        renew-deadline: 10          # Segundos máximos para renovar antes de perder liderazgo
-        retry-period: 2             # Segundos entre reintentos de candidatos no-líderes
-```
-
-**Implementación de Candidate**:
-
-```java
-package com.ejemplo.reconciliador.leader;
-
-import org.springframework.cloud.kubernetes.commons.leader.Candidate;
-import org.springframework.cloud.kubernetes.commons.leader.Context;
-import org.springframework.stereotype.Component;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-@Component
-public class ReconciliadorCandidate implements Candidate {
-
-    private static final Logger log = LoggerFactory.getLogger(ReconciliadorCandidate.class);
-
-    private volatile Context leaderContext;
-
-    @Override
-    public String getId() {
-        // Identificador único de esta instancia — típicamente el nombre del pod
-        return System.getenv("HOSTNAME");
-    }
-
-    @Override
-    public String getRole() {
-        return "reconciliador-lider";
-    }
-
-    @Override
-    public void onGranted(Context context) {
-        log.info("Liderazgo obtenido por instancia: {}", getId());
-        this.leaderContext = context;
-        // Aquí se puede publicar un evento Spring o activar un flag
-    }
-
-    @Override
-    public void onRevoked(Context context) {
-        log.info("Liderazgo perdido por instancia: {}", getId());
-        this.leaderContext = null;
-    }
-
-    public boolean esLider() {
-        return leaderContext != null && leaderContext.isLeader();
-    }
-
-    public void cederLiderazgo() {
-        if (leaderContext != null) {
-            leaderContext.yield();
-        }
-    }
-}
-```
-
-**Servicio con tarea exclusiva del líder**:
-
-```java
-package com.ejemplo.reconciliador.service;
-
-import com.ejemplo.reconciliador.leader.ReconciliadorCandidate;
-import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.stereotype.Service;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-@Service
-public class ReconciliadorService {
-
-    private static final Logger log = LoggerFactory.getLogger(ReconciliadorService.class);
-
-    private final ReconciliadorCandidate candidate;
-
-    public ReconciliadorService(ReconciliadorCandidate candidate) {
-        this.candidate = candidate;
-    }
-
-    @Scheduled(fixedDelay = 30000)   // Cada 30 segundos en todas las instancias
-    public void ejecutarReconciliacion() {
-        if (!candidate.esLider()) {
-            log.debug("No es líder — saltando reconciliación");
-            return;
-        }
-        log.info("Ejecutando reconciliación como líder");
-        // Lógica exclusiva del líder
-        reconciliarEstado();
-    }
-
-    private void reconciliarEstado() {
-        // Implementación real de la reconciliación
-        log.info("Estado reconciliado exitosamente");
-    }
-}
-```
-
-**Clase principal** con `@EnableScheduling`:
-
-```java
-package com.ejemplo.reconciliador;
-
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
-import org.springframework.scheduling.annotation.EnableScheduling;
-
-@SpringBootApplication
-@EnableDiscoveryClient
-@EnableScheduling
-public class ReconciliadorApplication {
-
-    public static void main(String[] args) {
-        SpringApplication.run(ReconciliadorApplication.class, args);
-    }
-}
-```
-
-**RBAC ampliado para Leader Election** (agrega `update`/`create`/`patch` al Role):
-
-```yaml
+# kubernetes/rbac-leader.yaml — RBAC adicional para leader election
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: reconciliador-role
-  namespace: produccion
+  name: my-service-leader-role
+  namespace: default
 rules:
-  # Lectura general (ConfigMap config, discovery)
-  - apiGroups: [""]
-    resources: ["configmaps", "services", "endpoints", "pods"]
-    verbs: ["get", "list", "watch"]
-  # Escritura solo sobre el ConfigMap de lock de leader election
   - apiGroups: [""]
     resources: ["configmaps"]
-    resourceNames: ["reconciliador-leader-lock"]   # Restricción por nombre
-    verbs: ["get", "create", "update", "patch"]
+    verbs: ["get", "watch", "list", "create", "update", "delete", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: my-service-leader-rolebinding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: my-service-sa
+    namespace: default
+roleRef:
+  kind: Role
+  name: my-service-leader-role
+  apiGroup: rbac.authorization.k8s.io
 ```
 
-> **[EXAMEN]** Pregunta frecuente: "¿Qué ocurre si el líder falla repentinamente sin llamar a `yield()`?" El liderazgo permanece "bloqueado" hasta que transcurre el `lease-duration` sin que el líder renueve (falla el `renew-deadline`). Después de ese tiempo, otro candidato intenta adquirir el lock. En la configuración del ejemplo (lease=15s, renew=10s), el máximo tiempo de "leader vacante" es 15 segundos. Este es el tradeoff entre latencia de failover y estabilidad del liderazgo.
+```java
+// src/main/java/com/example/leader/SchedulerCandidate.java
+package com.example.leader;
 
-## Tabla de elementos clave
+import org.springframework.integration.leader.Candidate;
+import org.springframework.integration.leader.Context;
+import org.springframework.stereotype.Component;
 
-| Propiedad | Tipo | Default | Descripción |
-|---|---|---|---|
-| `spring.cloud.kubernetes.leader.enabled` | boolean | `true` | Activa el módulo de leader election |
-| `spring.cloud.kubernetes.leader.config-map-name` | String | `leaders` | Nombre del ConfigMap usado como lock |
-| `spring.cloud.kubernetes.leader.namespace` | String | namespace del pod | Namespace del ConfigMap de lock |
-| `spring.cloud.kubernetes.leader.role` | String | — | Rol lógico del candidato (múltiples roles posibles por app) |
-| `spring.cloud.kubernetes.leader.lease-duration` | int (s) | `15` | Duración del liderazgo sin renovación (s) |
-| `spring.cloud.kubernetes.leader.renew-deadline` | int (s) | `10` | Tiempo máximo para renovar antes de perder el liderazgo (s) |
-| `spring.cloud.kubernetes.leader.retry-period` | int (s) | `2` | Intervalo entre reintentos de candidatos no-líderes (s) |
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/**
+ * Implementación de Candidate que gestiona un scheduler singleton.
+ * Solo el pod líder ejecuta la tarea periódica.
+ */
+@Component
+public class SchedulerCandidate implements Candidate {
+
+    private final AtomicBoolean leader = new AtomicBoolean(false);
+
+    @Override
+    public String getRole() {
+        return "scheduler-leader";  // identifica el rol de liderazgo
+    }
+
+    @Override
+    public String getId() {
+        return System.getenv("HOSTNAME");  // nombre del pod como ID único
+    }
+
+    @Override
+    public void onGranted(Context ctx) {
+        leader.set(true);
+        System.out.println("Pod " + getId() + " obtuvo el liderazgo. Iniciando scheduler...");
+        // Aquí se activa el scheduler o tarea singleton
+    }
+
+    @Override
+    public void onRevoked() {
+        leader.set(false);
+        System.out.println("Pod " + getId() + " perdió el liderazgo. Deteniendo scheduler...");
+        // Aquí se detiene el scheduler o tarea singleton
+    }
+
+    public boolean isLeader() {
+        return leader.get();
+    }
+}
+```
+
+```java
+// src/main/java/com/example/leader/SingletonScheduler.java
+package com.example.leader;
+
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+
+/**
+ * Scheduler que comprueba el estado de liderazgo antes de ejecutar.
+ * Solo el pod líder ejecuta la tarea.
+ */
+@Component
+public class SingletonScheduler {
+
+    private final SchedulerCandidate candidate;
+
+    public SingletonScheduler(SchedulerCandidate candidate) {
+        this.candidate = candidate;
+    }
+
+    @Scheduled(fixedRate = 60_000)
+    public void runSingletonTask() {
+        if (!candidate.isLeader()) {
+            return;  // no ejecutar si no somos el líder
+        }
+        System.out.println("Ejecutando tarea singleton en el pod líder: "
+                + System.getenv("HOSTNAME"));
+        // lógica de la tarea
+    }
+}
+```
+
+```java
+// src/main/java/com/example/leader/LeaderEventListener.java
+package com.example.leader;
+
+import org.springframework.context.event.EventListener;
+import org.springframework.integration.leader.event.OnGrantedEvent;
+import org.springframework.integration.leader.event.OnRevokedEvent;
+import org.springframework.stereotype.Component;
+
+/**
+ * Escucha los ApplicationEvents de cambio de liderazgo publicados por LeaderInitiator.
+ */
+@Component
+public class LeaderEventListener {
+
+    @EventListener
+    public void onGranted(OnGrantedEvent event) {
+        System.out.println("Evento: liderazgo concedido. Rol: " + event.getRole());
+    }
+
+    @EventListener
+    public void onRevoked(OnRevokedEvent event) {
+        System.out.println("Evento: liderazgo revocado. Rol: " + event.getRole());
+    }
+}
+```
+
+## Tabla de componentes de leader election
+
+La siguiente tabla resume los componentes clave del mecanismo de leader election.
+
+| Componente | Tipo | Descripción |
+|---|---|---|
+| `Candidate` | Interfaz | Define `onGranted(Context)` y `onRevoked()` para reaccionar a cambios de liderazgo |
+| `LeaderInitiator` | Bean | Orquesta el proceso de competición; requiere un `Candidate` |
+| `Context` | Interfaz | Permite ceder el liderazgo con `ctx.yield()` |
+| `OnGrantedEvent` | ApplicationEvent | Publicado cuando el pod obtiene el liderazgo |
+| `OnRevokedEvent` | ApplicationEvent | Publicado cuando el pod pierde el liderazgo |
+| ConfigMap de lock | Recurso K8s | Almacena el estado del lease (quién es el líder y hasta cuándo) |
+
+## Relación con los starters
+
+La elección del starter de leader election debe ser consistente con el starter principal del proyecto. Si se usa `spring-cloud-starter-kubernetes-client-all` (cliente oficial), el starter de leader election debe ser `spring-cloud-kubernetes-client-leader`. Si se usa el starter Fabric8, debe ser `spring-cloud-kubernetes-fabric8-leader`. Mezclar un starter oficial con el leader election de Fabric8 genera conflictos de classpath análogos a los descritos en sc-kubernetes-starters.md.
 
 ## Buenas y malas prácticas
 
-**Hacer:**
+**Buenas prácticas:**
+- Usar `ctx.yield()` para ceder el liderazgo voluntariamente antes de un mantenimiento planeado, en lugar de esperar a que expire el lease.
+- Implementar `getId()` en `Candidate` usando el nombre del pod (`HOSTNAME` env var) para identificar claramente qué pod es el líder en los logs.
+- Registrar el liderazgo en métricas (Micrometer) para monitorizar cambios de líder en producción.
+- Configurar el RBAC para leader election solo con los verbos estrictamente necesarios sobre `configmaps` en el namespace concreto.
 
-- Usar un ConfigMap dedicado para el lock (`config-map-name` distinto al ConfigMap de configuración) y restringir el permiso `update` a ese ConfigMap específico via `resourceNames` en el Role: evita que el código de leader election pueda modificar la configuración de la aplicación.
-- Implementar la lógica de negocio del líder como tareas periódicas con `@Scheduled` que comprueban `candidate.esLider()` antes de ejecutar: más robusto que activar/desactivar el scheduler en `onGranted`/`onRevoked`, que puede perder eventos en condiciones de alta carga.
-- Configurar `lease-duration` > `renew-deadline` > `retry-period`: es la relación invariante del algoritmo de leader election. Si `renew-deadline >= lease-duration`, el líder puede perder el liderazgo incluso si está funcionando correctamente.
+**Malas prácticas:**
+- Usar lógica crítica de negocio en `onGranted()` de forma síncrona y lenta: el método es llamado en el hilo de coordinación y puede bloquear el renewal del lease.
+- Asumir que una vez otorgado el liderazgo nunca se revoca: particiones de red o expiración del lease pueden revocar el liderazgo en cualquier momento.
+- Usar leader election para coordinar aplicaciones stateful sin implementar un protocolo de traspaso de estado entre el líder saliente y el entrante.
 
-**Evitar:**
+> [ADVERTENCIA] El lease del ConfigMap de lock tiene un TTL configurable. Si el pod líder muere sin liberar el lock, el nuevo líder no se elegirá hasta que el TTL expire. En entornos donde la disponibilidad es crítica, ajustar el TTL del lease a un valor pequeño (p.ej., 15 segundos) para minimizar el tiempo de failover.
 
-- Poner lógica irreversible (envío de emails, transacciones financieras) directamente en `onGranted()`: este callback puede llamarse durante el arranque antes de que el contexto Spring esté completamente inicializado. Usar eventos de aplicación (`ApplicationEventPublisher`) para garantizar que la lógica se ejecuta solo cuando la aplicación está lista.
-- Usar `lease-duration` muy corto (< 5s) en clusters con latencia alta en el API server: con alta latencia, el líder puede fallar en renovar el lock dentro del `renew-deadline` aunque esté completamente funcional, causando cambios de liderazgo innecesarios (split-brain).
-- Ignorar el callback `onRevoked()`: es el momento para limpiar recursos, cerrar conexiones exclusivas o persistir el estado del trabajo en curso antes de cederlo al nuevo líder.
+## Verificación y práctica
+
+> [EXAMEN] 1. ¿Cómo implementa Spring Cloud Kubernetes el distributed lock para la elección de líder, y qué recurso de Kubernetes utiliza internamente?
+
+> [EXAMEN] 2. ¿Qué interfaz debe implementar el bean candidato y qué métodos define?
+
+> [EXAMEN] 3. ¿Qué RBAC adicional necesita el ServiceAccount para soportar leader election que no se necesita para leer ConfigMaps?
+
+> [EXAMEN] 4. ¿Qué eventos de aplicación publica `LeaderInitiator` cuando cambia el estado del liderazgo?
+
+> [EXAMEN] 5. ¿Qué starter de leader election se debe usar si el proyecto ya usa `spring-cloud-starter-kubernetes-client-all`?
 
 ---
 
-← [9.10 Health Indicators de Spring Cloud Kubernetes](sc-kubernetes-health.md) | [Índice (README.md)](README.md) | [9.12 Testing de Spring Cloud Kubernetes](sc-kubernetes-testing.md) →
+← [9.7 Reload de Configuración](sc-kubernetes-reload.md) | [Índice](README.md) | [9.9 Integración con Istio](sc-kubernetes-istio.md) →

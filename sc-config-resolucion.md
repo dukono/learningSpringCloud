@@ -1,204 +1,208 @@
-# 1.3 Resolución de configuración por perfiles y labels
+# 1.4 Resolución de configuración — perfiles y overrides
 
-← [1.2 Config Client — configuración y arranque](sc-config-client.md) | [Índice (README.md)](README.md) | [1.4 Git backend — configuración y autenticación →](sc-config-git-backend.md)
+← [1.3.2 Backends alternativos](sc-config-backends.md) | [Índice](README.md) | [1.5 Refresh de configuración](sc-config-refresh.md) →
 
 ---
 
 ## Introducción
 
-El Config Server no devuelve un único fichero de propiedades: construye dinámicamente un `Environment` compuesto por múltiples `PropertySource` ordenados por precedencia. La regla que determina qué propiedades ve cada microservicio es la combinación de tres variables: el nombre de la aplicación (`{application}`), el perfil activo (`{profile}`) y la etiqueta del backend (`{label}`).
+La resolución de configuración en Spring Cloud Config no es una simple lectura de un fichero: es un proceso de fusión multicapa donde múltiples ficheros se combinan siguiendo reglas de precedencia bien definidas. Entender este proceso es fundamental para predecir qué valor recibirá un microservicio cuando tiene configuración en múltiples fuentes — el repositorio remoto, el perfil de entorno, y sus propias propiedades locales. Las preguntas del examen VMware sobre este tema evalúan específicamente la capacidad de predecir el valor final de una propiedad cuando hay conflictos.
 
-Entender esta resolución es crítico en entrevistas y en producción. Un error en el nombre del perfil o en el label puede hacer que un microservicio arranque con propiedades del entorno equivocado sin emitir ningún error: el servidor responde HTTP 200 con el fichero base, que puede no contener las propiedades de producción esperadas.
+> [CONCEPTO] El Config Server construye una lista ordenada de PropertySources para cada petición `{application}/{profile}/{label}`. El primer PropertySource (más específico) tiene mayor precedencia. Las propiedades locales del cliente pueden tener menor o mayor precedencia que las del servidor, dependiendo de la configuración de `allow-override`.
 
-> [CONCEPTO] El mecanismo de resolución del Config Server sigue la convención de naming `{application}-{profile}.{yml|properties}` sobre el backend, con herencia desde un fichero base `application.{yml|properties}` y orden de precedencia estricto: las propiedades más específicas (con perfil) sobreescriben a las más generales (sin perfil).
+## Diagrama de precedencia de PropertySources
 
-> [PREREQUISITO] Para entender esta sección es necesario tener claro el concepto de `PropertySource` de Spring Framework: una fuente de propiedades ordenada en una lista donde las primeras entradas tienen mayor precedencia que las últimas.
-
-## Diagrama: jerarquía de resolución de propiedades
-
-El siguiente diagrama muestra qué ficheros consulta el servidor para construir la respuesta a una petición `GET /order-service/prod/main` y el orden de precedencia resultante.
+El proceso de resolución sigue una jerarquía estricta. Comprender este diagrama es la clave para responder las preguntas de precedencia del examen.
 
 ```
-Petición: GET /order-service/prod/main
-         application=order-service  profile=prod  label=main
+JERARQUÍA DE PRECEDENCIA (de mayor a menor)
+═══════════════════════════════════════════
+  1. {application}-{profile}.yml          ← MÁS ESPECÍFICO (mayor prioridad)
+     (ej: order-service-prod.yml)
 
-FICHEROS CONSULTADOS EN EL BACKEND GIT (rama main):
-╔══════════════════════════════════╗  ← MAYOR PRECEDENCIA
-║  order-service-prod.yml          ║  propiedades específicas de este servicio en prod
-╠══════════════════════════════════╣
-║  order-service.yml               ║  propiedades del servicio (todos los perfiles)
-╠══════════════════════════════════╣
-║  application-prod.yml            ║  propiedades globales para el perfil prod
-╠══════════════════════════════════╣
-║  application.yml                 ║  propiedades globales (todos los servicios)
-╚══════════════════════════════════╝  ← MENOR PRECEDENCIA
+  2. {application}.yml
+     (ej: order-service.yml)
 
-RESULTADO: PropertySource[] con propiedades fusionadas.
-Si la misma clave aparece en varios ficheros, gana la del fichero más arriba.
+  3. application-{profile}.yml            ← Configuración global por entorno
+     (ej: application-prod.yml)
+
+  4. application.yml                      ← Base global (menor prioridad en servidor)
+
+  5. Propiedades locales del cliente      ← Depende de allow-override
+     (application.properties/yml local)
+
+  6. Overrides del servidor               ← Pueden tener mayor prioridad que todo
+     (spring.cloud.config.server.overrides)
+═══════════════════════════════════════════
+NOTA: En el servidor, mayor posición en la lista = menor prioridad
+Los PropertySources se fusionan: las claves del primero ganan
 ```
 
-El servidor devuelve la lista completa de `PropertySource`; el cliente los aplica en ese mismo orden.
+Cuando un cliente `order-service` con perfil `prod` solicita configuración, el servidor devuelve hasta cuatro PropertySources en este orden. La clave `server.port` que aparece en `order-service-prod.yml` con valor `8081` sobreescribe cualquier `server.port` de `order-service.yml` o `application.yml`.
+
+> [EXAMEN] `application.yml` (sin perfil) siempre se incluye como base y se fusiona con todos los demás. Sus valores tienen la menor precedencia dentro del servidor. Una clave definida en `application.yml` y redefinida en `order-service-prod.yml` siempre tendrá el valor de `order-service-prod.yml`.
+
+## Perfiles — segmentación por entorno
+
+Los perfiles de Spring son el mecanismo principal para segmentar configuración por entorno (dev, test, staging, prod). Un cliente puede activar múltiples perfiles simultáneamente; el servidor entrega PropertySources para cada perfil activo, y la precedencia sigue el orden en que se declararon los perfiles.
+
+```yaml
+# En el cliente: activa dos perfiles simultáneamente
+spring:
+  profiles:
+    active: prod,monitoring
+
+# El servidor devolverá PropertySources para AMBOS perfiles:
+# 1. order-service-monitoring.yml   (último perfil activo = mayor prioridad)
+# 2. order-service-prod.yml
+# 3. application-monitoring.yml
+# 4. application-prod.yml
+# 5. order-service.yml
+# 6. application.yml
+```
+
+La convención de nomenclatura es `{application}-{profile}.yml` o `{application}-{profile}.properties`. El servidor reconoce ambos formatos y los devuelve con la misma precedencia.
 
 ## Ejemplo central
 
-A continuación se muestra una estructura de repositorio Git completa y la respuesta real que devuelve el Config Server para ilustrar la fusión de propiedades.
+El siguiente ejemplo muestra el escenario completo de resolución con conflicto de claves para demostrar exactamente qué valor recibe el cliente.
 
-### Estructura del repositorio Git
+**Ficheros en el repositorio Git**:
 
-```
-config-repo/
-├── application.yml               # base compartida por todos los servicios
-├── application-prod.yml          # propiedades de producción globales
-├── order-service.yml             # propiedades de order-service (todos los perfiles)
-├── order-service-dev.yml         # propiedades de order-service en dev
-└── order-service-prod.yml        # propiedades de order-service en prod
-```
-
-### Contenido de los ficheros
-
-**application.yml** (base global):
 ```yaml
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health,info
-logging:
-  level:
-    root: INFO
+# application.yml (base global)
+app:
+  name: "My Application"
+  timeout: 30
+  feature-flag: false
+
+server:
+  port: 8080
 ```
 
-**application-prod.yml** (producción global):
 ```yaml
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health
+# application-prod.yml (global para producción)
+app:
+  timeout: 10
+  feature-flag: true
+
 logging:
   level:
     root: WARN
 ```
 
-**order-service.yml** (base del servicio):
 ```yaml
-order:
-  payment-service-url: http://payment-service:8080
-  max-retries: 3
-  timeout-ms: 5000
+# order-service.yml (base del servicio)
+app:
+  name: "Order Service"
+  max-orders: 100
+
+server:
+  port: 8081
 ```
-
-**order-service-prod.yml** (servicio en producción):
-```yaml
-order:
-  payment-service-url: https://payment-service.prod.internal:8443
-  max-retries: 5
-```
-
-### Llamada HTTP al servidor y respuesta
-
-```bash
-# Petición directa al Config Server (útil para diagnóstico)
-curl http://config-server:8888/order-service/prod/main
-```
-
-Respuesta JSON simplificada:
-
-```json
-{
-  "name": "order-service",
-  "profiles": ["prod"],
-  "label": "main",
-  "propertySources": [
-    {
-      "name": "git:…/order-service-prod.yml",
-      "source": {
-        "order.payment-service-url": "https://payment-service.prod.internal:8443",
-        "order.max-retries": 5
-      }
-    },
-    {
-      "name": "git:…/order-service.yml",
-      "source": {
-        "order.payment-service-url": "http://payment-service:8080",
-        "order.max-retries": 3,
-        "order.timeout-ms": 5000
-      }
-    },
-    {
-      "name": "git:…/application-prod.yml",
-      "source": {
-        "management.endpoints.web.exposure.include": "health",
-        "logging.level.root": "WARN"
-      }
-    },
-    {
-      "name": "git:…/application.yml",
-      "source": {
-        "management.endpoints.web.exposure.include": "health,info",
-        "logging.level.root": "INFO"
-      }
-    }
-  ]
-}
-```
-
-El cliente fusiona esta lista de arriba a abajo: `order.payment-service-url` vale `https://payment-service.prod.internal:8443` (del primer `PropertySource`), y `order.timeout-ms` vale `5000` (solo aparece en el segundo).
-
-### Configuración del cliente para este ejemplo
 
 ```yaml
-# application.yml del microservicio order-service
+# order-service-prod.yml (servicio en producción)
+app:
+  max-orders: 500
+  payment-url: "https://payment.prod.internal"
+
+server:
+  port: 9091
+```
+
+**Resultado de resolución para `order-service/prod/main`**:
+
+El cliente `order-service` con perfil `prod` recibe las siguientes propiedades fusionadas (la clave con mayor precedencia gana):
+
+```
+server.port           = 9091        ← de order-service-prod.yml
+app.name              = "Order Service" ← de order-service.yml
+app.timeout           = 10          ← de application-prod.yml
+app.feature-flag      = true        ← de application-prod.yml
+app.max-orders        = 500         ← de order-service-prod.yml
+app.payment-url       = "https://payment.prod.internal" ← de order-service-prod.yml
+logging.level.root    = WARN        ← de application-prod.yml
+```
+
+## Overrides — propiedades no sobreescribibles
+
+> [ADVERTENCIA] Esta sección es contenido avanzado (Grupo 2). Los overrides son un mecanismo para forzar valores desde el servidor que el cliente no puede sobreescribir con sus propiedades locales.
+
+El mecanismo de overrides permite al Config Server inyectar propiedades que tienen mayor precedencia que cualquier propiedad local del cliente. Es útil para forzar configuración de seguridad o compliance que los equipos de servicio no deben poder ignorar.
+
+```yaml
+# application.yml del Config Server
 spring:
-  application:
-    name: order-service         # determina {application}
-  config:
-    import: "configserver:http://config-server:8888"
-  profiles:
-    active: prod                # determina {profile}
   cloud:
     config:
-      label: main               # determina {label} — rama Git
+      server:
+        overrides:
+          security.require-ssl: true
+          logging.level.org.springframework.security: DEBUG
+          management.endpoints.web.exposure.include: "health,info"
 ```
 
-## Tabla: endpoint HTTP del Config Server
+Estas propiedades llegan al cliente como un PropertySource con la máxima precedencia, por encima de `application.yml` local y de las propiedades del sistema operativo. El comportamiento se puede modificar en el cliente:
 
-La siguiente tabla describe los patrones de URL que expone el servidor y qué devuelve cada uno.
+```yaml
+# En el cliente: controla si los overrides del servidor pueden ser sobreescritos localmente
+spring:
+  cloud:
+    config:
+      allow-override: true          # true = los overrides NO son inviolables (default)
+      override-none: false          # false = comportamiento estándar (default)
+      override-system-properties: true  # true = overrides tienen precedencia sobre system props
+```
 
-| Endpoint | Ejemplo | Descripción |
-|---|---|---|
-| `/{app}/{profile}` | `/order-service/prod` | Resolución estándar. Label por defecto del servidor. |
-| `/{app}/{profile}/{label}` | `/order-service/prod/main` | Especifica rama/tag/commit explícitamente. |
-| `/{app}/{profile}/{label}/{path}` | `/order-service/prod/main/order-service.yml` | Devuelve el fichero crudo (sin fusión). |
-| `/{label}/{app}-{profile}.yml` | `/main/order-service-prod.yml` | Fichero crudo con label antes del nombre. |
-| `/{app}-{profile}.properties` | `/order-service-prod.properties` | Propiedades fusionadas en formato `.properties`. |
-
-> [EXAMEN] La diferencia entre `/{app}/{profile}` (devuelve `PropertySource[]` fusionados) y `/{app}-{profile}.yml` (devuelve el fichero crudo sin fusión) es una pregunta frecuente. El cliente usa el primer formato; el segundo es útil solo para depuración o para ver el contenido de un fichero específico.
+> [EXAMEN] La semántica de `allow-override` es contraintuitiva. `allow-override: true` significa que el cliente PUEDE sobreescribir los overrides del servidor con propiedades locales. `allow-override: false` significa que los overrides del servidor son INVIOLABLES.
 
 ## Buenas y malas prácticas
 
-**Hacer:**
-- Definir explícitamente `spring.cloud.config.label` en el cliente para cada entorno. Confiar en el label por defecto del servidor puede causar que un despliegue en producción use la rama `develop` si el servidor tiene `default-label: develop` como valor por defecto.
-- Usar `application.yml` (sin perfil) para propiedades verdaderamente globales e invariantes: timeouts de heartbeat, configuración de Actuator, nivel de log base. Cuantas menos propiedades en el fichero base, más predecible es la resolución.
-- Verificar la resolución de configuración de un servicio en un entorno concreto con `curl` al endpoint del servidor antes de arrancar la instancia. Es la forma más rápida de confirmar que las propiedades correctas están disponibles.
+Hacer:
+- Usar `application.yml` (sin perfil) en el repositorio para propiedades que aplican a todos los servicios y entornos (ej. configuración de logging base, timeouts de red comunes).
+- Nombrar los ficheros con la convención `{application}-{profile}.yml` exactamente como el `spring.application.name` del cliente; cualquier diferencia de mayúsculas/minúsculas puede hacer que el servidor no encuentre el fichero en sistemas de archivos case-sensitive.
+- Documentar en el repositorio de configuración la precedencia esperada para evitar confusión en el equipo.
+- Usar overrides del servidor solo para propiedades de compliance o seguridad obligatorias; no abusar del mecanismo para configuración normal.
 
-**Evitar:**
-- Nombrar perfiles con guiones bajos (`order_service`): el separador canónico en Spring es el guion (`order-service`). Los guiones bajos en el nombre de perfil pueden provocar fallos de resolución de ficheros según la versión del backend.
-- Sobrecargar `application-prod.yml` con propiedades específicas de un servicio concreto. Si esa propiedad cambia, afecta a todos los servicios que usen ese perfil.
-- Usar labels dinámicos que apunten a commits específicos en producción sin un proceso de promoción controlado: facilita la configuración de cada instancia en un commit diferente, rompiendo la consistencia.
+Evitar:
+- Definir la misma clave en múltiples niveles sin documentar cuál es el valor esperado; genera confusión cuando el valor final es diferente al que alguien editó.
+- Asumir que las propiedades locales del cliente siempre tienen menor precedencia que las del Config Server; depende de `allow-override` y `override-none`.
+- Confundir `spring.profiles.active` del cliente (determina el perfil para resolución de configuración) con `spring.profiles.active` del servidor (activa el backend).
+- Mezclar YAML y properties para el mismo servicio en el repositorio; el servidor fusiona ambos pero el resultado puede ser sorprendente si los formatos coexisten.
 
-## Comparación: tres variables de resolución
+## Verificación y práctica
 
-La siguiente tabla resume qué controla cada variable de resolución y dónde se configura.
+Para verificar la resolución y precedencia de propiedades, el endpoint `env` de Actuator muestra todas las fuentes y sus valores:
 
-| Variable | Corresponde a | Se configura en el cliente | Efecto en el backend Git |
-|---|---|---|---|
-| `{application}` | `spring.application.name` | `spring.application.name` | Nombre del fichero YAML: `order-service.yml` |
-| `{profile}` | Perfil activo de Spring | `spring.profiles.active` o `spring.cloud.config.profile` | Sufijo del fichero: `order-service-prod.yml` |
-| `{label}` | Rama / tag / commit | `spring.cloud.config.label` | Referencia Git que el servidor hace checkout al leer |
+```bash
+# Ver todas las propiedades y sus PropertySources (ordenados por precedencia)
+curl http://localhost:8080/actuator/env | python3 -m json.tool
 
-> [ADVERTENCIA] `{label}` en el backend Git puede ser una rama (`main`), un tag (`v1.2.0`) o incluso un hash de commit corto. Sin embargo, los hashes de commit no son mutables: si el backend tiene `refreshRate` activo, apuntar a un commit concreto bloquea las actualizaciones. Usar ramas en producción y tags para rollbacks controlados.
+# Ver el valor y la fuente de una propiedad específica
+curl http://localhost:8080/actuator/env/app.max-orders
+# Respuesta:
+# {
+#   "property": {
+#     "source": "configserver:https://github.com/myorg/config-repo/order-service/order-service-prod.yml",
+#     "value": "500"
+#   },
+#   "activeProfiles": ["prod"]
+# }
+
+# Ver la configuración que devuelve el servidor directamente (sin cliente)
+curl http://localhost:8888/order-service/prod/main
+```
+
+**Preguntas estilo examen VMware Spring Professional:**
+
+1. Un cliente `payment-service` tiene perfil `prod` activo. El repositorio contiene: `application.yml`, `application-prod.yml`, `payment-service.yml`, `payment-service-prod.yml`. ¿En qué orden fusiona el Config Server los PropertySources?
+2. La clave `app.timeout` está definida como `30` en `application.yml` y como `10` en `application-prod.yml`. El cliente tiene perfil `prod`. ¿Qué valor recibe?
+3. ¿Qué diferencia hay entre `spring.cloud.config.server.overrides` y propiedades normales en el repositorio de configuración?
+4. `allow-override: false` en el cliente — ¿qué efecto tiene sobre los overrides del servidor?
+5. ¿Puede un cliente tener múltiples perfiles activos simultáneamente? ¿Cómo afecta esto a la resolución?
 
 ---
 
-← [1.2 Config Client — configuración y arranque](sc-config-client.md) | [Índice (README.md)](README.md) | [1.4 Git backend — configuración y autenticación →](sc-config-git-backend.md)
+← [1.3.2 Backends alternativos](sc-config-backends.md) | [Índice](README.md) | [1.5 Refresh de configuración](sc-config-refresh.md) →
+

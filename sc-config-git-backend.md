@@ -1,64 +1,51 @@
-# 1.4 Git backend — configuración y autenticación
+# 1.3.1 Backend Git — autenticación, search-paths y etiquetas
 
-← [1.3 Resolución de configuración por perfiles y labels](sc-config-resolucion.md) | [Índice (README.md)](README.md) | [1.5 Backends alternativos al Git backend →](sc-config-backends.md)
+← [1.2 Config Client](sc-config-client.md) | [Índice](README.md) | [1.3.2 Backends alternativos](sc-config-backends.md) →
 
 ---
 
 ## Introducción
 
-El Git backend es la implementación por defecto de `EnvironmentRepository` en Spring Cloud Config Server y el caso de uso más extendido en producción. Almacena la configuración en un repositorio Git estándar, lo que aporta historial de cambios auditado, posibilidad de rollback mediante revert, revisión de cambios por pull request y separación de entornos por ramas o directorios.
+El backend Git es la elección por defecto y la más evaluada en el examen VMware Spring Professional para Spring Cloud Config. Resuelve el problema de versionar la configuración junto al código: cada cambio en la configuración queda registrado con un commit, se puede hacer rollback a cualquier estado anterior, y distintas ramas pueden representar distintos entornos. El Config Server actúa como un servidor HTTP que traduce peticiones `{application}/{profile}/{label}` a operaciones Git sobre el repositorio clonado localmente.
 
-La configuración del Git backend cubre dos dimensiones: la **localización** del repositorio (URI, ramas, directorios) y la **autenticación** (SSH con clave privada, HTTPS con usuario/contraseña o token). Ambas dimensiones tienen múltiples opciones con implicaciones de seguridad y rendimiento que es imprescindible dominar para un entorno productivo.
+> [CONCEPTO] El Config Server con backend Git clona el repositorio en un directorio temporal local y sirve los ficheros desde ahí. La propiedad `label` en la petición del cliente se traduce directamente a una rama, etiqueta o hash de commit Git.
 
-> [PREREQUISITO] Para las opciones de autenticación SSH es necesario disponer de un par de claves SSH generado y la clave pública añadida al proveedor Git (GitHub, GitLab, Bitbucket). Para autenticación HTTPS, un token de acceso personal con permiso de lectura sobre el repositorio.
+> [PREREQUISITO] Antes de configurar autenticación SSH o search-paths avanzados, el backend Git básico (con URI pública) debe funcionar correctamente.
 
-## Diagrama: relación entre Config Server y el repositorio Git
+## Estructura del repositorio y resolución de ficheros
 
-El siguiente diagrama muestra los pasos que ejecuta el `JGitEnvironmentRepository` cuando recibe una petición de resolución de configuración.
+La forma en que el servidor busca ficheros en el repositorio es el concepto más crítico del backend Git. El servidor construye una lista ordenada de ficheros a buscar en función de la aplicación y el perfil, y la posición de búsqueda dentro del repositorio depende de `search-paths`.
 
 ```
-Config Server recibe: GET /order-service/prod/main
-         │
-         ▼
-JGitEnvironmentRepository
-         │
-         ├── ¿Existe clone local en basedir?
-         │         NO ──► git clone {uri}  (autenticación SSH o HTTPS)
-         │         SÍ ──► git fetch (si refreshRate ha expirado)
-         │
-         ▼
-         git checkout {label}   (rama/tag/commit)
-         │
-         ▼
-         Busca ficheros en search-paths:
-         application.yml, {app}.yml, {app}-{profile}.yml
-         │
-         ▼
-         Construye PropertySource[] y los devuelve al cliente
+REPOSITORIO GIT (estructura recomendada con search-paths: '{application}')
+│
+├── application.yml              ← Propiedades globales (todos los servicios)
+├── application-prod.yml         ← Propiedades globales para perfil prod
+│
+├── order-service/
+│   ├── order-service.yml        ← Propiedades base de order-service
+│   └── order-service-prod.yml   ← Propiedades de order-service en prod
+│
+└── inventory-service/
+    ├── inventory-service.yml
+    └── inventory-service-prod.yml
+
+ORDEN DE RESOLUCIÓN para GET /order-service/prod/main:
+  1. order-service/order-service-prod.yml   (máxima prioridad)
+  2. order-service/order-service.yml
+  3. application-prod.yml
+  4. application.yml                         (mínima prioridad, base global)
 ```
 
-El clon local en `basedir` es un **caché**: el servidor no clona en cada petición, sino que hace `fetch` periódicamente según `refreshRate`.
+Con `search-paths: '{application}'`, el servidor busca primero en la carpeta del servicio y luego en la raíz. El placeholder `{application}` se sustituye dinámicamente por el nombre de la aplicación cliente.
+
+> [EXAMEN] La diferencia entre `label` (rama/tag Git) y `profile` (entorno: dev/prod) es pregunta directa. `label` controla la versión del código de configuración; `profile` controla el entorno de despliegue.
 
 ## Ejemplo central
 
-A continuación se presenta la configuración completa del Git backend para los escenarios más habituales.
+El siguiente ejemplo muestra la configuración completa del backend Git con los tres métodos de autenticación disponibles: público, usuario/contraseña, y SSH.
 
-### Configuración básica con repositorio HTTPS público
-
-```yaml
-spring:
-  cloud:
-    config:
-      server:
-        git:
-          uri: https://github.com/mi-org/config-repo
-          default-label: main
-          clone-on-start: true      # valida la conexión al arrancar el servidor
-          timeout: 10               # segundos máximos esperando respuesta del servidor Git
-          refresh-rate: 30          # segundos entre fetch automáticos
-```
-
-### Autenticación HTTPS con usuario/contraseña o token
+**application.yml — Variante 1: repositorio público**:
 
 ```yaml
 spring:
@@ -66,16 +53,17 @@ spring:
     config:
       server:
         git:
-          uri: https://github.com/mi-org/config-repo
-          username: ${GIT_USERNAME}          # usuario o nombre del token en GitHub
-          password: ${GIT_TOKEN}             # contraseña o valor del personal access token
+          uri: https://github.com/myorg/config-repo
           default-label: main
           clone-on-start: true
+          search-paths:
+            - '{application}'
+            - '{application}-{profile}'
+          timeout: 10
+          refresh-rate: 30
 ```
 
-Para GitHub y GitLab modernos, `username` puede ser cualquier string y `password` es el Personal Access Token con scope `read_contents` (GitHub) o `read_repository` (GitLab).
-
-### Autenticación SSH con clave privada
+**application.yml — Variante 2: repositorio privado con usuario/contraseña**:
 
 ```yaml
 spring:
@@ -83,129 +71,132 @@ spring:
     config:
       server:
         git:
-          uri: git@github.com:mi-org/config-repo.git
-          ignore-local-ssh-settings: true     # ignora ~/.ssh del sistema operativo
-          private-key: |                       # clave privada RSA/ECDSA en línea
+          uri: https://github.com/myorg/config-repo
+          default-label: main
+          clone-on-start: true
+          search-paths: '{application}'
+          username: ${GIT_USERNAME}
+          password: ${GIT_TOKEN}
+          force-pull: true
+```
+
+**application.yml — Variante 3: repositorio privado con SSH**:
+
+```yaml
+spring:
+  cloud:
+    config:
+      server:
+        git:
+          uri: git@github.com:myorg/config-repo.git
+          default-label: main
+          clone-on-start: true
+          search-paths: '{application}'
+          ignore-local-ssh-settings: true
+          private-key: |
             -----BEGIN OPENSSH PRIVATE KEY-----
             b3BlbnNzaC1rZXktdjEAAAAA...
             -----END OPENSSH PRIVATE KEY-----
-          strict-host-key-checking: false      # solo en entornos sin known_hosts configurado
-          default-label: main
-          clone-on-start: true
+          host-key: AAAAB3NzaC1yc2EAAAADAQABAAABAQC...
+          host-key-algorithm: ssh-rsa
 ```
 
-> [ADVERTENCIA] `strict-host-key-checking: false` deshabilita la verificación de la identidad del servidor Git remoto, abriendo la puerta a ataques man-in-the-middle. En producción, configura el `known-hosts-file` o usa HTTPS. Si debes usar SSH en producción, establece `strict-host-key-checking: true` (valor por defecto) y asegúrate de que el fichero `known_hosts` del sistema o el especificado en `known-hosts-file` contiene la huella del servidor Git.
+**ConfigServerApplication.java**:
 
-### Configuración con search-paths y múltiples directorios
+```java
+package com.example.configserver;
 
-```yaml
-spring:
-  cloud:
-    config:
-      server:
-        git:
-          uri: https://github.com/mi-org/config-repo
-          search-paths:
-            - "config/{application}"     # busca en subdirectorios por nombre de app
-            - "config/global"            # busca también en directorio global
-          default-label: main
-          clone-on-start: true
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cloud.config.server.EnableConfigServer;
+
+@SpringBootApplication
+@EnableConfigServer
+public class ConfigServerApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(ConfigServerApplication.class, args);
+    }
+}
 ```
 
-Con esta configuración, `order-service` buscaría en `config/order-service/` y en `config/global/`. El placeholder `{application}` se sustituye por el nombre del cliente.
+**Verificación manual de resolución** (curl):
 
-### Configuración con múltiples repositorios (multi-repo)
+```bash
+# Verificar resolución de configuración para order-service en prod, rama main
+curl http://localhost:8888/order-service/prod/main
 
-```yaml
-spring:
-  cloud:
-    config:
-      server:
-        git:
-          uri: https://github.com/mi-org/config-default   # repositorio por defecto
-          default-label: main
-          repos:
-            team-payments:
-              uri: https://github.com/mi-org/config-payments
-              pattern:
-                - "payment-*"           # aplica a todos los servicios que empiecen por payment-
-              default-label: main
-            team-orders:
-              uri: https://github.com/mi-org/config-orders
-              pattern:
-                - "order-*"
-                - "invoice-*"
-              default-label: release
+# Respuesta esperada (PropertySource fusionado):
+# {
+#   "name": "order-service",
+#   "profiles": ["prod"],
+#   "label": "main",
+#   "propertySources": [
+#     {"name": "...order-service/order-service-prod.yml", "source": {...}},
+#     {"name": "...order-service/order-service.yml", "source": {...}},
+#     {"name": ".../application-prod.yml", "source": {...}},
+#     {"name": ".../application.yml", "source": {...}}
+#   ]
+# }
 ```
 
-El Config Server evalúa los patrones en orden de declaración. El primer patrón que coincide con `{application}/{profile}` determina qué repositorio se usa. Si ningún patrón coincide, se usa el repositorio raíz.
+## Tabla de propiedades del backend Git
 
-> [EXAMEN] El campo `pattern` puede incluir comodines y también combinar `{application}/{profile}`: `"payment-service/prod"` aplica solo al servicio `payment-service` en el perfil `prod`. Los comodines `*` y `?` siguen la semántica de Spring `AntPathMatcher`.
+Todas las propiedades se configuran bajo el prefijo `spring.cloud.config.server.git.*`.
 
-### Propiedades de caché y resiliencia
+| Propiedad | Tipo | Default | Descripción |
+|-----------|------|---------|-------------|
+| `uri` | String | — | URI del repositorio. Acepta https://, git@, file:// |
+| `default-label` | String | `master` | Rama/tag por defecto cuando el cliente no especifica label |
+| `search-paths` | String[] | `[""]` | Rutas a buscar en el repo. Acepta `{application}`, `{profile}`, `{label}` |
+| `username` | String | — | Usuario para autenticación HTTPS |
+| `password` | String | — | Contraseña/token para autenticación HTTPS |
+| `clone-on-start` | boolean | `false` | Clona al arrancar el servidor (falla rápido si el repo no es accesible) |
+| `force-pull` | boolean | `false` | Descarta cambios locales en el clon y fuerza git pull |
+| `timeout` | int | `5` | Timeout en segundos para operaciones Git |
+| `refresh-rate` | int | `0` | Segundos entre actualizaciones automáticas del clon (0 = en cada petición) |
+| `ignore-local-ssh-settings` | boolean | `false` | Usa config SSH inline en lugar del `~/.ssh` del OS |
+| `private-key` | String | — | Clave privada SSH (cuando ignore-local-ssh-settings=true) |
 
-```yaml
-spring:
-  cloud:
-    config:
-      server:
-        git:
-          basedir: /tmp/config-cache       # directorio local del clon
-          force-pull: true                 # descarta cambios locales y fuerza pull
-          refresh-rate: 60                 # segundos entre refreshes del caché local
-          clone-on-start: true
-          timeout: 15
-```
-
-`force-pull: true` es necesario cuando el repositorio local puede quedar en estado inconsistente (por ejemplo, después de un reinicio abrupto del servidor). Sin `force-pull`, el servidor puede servir configuración stale del clon local.
-
-## Tabla de parámetros del Git backend
-
-La siguiente tabla recoge los parámetros más relevantes bajo `spring.cloud.config.server.git.*`.
-
-| Parámetro | Tipo | Default | Descripción |
-|---|---|---|---|
-| `uri` | `String` | — | URL del repositorio (HTTPS o SSH). Obligatorio. |
-| `default-label` | `String` | `master` | Rama/tag/commit usado cuando el cliente no especifica label. |
-| `search-paths` | `List<String>` | `[""]` | Subdirectorios donde buscar los ficheros de configuración. Soporta `{application}`, `{profile}`, `{label}`. |
-| `username` | `String` | — | Usuario para autenticación HTTPS. |
-| `password` | `String` | — | Contraseña/token para autenticación HTTPS. |
-| `private-key` | `String` | — | Clave privada SSH en formato PEM (inline). |
-| `ignore-local-ssh-settings` | `boolean` | `false` | Si `true`, ignora `~/.ssh` del sistema y usa solo lo configurado. |
-| `strict-host-key-checking` | `boolean` | `true` | Verifica la identidad del servidor Git remoto. |
-| `known-hosts-file` | `String` | — | Ruta al fichero `known_hosts` personalizado para SSH. |
-| `clone-on-start` | `boolean` | `false` | Si `true`, clona al arrancar el servidor en lugar de en la primera petición. |
-| `force-pull` | `boolean` | `false` | Si `true`, descarta cambios locales en cada fetch. |
-| `basedir` | `String` | directorio temporal | Directorio local para el clon del repositorio. |
-| `timeout` | `int` | `5` | Segundos de timeout para operaciones Git remotas. |
-| `refresh-rate` | `int` | `0` | Segundos entre refreshes automáticos del clon local. `0` = refresh en cada petición. |
+> [ADVERTENCIA] `force-pull: true` es crítico en producción. Sin él, si alguien modifica manualmente el directorio temporal de caché del Config Server, el servidor servirá configuración incorrecta silenciosamente.
 
 ## Buenas y malas prácticas
 
-**Hacer:**
-- Activar `clone-on-start: true` en todos los entornos no locales para que el servidor valide la conexión y la autenticación al arrancar, no en la primera petición de un microservicio.
-- Usar `private-key` con `ignore-local-ssh-settings: true` en contenedores: el sistema de ficheros del contenedor no tiene `~/.ssh` configurado y confiar en él es frágil.
-- Establecer `refresh-rate` en un valor razonable (30–120 segundos) en producción para evitar que el servidor haga un `git fetch` en cada petición de configuración bajo carga alta.
-- Almacenar la clave privada SSH y los tokens HTTPS en variables de entorno o en un gestor de secretos (Vault, Kubernetes Secrets), nunca en el `application.yml` del Config Server.
+Hacer:
+- Usar `clone-on-start: true` en producción para detectar problemas de acceso al repositorio en el momento del arranque, no en la primera petición.
+- Usar `search-paths: '{application}'` para organizar la configuración por servicio en subdirectorios separados; escala bien con muchos servicios.
+- Usar `force-pull: true` en entornos donde el clon local puede corromperse (contenedores efímeros, pruebas CI/CD).
+- Almacenar credenciales en variables de entorno (`${GIT_TOKEN}`) nunca en el fichero de configuración del servidor.
 
-**Evitar:**
-- Usar `strict-host-key-checking: false` en producción. Si el servidor Git cambia su clave de host (por una migración o un incidente), el Config Server aceptará silenciosamente la nueva identidad, abriendo una ventana de ataque.
-- Olvidar configurar `basedir` en entornos con disco efímero (contenedores sin volumen persistente): el clon local se pierde en cada reinicio y el servidor clona desde cero en cada arranque, lo que añade latencia de arranque y puede saturar el servidor Git.
-- Combinar `force-pull: false` con un `basedir` compartido entre múltiples instancias del Config Server: las instancias pueden interferir en el estado del clon local.
+Evitar:
+- Hardcodear `username` y `password` en `application.yml` porque el fichero puede acabar en un repositorio de código y exponer credenciales.
+- Dejar `default-label: master` en repositorios migrados a `main`; el servidor fallará silenciosamente (devuelve 404 en cada petición del cliente).
+- Usar `search-paths` sin placeholder cuando hay múltiples servicios; todos los servicios reciben la misma configuración de la raíz del repositorio.
+- Ignorar el `timeout` en redes lentas; el valor por defecto de 5s puede causar timeouts en repositorios remotos con latencia alta.
 
-## Comparación: autenticación SSH vs HTTPS
+## Verificación y práctica
 
-La siguiente tabla compara ambos mecanismos de autenticación para ayudar a elegir el más adecuado según el contexto.
+Para verificar que el backend Git funciona correctamente, el endpoint de diagnóstico del Config Server devuelve el estado del repositorio:
 
-| Aspecto | SSH con clave privada | HTTPS con token |
-|---|---|---|
-| Configuración | Más compleja (generación de par de claves, known_hosts) | Más sencilla (usuario + token en YAML) |
-| Revocación | Por par de claves (independiente por servicio) | Por token (un token para todos) |
-| Rotación | Requiere generar nuevo par y actualizar el servidor Git | Solo actualizar el token |
-| Uso en contenedores | Requiere `ignore-local-ssh-settings: true` | Sin configuración adicional |
-| Compatibilidad con proxies HTTP | No | Sí |
-| Recomendado para | Entornos on-premise con Git propio | Servicios cloud (GitHub, GitLab, Bitbucket) |
+```bash
+# Endpoint de estado del servidor (Actuator)
+curl http://localhost:8888/actuator/health
+
+# Resolución directa (sin cliente)
+curl http://localhost:8888/order-service/default
+
+# Ver propiedades en formato .properties
+curl http://localhost:8888/order-service-default.properties
+```
+
+**Preguntas estilo examen VMware Spring Professional:**
+
+1. ¿Qué representa el tercer segmento de la URL de resolución del Config Server (`/app/profile/label`)? ¿Qué ocurre si se omite?
+2. ¿Qué diferencia hay entre `spring.cloud.config.server.git.default-label` y `spring.profiles.active` en el cliente?
+3. El placeholder `{application}` en `search-paths` — ¿en qué valor se sustituye? ¿Qué propiedad del cliente lo determina?
+4. ¿Por qué `clone-on-start: false` (valor por defecto) puede ser problemático en producción?
+5. Un Config Server con `force-pull: false` sirve configuración desactualizada aunque el repositorio Git haya cambiado. ¿Por qué? ¿Cómo se soluciona?
 
 ---
 
-← [1.3 Resolución de configuración por perfiles y labels](sc-config-resolucion.md) | [Índice (README.md)](README.md) | [1.5 Backends alternativos al Git backend →](sc-config-backends.md)
+← [1.2 Config Client](sc-config-client.md) | [Índice](README.md) | [1.3.2 Backends alternativos](sc-config-backends.md) →

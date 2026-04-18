@@ -1,214 +1,203 @@
-# 4.12 Herencia de interfaz y @SpringQueryMap — contratos compartidos y query params tipados
+# 3.9.1 Herencia de interfaces API compartida
 
-<- [4.11 Cliente HTTP subyacente](sc-feign-cliente-http.md) | [Índice](README.md) | [4.13 Testing](sc-feign-testing.md) ->
+← [3.8 Timeouts y cliente HTTP subyacente](sc-feign-http-client.md) | [Índice](README.md) | [3.9.2 Compresión de peticiones y respuestas](sc-feign-compresion.md) →
 
 ---
 
 ## Introducción
 
-El patrón de herencia en Feign permite que la interfaz de un controlador Spring MVC sirva simultáneamente como contrato del servidor y como tipo del cliente Feign. En lugar de duplicar las anotaciones de mapeo (`@GetMapping`, `@RequestParam`, etc.) en la interfaz del cliente, el cliente extiende directamente la interfaz que también implementa el controlador del proveedor. Un único punto de definición garantiza que cliente y servidor siempre están sincronizados en paths, verbos y tipos.
+El patrón de herencia de interfaces en Feign permite que el contrato HTTP de un servicio se defina una sola vez en una interfaz base compartida entre el productor (implementada por `@RestController`) y el consumidor (referenciada por `@FeignClient`). Este enfoque reduce la duplicación del contrato y garantiza que el cliente Feign y el servidor estén siempre sincronizados. Sin embargo, introduce un riesgo concreto: si la interfaz base contiene `@RequestMapping` a nivel de clase, Spring MVC puede interpretar esa anotación también en el `@RestController` que la implementa, causando ambigüedad de mapeo o rutas duplicadas en el contexto del servidor. Por eso, la documentación oficial de Spring Cloud OpenFeign advierte sobre este patrón con una recomendación explícita.
 
-`@SpringQueryMap` es una anotación complementaria que resuelve un problema frecuente: cómo pasar un objeto POJO como conjunto de parámetros de query string sin tener que declarar cada campo como `@RequestParam` individual. Con `@SpringQueryMap`, Feign convierte cada campo del POJO en un parámetro de query, manteniendo la tipificación del objeto y evitando la expansión manual de decenas de parámetros de filtro.
+## Diagrama del patrón de herencia
 
-Ambas herramientas tienen sus costes: la herencia introduce acoplamiento entre el servicio proveedor y el consumidor, y `@SpringQueryMap` tiene limitaciones con tipos anidados que el desarrollador debe conocer.
-
----
-
-## Diagrama: estructura del patrón de herencia
-
-El siguiente diagrama muestra cómo la interfaz compartida une al controlador del proveedor con el cliente del consumidor.
+El patrón conecta tres artefactos: la interfaz API (normalmente en un módulo compartido), el servidor que la implementa, y el cliente Feign que la referencia.
 
 ```
- Módulo compartido (artifact: catalog-api)
- ─────────────────────────────────────────
- interface CatalogApi {
-     @GetMapping("/api/products/{id}")
-     ProductDto getProduct(@PathVariable String id);
-
-     @GetMapping("/api/products")
-     List<ProductDto> search(@SpringQueryMap ProductFilter filter);
- }
-
-     ┌─────────────────────────────────┐
-     │                                 │
-     ▼                                 ▼
- catalog-service                  order-service
- ───────────────                  ─────────────
- @RestController                  @FeignClient(
- class CatalogController           name = "catalog-service"
-     implements CatalogApi {    )
-     // implementación real     interface CatalogClient
- }                                   extends CatalogApi {}
-                                  // heredan las anotaciones de CatalogApi
+  ┌──────────────────────────────────────────┐
+  │  Módulo: product-api (librería JAR)       │
+  │                                          │
+  │  public interface ProductApi {           │
+  │    @GetMapping("/products/{id}")         │
+  │    ProductResponse getProduct(           │
+  │      @PathVariable Long id);             │
+  │  }                                       │
+  └──────────────┬───────────────────────────┘
+                 │ implementa / extiende
+        ┌────────┴────────┐
+        │                 │
+        ▼                 ▼
+  ┌──────────────┐   ┌──────────────────────────────┐
+  │  Módulo:     │   │  Módulo: orders-service       │
+  │  product-    │   │                               │
+  │  service     │   │  @FeignClient(               │
+  │              │   │    name="product-service")    │
+  │  @RestCtrl   │   │  interface ProductClient      │
+  │  class Impl  │   │    extends ProductApi {}      │
+  │  implements  │   └──────────────────────────────┘
+  │  ProductApi  │
+  └──────────────┘
 ```
-
----
 
 ## Ejemplo central
 
-El siguiente ejemplo muestra el patrón completo: la interfaz compartida en el módulo API, el controlador en el servicio proveedor y el cliente Feign en el consumidor. También muestra el uso de `@SpringQueryMap` con un objeto de filtro.
-
-**catalog-api/src/main/java/com/example/catalog/api/CatalogApi.java (módulo compartido):**
+El siguiente ejemplo muestra el patrón completo: interfaz base, implementación servidor, y cliente Feign. Incluye el problema del `@RequestMapping` en interfaz y cómo evitarlo correctamente.
 
 ```java
-package com.example.catalog.api;
+// product-api/src/main/java/com/example/api/ProductApi.java
+// Interfaz base compartida — SIN @RequestMapping a nivel de clase
+// (el prefijo de ruta se define en el @RequestMapping del @RestController
+// o en el atributo 'path' del @FeignClient, no aquí)
+package com.example.api;
 
-import com.example.catalog.dto.ProductDto;
-import com.example.catalog.dto.ProductFilter;
-import org.springframework.cloud.openfeign.SpringQueryMap;
+import com.example.api.dto.ProductResponse;
+import com.example.api.dto.CreateProductRequest;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+
+// CORRECTO: sin @RequestMapping a nivel de clase en la interfaz base
+// Cada método define su propia ruta relativa
+public interface ProductApi {
+
+    @GetMapping("/products/{id}")
+    ProductResponse getProduct(@PathVariable("id") Long id);
+
+    @PostMapping("/products")
+    ProductResponse createProduct(@RequestBody CreateProductRequest request);
+
+    @DeleteMapping("/products/{id}")
+    void deleteProduct(@PathVariable("id") Long id);
+}
+```
+
+```java
+// product-service/src/main/java/com/example/product/controller/ProductController.java
+// Servidor: implementa la interfaz base
+package com.example.product.controller;
+
+import com.example.api.ProductApi;
+import com.example.api.dto.CreateProductRequest;
+import com.example.api.dto.ProductResponse;
+import com.example.product.service.ProductService;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/api/v1")   // prefijo de ruta definido SOLO en el controller, no en la interfaz
+public class ProductController implements ProductApi {
+
+    private final ProductService productService;
+
+    public ProductController(ProductService productService) {
+        this.productService = productService;
+    }
+
+    @Override
+    public ProductResponse getProduct(Long id) {
+        return productService.findById(id);
+    }
+
+    @Override
+    public ProductResponse createProduct(CreateProductRequest request) {
+        return productService.create(request);
+    }
+
+    @Override
+    public void deleteProduct(Long id) {
+        productService.delete(id);
+    }
+}
+```
+
+```java
+// orders-service/src/main/java/com/example/orders/clients/ProductClient.java
+// Cliente Feign: extiende la interfaz base
+package com.example.orders.clients;
+
+import com.example.api.ProductApi;
+import org.springframework.cloud.openfeign.FeignClient;
+
+@FeignClient(
+    name = "product-service",
+    path = "/api/v1"          // prefijo definido aquí en el cliente, no en la interfaz base
+)
+public interface ProductClient extends ProductApi {
+    // Hereda todos los métodos de ProductApi con sus anotaciones @GetMapping, @PostMapping, etc.
+    // Puede añadir métodos adicionales si el cliente necesita endpoints extras
+}
+```
+
+```java
+// DTOs en el módulo compartido
+package com.example.api.dto;
+
+public record ProductResponse(Long id, String name, double price, int stock) {}
+
+public record CreateProductRequest(String name, double price, int initialStock) {}
+```
+
+```java
+// Ejemplo problemático — INCORRECTO: @RequestMapping en la interfaz base
+// NO HACER ESTO en producción
+package com.example.api;
+
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 
-import java.util.List;
+// PROBLEMÁTICO: @RequestMapping a nivel de clase en la interfaz
+@RequestMapping("/api/v1/products")  // ← RIESGO: Spring MVC lo detecta en el @RestController
+public interface ProductApiWithMapping {
 
-/**
- * Contrato compartido entre el proveedor (CatalogController) y el consumidor (CatalogClient).
- * Publicado como artifact Maven independiente para que ambos servicios lo dependan.
- *
- * IMPORTANTE: las anotaciones @RequestMapping en una interfaz compartida con Spring MVC
- * y Feign tienen sutilezas — ver sección de comparación.
- */
-@RequestMapping("/api/products")
-public interface CatalogApi {
+    @GetMapping("/{id}")   // resultado: GET /api/v1/products/{id}
+    Object getProduct(@PathVariable Long id);
 
-    @GetMapping("/{productId}")
-    ProductDto getProduct(@PathVariable("productId") String productId);
-
-    /**
-     * @SpringQueryMap convierte ProductFilter en parámetros de query string.
-     * Sin esta anotación, Feign intentaría serializar el objeto como body JSON.
-     *
-     * ProductFilter { category, minPrice, maxPrice, inStock, page, size }
-     * → GET /api/products?category=electronics&minPrice=10&page=0&size=20
-     */
-    @GetMapping
-    List<ProductDto> search(@SpringQueryMap ProductFilter filter);
+    // PROBLEMA: el @RestController que implementa esta interfaz hereda
+    // el @RequestMapping("/api/v1/products"), lo que puede causar que
+    // Spring Boot registre la ruta DOS veces si el controller también
+    // tiene su propio @RequestMapping, generando ambigüedad.
 }
 ```
 
-**catalog-api/src/main/java/com/example/catalog/dto/ProductFilter.java:**
+## Cuándo usar y cuándo no usar el patrón
 
-```java
-package com.example.catalog.dto;
+El patrón de herencia tiene ventajas claras en proyectos con API bien definidas, pero también tiene restricciones importantes:
 
-/**
- * POJO de filtro para búsqueda de productos.
- * Feign serializa cada campo no-null como parámetro de query string.
- * Los campos null se omiten de la URL.
- *
- * Usar record o clase con getters: @SpringQueryMap usa los nombres de los campos
- * (o getters si la clase no es un record) para construir los parámetros.
- */
-public record ProductFilter(
-        String category,
-        Double minPrice,
-        Double maxPrice,
-        Boolean inStock,
-        int page,
-        int size
-) {}
-```
-
-**catalog-service/CatalogController.java (proveedor — implementa CatalogApi):**
-
-```java
-package com.example.catalog.controller;
-
-import com.example.catalog.api.CatalogApi;
-import com.example.catalog.dto.ProductDto;
-import com.example.catalog.dto.ProductFilter;
-import com.example.catalog.service.CatalogService;
-import org.springframework.web.bind.annotation.RestController;
-
-import java.util.List;
-
-@RestController
-public class CatalogController implements CatalogApi {
-
-    private final CatalogService catalogService;
-
-    public CatalogController(CatalogService catalogService) {
-        this.catalogService = catalogService;
-    }
-
-    @Override
-    public ProductDto getProduct(String productId) {
-        return catalogService.findById(productId);
-    }
-
-    @Override
-    public List<ProductDto> search(ProductFilter filter) {
-        return catalogService.search(filter);
-    }
-}
-```
-
-**order-service/CatalogClient.java (consumidor — extiende CatalogApi via Feign):**
-
-```java
-package com.example.orderservice.client;
-
-import com.example.catalog.api.CatalogApi;
-import org.springframework.cloud.openfeign.FeignClient;
-
-/**
- * El cliente hereda TODAS las anotaciones de CatalogApi.
- * No se necesita redeclarar @GetMapping, @PathVariable, @SpringQueryMap, etc.
- * Si CatalogApi cambia, el cliente se actualiza automáticamente al actualizar la dependencia.
- */
-@FeignClient(
-        name      = "catalog-service",
-        contextId = "catalogInherited"
-)
-public interface CatalogClient extends CatalogApi {
-    // Sin cuerpo: todo viene heredado de CatalogApi
-}
-```
-
-> [CONCEPTO] `@SpringQueryMap` acepta cualquier POJO con campos accesibles (record, clase con campos públicos, o clase con getters siguiendo la convención JavaBeans). Los campos con valor `null` se omiten del query string. Para incluir explícitamente un campo nulo, no hay soporte nativo: hay que recurrir a `@RequestParam` individual o a un `Encoder` personalizado.
-
----
-
-## Tabla de elementos clave
-
-| Elemento | Descripción |
+| Aspecto | Valor |
 |---|---|
-| Herencia de interfaz | Patrón donde la interfaz del proveedor define el contrato y el cliente Feign la extiende |
-| `@SpringQueryMap` | Anotación que convierte un POJO en parámetros de query string en una llamada GET |
-| Módulo API compartido | Artifact Maven/Gradle que contiene la interfaz, DTOs y la anotación; dependencia de ambos servicios |
-| Campos `null` en `@SpringQueryMap` | Se omiten del query string; no hay forma nativa de forzar `null` a string `"null"` |
-| Tipos anidados en `@SpringQueryMap` | No soportados de forma nativa; Feign aplana el objeto un nivel; objetos anidados se serializan como `toString()` |
-| `@RequestMapping` en la interfaz | Se hereda en el cliente; el proveedor también la hereda; puede causar conflicto si el controlador ya tiene `@RequestMapping` propia |
-
----
+| Ventaja principal | Un solo contrato: cambios en la interfaz base se propagan automáticamente al servidor y al cliente |
+| Riesgo principal | `@RequestMapping` en la interfaz base puede causar ambigüedad en Spring MVC del servidor |
+| Recomendación oficial | Definir rutas relativas en los métodos, no `@RequestMapping` a nivel de clase en la interfaz |
+| Prefijo de ruta | Definirlo en `@RequestMapping` del `@RestController` y en `path` del `@FeignClient` |
+| Módulo de la interfaz | Idealmente en un JAR API separado para evitar acoplamiento de classpath |
 
 ## Buenas y malas prácticas
 
-**Hacer:**
-- Publicar la interfaz compartida en un módulo Maven/Gradle independiente (`catalog-api`) con sus DTOs. Esta separación permite que el proveedor evolucione su implementación sin modificar el contrato, y que el consumidor actualice la versión del contrato de forma controlada.
-- Usar `@SpringQueryMap` con records de Java en lugar de clases mutables. Los records son inmutables, tienen nombres de campo claros y Feign los serializa correctamente. Evitan el problema de clases con getters que no siguen la convención JavaBeans.
-- Verificar el query string generado activando `logger-level: FULL` en el cliente en tests. `@SpringQueryMap` puede producir URLs sorprendentes con campos de tipo `Collection` o arrays (se repite el nombre del parámetro: `?ids=1&ids=2&ids=3`).
+**Buenas prácticas:**
+- Colocar la interfaz API compartida en un módulo Maven/Gradle separado (`product-api`) para que tanto el servidor como los consumidores puedan depender de él.
+- Definir el prefijo de ruta (`/api/v1`) en el `@RestController` del servidor y en `path` del `@FeignClient`, nunca en la interfaz base.
+- Añadir solo los métodos que realmente deben compartirse: no todos los endpoints del servidor tienen que estar en la API compartida.
 
-**Evitar:**
-- Compartir la interfaz cuando proveedor y consumidor evolucionan a ritmos muy diferentes. Si el proveedor añade nuevos endpoints frecuentemente, el módulo compartido se convierte en un punto de acoplamiento que fuerza actualizaciones coordinadas. En ese caso, duplicar la interfaz del cliente y usar Spring Cloud Contract para validar la compatibilidad es una arquitectura más desacoplada.
-- Poner lógica de negocio o dependencias de infraestructura en el módulo de la interfaz compartida. El módulo API debe contener solo la interfaz y los DTOs; cualquier dependencia adicional (p. ej. Jackson, Validation) debe ser `provided` o `optional` para no contaminar el classpath del consumidor.
-- Usar `@SpringQueryMap` con objetos que tienen campos de tipo `LocalDate`, `ZonedDateTime` u otros tipos de fecha sin verificar la serialización. Feign usa `toString()` por defecto para estos tipos, que puede producir formatos no ISO-8601 dependiendo del locale del sistema. Registrar un `QueryMapEncoder` personalizado o usar `String` en el DTO de filtro para fechas.
+**Malas prácticas:**
+- Añadir `@RequestMapping` a nivel de clase en la interfaz base: Spring MVC hereda esa anotación en el controller implementador, causando duplicación de rutas.
+- Compartir DTOs con lógica de negocio en el módulo API: el módulo compartido debe contener solo contratos (interfaces y DTOs simples).
+
+> [ADVERTENCIA] La documentación oficial de Spring Cloud OpenFeign advierte explícitamente: no se recomienda compartir interfaces entre servidor y cliente Feign si la interfaz contiene `@RequestMapping` a nivel de clase. Esto puede causar comportamientos inesperados en el servidor que implementa la interfaz. La práctica aceptada es poner solo las anotaciones de método en la interfaz.
+
+## Verificación y práctica
+
+> [EXAMEN] **1.** ¿Cuál es el principal riesgo de colocar `@RequestMapping` a nivel de clase en la interfaz base compartida por servidor y cliente Feign?
+
+> [EXAMEN] **2.** Si la interfaz base no tiene `@RequestMapping` a nivel de clase, ¿dónde se define el prefijo de ruta para el servidor? ¿Y para el cliente Feign?
+
+> [EXAMEN] **3.** ¿Qué ventaja ofrece el patrón de herencia de interfaces frente a definir la interfaz Feign y el controller por separado?
+
+> [EXAMEN] **4.** ¿Por qué es recomendable colocar la interfaz API compartida en un módulo Maven separado?
+
+> [EXAMEN] **5.** Si `ProductClient extends ProductApi` y `ProductApi` tiene un método `@GetMapping("/products/{id}")`, ¿qué URL completa se llamará si el `@FeignClient` tiene `path = "/api/v1"`?
 
 ---
 
-## Comparación: herencia vs contrato duplicado
-
-| Aspecto | Herencia de interfaz | Contrato duplicado en el consumidor |
-|---|---|---|
-| Sincronización cliente-servidor | Automática (actualización de dependencia) | Manual (puede quedar desincronizado) |
-| Acoplamiento | Alto (cambios en API afectan al consumidor) | Bajo (consumidor es independiente) |
-| Adecuado para | Equipos que controlan proveedor y consumidor | Equipos independientes con ritmos de release distintos |
-| Detección de incompatibilidades | En tiempo de compilación (cambio de dependencia) | En tiempo de ejecución o con Spring Cloud Contract |
-| Ventaja operativa | Una sola fuente de verdad | Menor acoplamiento de release |
-
-> [EXAMEN] En entrevista: "¿Cuál es el principal riesgo de compartir la interfaz entre el controlador del proveedor y el cliente Feign?" Respuesta modelo: el acoplamiento de build. Si el proveedor cambia la firma de un método (añade un parámetro, cambia el tipo de retorno), el consumidor no compila hasta que actualiza la versión del módulo compartido, forzando un release coordinado entre ambos servicios. Este acoplamiento viola el principio de despliegue independiente de microservicios.
-
----
-
-<- [4.11 Cliente HTTP subyacente](sc-feign-cliente-http.md) | [Índice](README.md) | [4.13 Testing](sc-feign-testing.md) ->
+← [3.8 Timeouts y cliente HTTP subyacente](sc-feign-http-client.md) | [Índice](README.md) | [3.9.2 Compresión de peticiones y respuestas](sc-feign-compresion.md) →
