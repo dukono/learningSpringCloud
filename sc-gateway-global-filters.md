@@ -28,27 +28,35 @@ Los filtros con **número de orden menor** se ejecutan **antes** (más cerca del
 
 Los siguientes GlobalFilters están incluidos en Spring Cloud Gateway y forman la columna vertebral del ciclo de vida de cada petición:
 
-```
-Orden de ejecución (menor número = primero en PRE):
+```mermaid
+flowchart TD
+    M["GatewayMetricsFilter\nOrder: MIN_VALUE\nMétricas Micrometer"]
+    R2U["RouteToRequestUrlFilter\nOrder: -400\nResuelve URI final de la ruta"]
+    LB["ReactiveLoadBalancerClientFilter\nOrder: -200\nResuelve lb:// a instancia real"]
+    FP["ForwardPathFilter\nOrder: -100\nAjusta path para forward://"]
+    CUSTOM["[ Filtros custom de usuario ]\nOrder: 0 (por defecto)"]
+    NWR["NettyWriteResponseFilter\nOrder: MAX-1\nEscribe respuesta al cliente"]
+    WSR["WebsocketRoutingFilter\nOrder: MAX-2\nRouting WebSocket"]
+    FR["ForwardRoutingFilter\nOrder: MAX-3\nRouting forward://"]
+    NR["NettyRoutingFilter\nOrder: MAX-4\nProxy HTTP real — llama al upstream"]
 
-Integer.MIN_VALUE  ← GatewayMetricsFilter (métricas Micrometer)
-      │
-    -400           ← RouteToRequestUrlFilter (resuelve URI final de la ruta)
-      │
-    -200           ← ReactiveLoadBalancerClientFilter (resuelve lb:// a instancia)
-      │
-    -100           ← ForwardPathFilter (ajusta path para forward://)
-      │
-      0            ← [Filtros custom de usuario — orden por defecto]
-      │
-   2147483546      ← NettyWriteResponseFilter (escribe respuesta Netty al cliente)
-      │
-   2147483547      ← WebsocketRoutingFilter (routing WebSocket)
-      │
-   2147483548      ← ForwardRoutingFilter (routing forward://)
-      │
-   2147483549      ← NettyRoutingFilter (routing HTTP/HTTPS via Netty — el proxy real)
+    M --> R2U --> LB --> FP --> CUSTOM --> NWR --> WSR --> FR --> NR
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class M secondary
+    class R2U,LB,FP primary
+    class CUSTOM warning
+    class NWR neutral
+    class WSR,FR neutral
+    class NR storage
 ```
+*Cadena de GlobalFilters built-in en orden de ejecución PRE (de arriba a abajo); en fase POST el orden se invierte — el último PRE es el primero POST.*
 
 Cada GlobalFilter built-in tiene una responsabilidad específica en el flujo:
 

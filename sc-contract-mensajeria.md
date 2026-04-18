@@ -16,20 +16,30 @@ Spring Cloud Contract soporta dos patrones distintos para contratos de mensajer�
 
 El primer patrón cubre el caso en que el productor envía un mensaje como resultado de una llamada directa a un método (un comando interno). El segundo patrón cubre el caso reactivo: el productor recibe un mensaje y en respuesta envía otro.
 
-```
-Patrón 1: triggeredBy (método invocado)
-────────────────────────────────────────
-  Test generado
-  ──────────────►  llama a confirmOrder()   ──►  mensaje enviado a "notifications"
-  (clase base)      (método del productor)        (outputMessage.sentTo)
+```mermaid
+sequenceDiagram
+    participant TG as Test generado
+    participant CB as Clase base productor
+    participant PROD as Productor
+    participant OUT as Canal salida
 
+    rect rgb(0, 80, 160)
+        Note over TG,OUT: Patrón 1 — triggeredBy
+        TG->>CB: confirmOrder() (triggeredBy)
+        CB->>PROD: orderService.confirmOrder(1L)
+        PROD-)OUT: mensaje → "notifications"
+        TG-->>TG: verifica outputMessage
+    end
 
-Patrón 2: messageFrom (mensaje entrante)
-─────────────────────────────────────────
-  Test generado
-  ──────────────►  envía mensaje a "orders"  ──►  mensaje enviado a "notifications"
-                   (input.messageFrom)              (outputMessage.sentTo)
+    rect rgb(0, 100, 60)
+        Note over TG,OUT: Patrón 2 — messageFrom
+        TG-)PROD: mensaje → "orders" (messageFrom)
+        PROD-)OUT: mensaje → "notifications"
+        TG-->>TG: verifica outputMessage
+    end
 ```
+
+*Dos patrones de contrato de mensajería: triggeredBy activa el productor vía llamada a método; messageFrom envía un mensaje entrante al canal de input.*
 
 > [CONCEPTO] `triggeredBy("methodName()")` hace que el test generado invoque el método `methodName()` definido en la **clase base del test del productor**. `messageFrom("channel")` hace que el test generado envíe un mensaje al canal de entrada especificado. Son mutuamente excluyentes dentro del bloque `input`.
 

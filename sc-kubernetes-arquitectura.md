@@ -28,35 +28,46 @@ La siguiente tabla resume qué componente de la pila clásica de Spring Cloud re
 
 El siguiente diagrama muestra cómo el pod accede a la API de Kubernetes usando su ServiceAccount montado automáticamente en `/var/run/secrets/kubernetes.io/serviceaccount/`.
 
+```mermaid
+flowchart TD
+    subgraph POD["Pod (Spring Boot App)"]
+        direction LR
+        SCK["Spring Cloud Kubernetes\nAuto-configuration"]
+        SA[("ServiceAccount Token\n/var/run/secrets/\nkubernetes.io/\nserviceaccount/token")]
+        SCK -->|"usa"| SA
+    end
+
+    subgraph RBAC["RBAC"]
+        direction TB
+        ROLE["Role / ClusterRole\nget, watch, list"]
+        RB["RoleBinding\n→ ServiceAccount"]
+        ROLE --> RB
+    end
+
+    subgraph API["Kubernetes API Server"]
+        direction TB
+        CM["/api/v1/configmaps"]
+        SEC["/api/v1/secrets"]
+        EP["/api/v1/endpoints"]
+        SVC["/api/v1/services"]
+    end
+
+    SCK -->|"HTTPS"| API
+    RBAC -->|"autoriza"| API
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+
+    class SCK primary
+    class SA storage
+    class ROLE,RB warning
+    class CM,SEC,EP,SVC neutral
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  Pod (Spring Boot App)                                       │
-│                                                              │
-│  ┌──────────────────────────┐    ┌────────────────────────┐  │
-│  │  Spring Cloud Kubernetes │    │ ServiceAccount Token   │  │
-│  │  Auto-configuration      │───►│ /var/run/secrets/k8s/  │  │
-│  │                          │    │ serviceaccount/token   │  │
-│  └──────────┬───────────────┘    └────────────────────────┘  │
-│             │                                                 │
-└─────────────┼───────────────────────────────────────────────┘
-              │ HTTPS
-              ▼
-┌─────────────────────────────┐
-│  Kubernetes API Server      │
-│  /api/v1/configmaps         │
-│  /api/v1/secrets            │
-│  /api/v1/endpoints          │
-│  /api/v1/services           │
-└─────────────────────────────┘
-        ▲
-        │ RBAC autoriza verbos
-        │ get, watch, list
-┌───────────────────────────┐
-│  Role / ClusterRole       │
-│  RoleBinding              │
-│  → ServiceAccount del pod │
-└───────────────────────────┘
-```
+*El pod accede a la API de Kubernetes usando el token del ServiceAccount montado automáticamente; el RBAC controla qué verbos están permitidos.*
 
 ## Ejemplo central
 

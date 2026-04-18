@@ -12,36 +12,44 @@ La compresión HTTP en Feign reduce el tamaño del payload transmitido entre mic
 
 La compresión se aplica transparentemente en el cliente antes de enviar la petición y el servidor responde con las cabeceras de encoding apropiadas.
 
+```mermaid
+flowchart LR
+    PAYLOAD[/"payload JSON\n(cuerpo de petición)"/]
+    CHECKS{"compression.request:\n¿enabled=true?\n¿tamaño >= min-request-size?\n¿mime-type elegible?"}
+    GZIP["GZIP del cuerpo\n+ Content-Encoding: gzip\n+ Accept-Encoding: gzip"]
+    NOGZIP["Sin compresión\n(envío directo)"]
+    REMOTE[("Servidor\nremoto")]
+    RESP_COMP["Respuesta comprimida\nContent-Encoding: gzip\n(si response.enabled=true)"]
+    DECOMP["OkHttp / HC5\ndescomprime automáticamente"]
+    DECODER["Decoder\nprocesa JSON\ndescomprimido"]
+
+    PAYLOAD --> CHECKS
+    CHECKS -->|Sí a las tres| GZIP
+    CHECKS -->|No| NOGZIP
+    GZIP -->|HTTP Request| REMOTE
+    NOGZIP -->|HTTP Request| REMOTE
+    REMOTE --> RESP_COMP
+    RESP_COMP --> DECOMP
+    DECOMP --> DECODER
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class PAYLOAD root
+    class CHECKS warning
+    class GZIP primary
+    class NOGZIP neutral
+    class REMOTE storage
+    class RESP_COMP primary
+    class DECOMP secondary
+    class DECODER secondary
 ```
-  Cliente Feign
-       │
-       │ payload JSON (cuerpo de petición)
-       ▼
-  ¿Compresión request habilitada?
-  ¿Tamaño >= min-request-size?
-  ¿mime-type en la lista permitida?
-       │ Sí a las tres
-       ▼
-  GZIP del cuerpo
-  + Content-Encoding: gzip
-  + Content-Type: application/json
-       │
-       ▼
-  HTTP Request ──────────────────→  Servidor remoto
-                                         │
-                                         │ responde con GZIP
-                                         │ (si el cliente envió Accept-Encoding: gzip)
-       ←──────────────────────────────────
-  HTTP Response con
-  Content-Encoding: gzip
-  + Accept-Encoding: gzip (enviado por Feign si response.enabled=true)
-       │
-       ▼
-  Feign descomprime automáticamente
-       │
-       ▼
-  Decoder procesa JSON descomprimido
-```
+*Flujo de compresión GZIP: tres condiciones deben cumplirse para comprimir la petición; la descompresión de respuestas la gestiona automáticamente el cliente HTTP.*
 
 ## Ejemplo central
 

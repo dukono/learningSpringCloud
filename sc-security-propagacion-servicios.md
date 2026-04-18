@@ -203,6 +203,22 @@ public class ManualTokenPropagationService {
 
 La elección del patrón depende del stack tecnológico y del escenario de autenticación.
 
+```mermaid
+quadrantChart
+    title Patrones de propagación de tokens
+    x-axis "Token del usuario (On-Behalf-Of)" --> "Token propio del servicio"
+    y-axis "Sin refresh automático" --> "Con refresh automático"
+    quadrant-1 Ideal para Client Credentials
+    quadrant-2 Gestión manual avanzada
+    quadrant-3 Propagación simple
+    quadrant-4 No recomendado
+    Feign + RequestInterceptor: [0.1, 0.1]
+    RestClient + Interceptor: [0.2, 0.15]
+    Manual Header Propagation: [0.05, 0.05]
+    WebClient + OAuth2Filter: [0.85, 0.9]
+```
+*Posición de cada patrón: WebClient con OAuth2Filter es el único que gestiona refresh automático y se usa con tokens propios del servicio (Client Credentials).*
+
 | Patrón | Stack | Escenario | Token usado | Refresh automático |
 |--------|-------|-----------|-------------|-------------------|
 | Feign + RequestInterceptor | Servlet (MVC) | On-Behalf-Of usuario | Token del usuario | No |

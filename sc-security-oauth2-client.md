@@ -82,6 +82,40 @@ public class DebugController {
 
 `OAuth2AuthorizedClientManager` es el orquestador central: obtiene tokens (solicitando uno nuevo si no existe), los almacena en `OAuth2AuthorizedClientService` y los refresca automáticamente cuando expiran. `DefaultOAuth2AuthorizedClientManager` es la implementación para contextos servlet; requiere un `HttpServletRequest`/`Response` en el contexto, lo que lo hace adecuado para controllers pero no para procesos batch o scheduled tasks.
 
+```mermaid
+flowchart LR
+    CALL["Servicio llama\na API protegida"]
+    MGR["OAuth2AuthorizedClientManager\norquestador"]
+    CACHE{{"¿Token en\ncaché?"}}
+    EXP{{"¿Token\nexpirado?"}}
+    AS[["Authorization Server\nPOST /oauth2/token"]]
+    STORE[("OAuth2AuthorizedClientService\ncaché de tokens")]
+    TOKEN["access_token\nlisto para usar"]
+
+    CALL --> MGR --> CACHE
+    CACHE -->|"sí"| EXP
+    CACHE -->|"no"| AS
+    EXP -->|"no"| TOKEN
+    EXP -->|"sí"| AS
+    AS -->|"nuevo token"| STORE --> TOKEN
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class CALL neutral
+    class MGR root
+    class CACHE,EXP warning
+    class AS primary
+    class STORE storage
+    class TOKEN secondary
+```
+*El manager decide si reusar el token cacheado, refrescarlo o solicitar uno nuevo — el servicio llamante nunca gestiona esto directamente.*
+
 ```java
 package com.example.inventoryservice.config;
 
@@ -156,6 +190,33 @@ public class ReactiveOAuth2Config {
     }
 }
 ```
+
+```mermaid
+flowchart TD
+    Q{{"¿Contexto de\nejecución?"}}
+    MVC["Servlet / Spring MVC\n(hay HttpServletRequest)"]
+    WF["WebFlux / sin Request\n(scheduled task, batch)"]
+    D["DefaultOAuth2AuthorizedClientManager\n(servlet)"]
+    R["AuthorizedClientServiceReactive\nOAuth2AuthorizedClientManager\n(reactivo / sin usuario)"]
+
+    Q -->|"request HTTP MVC"| MVC --> D
+    Q -->|"background / WebFlux"| WF --> R
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class Q warning
+    class MVC neutral
+    class WF neutral
+    class D primary
+    class R secondary
+```
+*Elección del manager según contexto: servlet usa Default; reactivo y batch usan el manager de servicio reactivo.*
 
 > [EXAMEN] `DefaultOAuth2AuthorizedClientManager` requiere `HttpServletRequest` — solo sirve en contexto de request HTTP servlet. `AuthorizedClientServiceReactiveOAuth2AuthorizedClientManager` es para contextos reactivos o sin usuario; es el correcto para scheduled tasks y batch jobs con Client Credentials.
 

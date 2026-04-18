@@ -127,6 +127,30 @@ Los estados del binding y sus transiciones son importantes para el examen:
 | `PAUSED` | Consumer conectado pero no procesa mensajes (buffering) | → RESUMED |
 | `RESUMED` | Desde estado PAUSED vuelve a procesar | → PAUSED, → STOPPED |
 
+```mermaid
+stateDiagram-v2
+    [*] --> STARTED : arranque de la aplicación
+
+    STARTED --> STOPPED : state=STOPPED\n(desconecta del broker)
+    STARTED --> PAUSED : state=PAUSED\n(mantiene conexión)
+
+    STOPPED --> STARTED : state=STARTED\n(reconecta al broker)
+
+    PAUSED --> RESUMED : state=RESUMED
+    RESUMED --> PAUSED : state=PAUSED
+    RESUMED --> STOPPED : state=STOPPED
+
+    note right of STOPPED
+        Mensajes se acumulan
+        en el topic/queue
+    end note
+    note right of PAUSED
+        Consumer conectado
+        pero sin procesar
+    end note
+```
+*Ciclo de vida de un binding: `STOPPED` desconecta al consumer del broker; `PAUSED` mantiene la conexión pero suspende el procesamiento.*
+
 > [CONCEPTO] La diferencia entre `STOPPED` y `PAUSED` es semántica y tiene impacto en el broker: `STOPPED` desconecta el consumer del broker, los mensajes se acumulan en el topic/queue. `PAUSED` mantiene la conexión y puede causar que los mensajes buffereados en el consumer lado cliente no se procesen, dependiendo del binder.
 
 > [CONCEPTO] El endpoint `/actuator/bindings` requiere que `spring-boot-actuator` esté en el classpath y que el endpoint sea expuesto explícitamente con `management.endpoints.web.exposure.include=bindings`. Por defecto, solo `health` e `info` están expuestos en producción por razones de seguridad.

@@ -14,20 +14,42 @@ El patrón Circuit Breaker resuelve el problema de la propagación de fallos en 
 
 El Circuit Breaker es una máquina de estados finita con tres estados principales. CLOSED es el estado normal en que todas las llamadas pasan; el CB evalúa las llamadas en una sliding window y si la tasa de fallos supera `failureRateThreshold` transiciona a OPEN. En OPEN, todas las llamadas se rechazan inmediatamente con `CallNotPermittedException` sin llegar al downstream. Tras `waitDurationInOpenState`, transiciona a HALF_OPEN donde permite exactamente `permittedNumberOfCallsInHalfOpenState` llamadas de prueba; si esas llamadas tienen tasa de fallos aceptable vuelve a CLOSED, si no regresa a OPEN.
 
+```mermaid
+stateDiagram-v2
+    [*] --> CLOSED
+
+    CLOSED --> OPEN : failureRate >= threshold\nor slowCallRate >= threshold
+    OPEN --> HALF_OPEN : waitDurationInOpenState expires\n(or automatic transition)
+    HALF_OPEN --> CLOSED : probe calls succeed
+    HALF_OPEN --> OPEN : probe calls fail
+
+    state CLOSED {
+        note right of CLOSED
+            Evalúa sliding window
+            minimumNumberOfCalls
+        end note
+    }
+
+    state OPEN {
+        note right of OPEN
+            Todas las llamadas rechazadas
+            CallNotPermittedException
+        end note
+    }
+
+    state HALF_OPEN {
+        note right of HALF_OPEN
+            permittedNumberOfCalls
+            llamadas de prueba
+        end note
+    }
+
+    CLOSED --> DISABLED : programmatic only
+    CLOSED --> FORCED_OPEN : programmatic only
+    DISABLED --> CLOSED : programmatic only
+    FORCED_OPEN --> OPEN : programmatic only
 ```
-                    failure rate >= threshold
-  CLOSED ──────────────────────────────────────────► OPEN
-    ▲                                                   │
-    │                                               waitDuration
-    │                                               expires
-    │                                                   │
-    │   all probe calls succeed                         ▼
-  CLOSED ◄─────────────────────────────────────── HALF_OPEN
-                                                        │
-                                                        │ probe calls fail
-                                                        ▼
-                                                      OPEN
-```
+*Máquina de estados del Circuit Breaker: transiciones automáticas (negro) y estados especiales programáticos (DISABLED, FORCED_OPEN).*
 
 Existe un cuarto estado, DISABLED (métricas y circuit breaker desactivados) y FORCED_OPEN (siempre abierto), accesibles solo de forma programática mediante la API del registro. La transición automática de OPEN a HALF_OPEN también puede configurarse con `automaticTransitionFromOpenToHalfOpenEnabled=true` sin necesidad de que llegue una llamada.
 

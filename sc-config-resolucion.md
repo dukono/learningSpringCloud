@@ -14,29 +14,30 @@ La resolución de configuración en Spring Cloud Config no es una simple lectura
 
 El proceso de resolución sigue una jerarquía estricta. Comprender este diagrama es la clave para responder las preguntas de precedencia del examen.
 
+```mermaid
+flowchart LR
+    OVR{{"Overrides\nservidor"}}
+    AP["{application}-{profile}.yml"]
+    A["{application}.yml"]
+    GP["application-{profile}.yml"]
+    G["application.yml"]
+    LC[/"Config local\ndel cliente"/]
+
+    OVR -->|"máxima prioridad"| AP --> A --> GP --> G -->|"mínima prioridad"| LC
+
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class OVR danger
+    class AP primary
+    class A secondary
+    class GP warning
+    class G,LC neutral
 ```
-JERARQUÍA DE PRECEDENCIA (de mayor a menor)
-═══════════════════════════════════════════
-  1. {application}-{profile}.yml          ← MÁS ESPECÍFICO (mayor prioridad)
-     (ej: order-service-prod.yml)
-
-  2. {application}.yml
-     (ej: order-service.yml)
-
-  3. application-{profile}.yml            ← Configuración global por entorno
-     (ej: application-prod.yml)
-
-  4. application.yml                      ← Base global (menor prioridad en servidor)
-
-  5. Propiedades locales del cliente      ← Depende de allow-override
-     (application.properties/yml local)
-
-  6. Overrides del servidor               ← Pueden tener mayor prioridad que todo
-     (spring.cloud.config.server.overrides)
-═══════════════════════════════════════════
-NOTA: En el servidor, mayor posición en la lista = menor prioridad
-Los PropertySources se fusionan: las claves del primero ganan
-```
+*Cadena de precedencia de PropertySources: la clave más a la izquierda gana en caso de conflicto; los overrides del servidor pueden estar por encima de todo.*
 
 Cuando un cliente `order-service` con perfil `prod` solicita configuración, el servidor devuelve hasta cuatro PropertySources en este orden. La clave `server.port` que aparece en `order-service-prod.yml` con valor `8081` sobreescribe cualquier `server.port` de `order-service.yml` o `application.yml`.
 

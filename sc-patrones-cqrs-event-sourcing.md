@@ -14,21 +14,52 @@ CQRS (Command Query Responsibility Segregation) y Event Sourcing son dos patrone
 
 El beneficio principal es que cada modelo se optimiza para su propósito: el modelo de escritura garantiza consistencia, el de lectura garantiza velocidad. El coste es la complejidad de mantener ambos modelos sincronizados mediante eventos.
 
+```mermaid
+flowchart LR
+    CLI(["Cliente"])
+
+    subgraph write_side["Command Side (escritura)"]
+        direction TB
+        CH["Command Handler"]
+        WDB[("Write DB\n(modelo normalizado)")]
+        CH -- "escribe" --> WDB
+    end
+
+    subgraph proj["Proyección"]
+        direction TB
+        EVT>"Domain Event"]
+        EP["Event Projector"]
+        EVT --> EP
+    end
+
+    subgraph read_side["Query Side (lectura)"]
+        direction TB
+        QH["Query Handler"]
+        RDB[("Read DB\n(proyección desnormalizada)")]
+        QH -- "lee" --> RDB
+    end
+
+    CLI -- "Command" --> CH
+    CH -- "emite" --> EVT
+    EP -- "actualiza" --> RDB
+    CLI -- "Query" --> QH
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+
+    class CLI neutral
+    class CH primary
+    class WDB storage
+    class EVT warning
+    class EP neutral
+    class QH secondary
+    class RDB storage
 ```
-┌─────────────┐    Command     ┌──────────────────┐
-│   Cliente   │ ─────────────► │  Command Handler  │ ── escribe en Write DB
-└─────────────┘                └──────────────────┘
-                                        │
-                                 Domain Event
-                                        │
-                                        ▼
-                               ┌──────────────────┐
-                               │ Event Projector   │ ── actualiza Read DB
-                               └──────────────────┘
-┌─────────────┐    Query       ┌──────────────────┐
-│   Cliente   │ ─────────────► │  Query Handler   │ ── lee de Read DB (proyección)
-└─────────────┘                └──────────────────┘
-```
+*Separación de modelos CQRS: el command side garantiza consistencia; el query side garantiza velocidad de lectura; Domain Events sincronizan ambos.*
 
 ## Event Sourcing como patrón independiente
 
@@ -44,6 +75,22 @@ Event Sourcing NO tiene sentido cuando:
 - Alta frecuencia de escritura sin necesidad de historial (telemetría, logs de acceso).
 - Sistema simple CRUD donde el historial no aporta valor.
 - El equipo no tiene experiencia con el patrón y el contexto no lo justifica.
+
+```mermaid
+timeline
+    title Ciclo de vida de un agregado con Event Sourcing
+    section Escritura (append-only)
+        OrderPlaced v1   : customerId, amount → status PENDING
+        OrderConfirmed v2 : → status CONFIRMED
+        OrderCancelled v3 : reason → status CANCELLED
+    section Reconstrucción (replay)
+        Reconstitute      : aplica eventos v1→v3 en orden
+        Estado actual     : status = CANCELLED
+    section Proyecciones
+        OrderSummary      : vista desnormalizada en Read DB
+        Auditoria         : historial completo de cambios
+```
+*Append-only en el event store: el estado actual se reconstitute aplicando los eventos en orden; las proyecciones se derivan del mismo stream.*
 
 > [ADVERTENCIA] Event Sourcing introduce complejidad operacional significativa: schema evolution de eventos (cómo migrar eventos pasados cuando el esquema cambia), crecimiento ilimitado del event store (requiere snapshots), y complejidad en las proyecciones. No aplicar por defecto.
 

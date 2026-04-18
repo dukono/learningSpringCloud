@@ -165,6 +165,41 @@ El comportamiento del Bus difiere entre los dos brokers por la arquitectura de m
 | Mensajes al reconectar | No recibe mensajes previos | Puede recibir mensajes anteriores según `auto.offset.reset` |
 | Escalado horizontal | Simple | Requiere cuidado con particiones |
 
+```mermaid
+flowchart LR
+    subgraph "RabbitMQ — broadcast automático"
+        direction TB
+        RX["Exchange fanout\nspringCloudBus"]
+        RA["Cola anónima\nInstancia A"]
+        RB["Cola anónima\nInstancia B"]
+        RC["Cola anónima\nInstancia C"]
+        RX --> RA
+        RX --> RB
+        RX --> RC
+    end
+    subgraph "Kafka — broadcast con group único"
+        direction TB
+        KT[(Topic\nspringCloudBus)]
+        KA["Group: svc-uuid-A\nInstancia A"]
+        KB["Group: svc-uuid-B\nInstancia B"]
+        KC["Group: svc-uuid-C\nInstancia C"]
+        KT --> KA
+        KT --> KB
+        KT --> KC
+    end
+
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+
+    class RX storage
+    class RA,RB,RC secondary
+    class KT storage
+    class KA,KB,KC warning
+```
+*RabbitMQ logra el broadcast con un exchange fanout; Kafka requiere un consumer group único por instancia para que cada una reciba todos los mensajes.*
+
 > [ADVERTENCIA] Con Kafka, si se usa un consumer group compartido entre instancias del mismo servicio (por ejemplo, `group: payment-service`), Kafka asignará particiones del topic a cada instancia. Solo una instancia recibirá cada mensaje, rompiendo el comportamiento de broadcast del Bus.
 
 ## Consumer groups en Kafka — el problema de duplicados

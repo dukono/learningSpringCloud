@@ -22,6 +22,30 @@ La siguiente tabla compara los dos ecosistemas de starters para facilitar la dec
 | Recomendación desde SC 2022.x | Recomendado | Alternativo / legado |
 | Soporte de Watch/Informers | Sí (ApiClient + Watch) | Sí (Watcher + Informers propios) |
 
+```mermaid
+mindmap
+  root(("Spring Cloud\nKubernetes\nStarters"))
+    (Cliente Oficial CNCF)
+      [spring-cloud-starter-kubernetes-client]
+        Config + Discovery
+      [spring-cloud-starter-kubernetes-client-all]
+        Config + Discovery + LoadBalancer
+      spring-cloud-starter-kubernetes-client-config
+        Solo ConfigMap/Secret
+      spring-cloud-starter-kubernetes-client-discovery
+        Solo KubernetesDiscoveryClient
+      spring-cloud-kubernetes-client-leader
+        Leader Election
+    (Cliente Fabric8)
+      [spring-cloud-starter-kubernetes-fabric8]
+        Config + Discovery
+      [spring-cloud-starter-kubernetes-fabric8-all]
+        Config + Discovery + LoadBalancer
+      spring-cloud-kubernetes-fabric8-leader
+        Leader Election
+```
+*Jerarquía de starters: cada familia (oficial / Fabric8) tiene sus variantes all-in-one e individuales; no mezclar entre familias.*
+
 > [CONCEPTO] Desde Spring Cloud 2022.x (correspondiente a Spring Boot 3.x), el starter `spring-cloud-starter-kubernetes-client` y su variante `*-all` son los starters recomendados por defecto. El starter Fabric8 sigue siendo compatible pero no es el recomendado para proyectos nuevos.
 
 > [ADVERTENCIA] No incluir simultáneamente `spring-cloud-starter-kubernetes-client` y `spring-cloud-starter-kubernetes-fabric8` en el mismo proyecto. Ambos definen beans de auto-configuración con el mismo nombre que entran en conflicto y pueden causar `NoSuchBeanDefinitionException` o comportamientos inesperados en runtime.

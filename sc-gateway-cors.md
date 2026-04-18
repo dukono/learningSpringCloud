@@ -179,6 +179,23 @@ El estándar CORS prohíbe combinar `allow-credentials: true` con `allowed-origi
 
 Para APIs públicas sin credenciales, `allowed-origins: "*"` es seguro y conveniente.
 
+```mermaid
+quadrantChart
+    title Configuración CORS: orígenes vs credenciales
+    x-axis "Orígenes explícitos" --> "Wildcard *"
+    y-axis "Sin credenciales" --> "allow-credentials: true"
+    quadrant-1 PROHIBIDO por estándar CORS
+    quadrant-2 Seguro con credenciales
+    quadrant-3 APIs públicas aisladas
+    quadrant-4 APIs públicas sin auth
+    "API pública sin auth": [0.85, 0.15]
+    "API privada con JWT": [0.15, 0.85]
+    "API interna con sesión": [0.2, 0.9]
+    "CDN recursos estáticos": [0.9, 0.1]
+    "COMBINACIÓN INVÁLIDA": [0.85, 0.85]
+```
+*La combinación wildcard + credenciales (cuadrante superior derecho) es rechazada por todos los navegadores modernos siguiendo el estándar CORS.*
+
 ## DedupeResponseHeader y CORS
 
 Cuando el Gateway tiene CORS configurado globalmente y los microservicios downstream también envían headers CORS en su respuesta, el cliente recibe headers duplicados como `Access-Control-Allow-Origin: https://app.example.com, https://app.example.com`. Esto rompe la validación CORS del navegador.

@@ -16,27 +16,40 @@ En microservicios, las transacciones ACID que abarcan múltiples servicios son i
 
 El siguiente diagrama compara el flujo de una Saga de creación de pedido en ambas variantes:
 
-```
-CHOREOGRAPHY:
-OrderService          InventoryService       PaymentService
-     │                      │                      │
-     ├─ OrderPlaced ────────►│                      │
-     │                      ├─ InventoryReserved ──►│
-     │                      │                      ├─ PaymentProcessed
-     │ ◄─────────────────────────────────────────── │
-     │  (si falla Payment → PaymentFailed)
-     │  (InventoryService escucha y libera stock)
+```mermaid
+sequenceDiagram
+    participant OS as OrderService
+    participant IS as InventoryService
+    participant PS as PaymentService
 
-ORCHESTRATION:
-         SagaOrchestrator
-               │
-               ├─ ReserveInventory ──► InventoryService
-               │ ◄── InventoryReserved ─
-               ├─ ProcessPayment ─────► PaymentService
-               │ ◄── PaymentFailed ─────
-               ├─ ReleaseInventory ───► InventoryService  (compensación)
-               ◄── InventoryReleased ─
+    rect rgb(30, 60, 120)
+        Note over OS,PS: Choreography-based Saga
+        OS->>IS: OrderPlaced (evento)
+        IS->>PS: InventoryReserved (evento)
+        PS-->>OS: PaymentProcessed (evento)
+        Note right of PS: Si falla: PaymentFailed
+        PS--xIS: PaymentFailed
+        Note right of IS: Compensa: libera stock
+    end
+
+    Note over OS,PS: ─────────────────────────────────
+
+    participant ORCH as SagaOrchestrator
+
+    rect rgb(20, 80, 40)
+        Note over ORCH,PS: Orchestration-based Saga
+        ORCH->>IS: ReserveInventory (comando)
+        IS-->>ORCH: InventoryReserved
+        ORCH->>PS: ProcessPayment (comando)
+        PS--xORCH: PaymentFailed
+        rect rgb(140, 30, 30)
+            Note over ORCH,IS: Compensación
+            ORCH->>IS: ReleaseInventory (compensación)
+            IS-->>ORCH: InventoryReleased
+        end
+    end
 ```
+*Comparativa: en Choreography el flujo emerge de eventos; en Orchestration el orquestador dirige cada paso y sus compensaciones.*
 
 ## Transacciones compensatorias
 
@@ -234,6 +247,27 @@ public class OrderSagaOrchestrator {
     }
 }
 ```
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING
+    PENDING --> INVENTORY_RESERVED: INVENTORY_RESERVED
+    INVENTORY_RESERVED --> PAYMENT_PROCESSING: PROCESS_PAYMENT
+
+    state "Flujo normal" as normal {
+        PAYMENT_PROCESSING --> COMPLETED: PAYMENT_COMPLETED
+    }
+
+    COMPLETED --> [*]
+
+    state "Flujo de compensación" as comp {
+        PAYMENT_PROCESSING --> INVENTORY_RELEASING: PAYMENT_FAILED
+        INVENTORY_RELEASING --> CANCELLED: INVENTORY_RELEASED
+    }
+
+    CANCELLED --> [*]
+```
+*Ciclo de vida de la Saga de pedido: flujo normal hacia COMPLETED y flujo de compensación hacia CANCELLED ante fallo de pago.*
 
 ## Buenas y malas prácticas
 

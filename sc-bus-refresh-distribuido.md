@@ -14,33 +14,42 @@ El refresh distribuido de configuración es el caso de uso principal de Spring C
 
 El mecanismo de refresh distribuido involucra múltiples componentes que actúan en cadena. Comprender este flujo es fundamental para diagnosticar problemas y para el examen de certificación.
 
+```mermaid
+flowchart TD
+    GIT[("Repositorio Git\ncambio de configuración")]
+    HTTP["POST /actuator/bus-refresh\n(cualquier nodo del Bus)"]
+    BRE["BusRefreshEndpoint\ncrea BusRefreshEvent"]
+    PUB["ApplicationEventPublisher\npublishEvent(busRefreshEvent)"]
+    SERIAL["Spring Cloud Stream\nserializa a JSON"]
+    BROKER[("springCloudBus\ntopic / exchange del broker")]
+    TODOS["TODOS los nodos\nreciben el mensaje"]
+    SM{{"ServiceMatcher\n¿evento para esta instancia?"}}
+    RL["RefreshListener\nonApplicationEvent(BusRefreshEvent)"]
+    CR["ContextRefresher.refresh()\nrecarga Environment desde Config Server"]
+    RS["Beans @RefreshScope\ndestruidos y recreados"]
+
+    GIT -->|"commit"| HTTP
+    HTTP --> BRE --> PUB --> SERIAL --> BROKER
+    BROKER --> TODOS --> SM
+    SM -->|sí| RL --> CR --> RS
+    SM -->|no| TODOS
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class GIT,BROKER storage
+    class HTTP primary
+    class BRE,PUB,SERIAL primary
+    class TODOS neutral
+    class SM warning
+    class RL,CR primary
+    class RS secondary
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│ FLUJO COMPLETO DEL REFRESH DISTRIBUIDO                                   │
-│                                                                          │
-│  1. Cambio en repositorio Git (o cualquier backend de Config)            │
-│       ↓                                                                  │
-│  2. POST /actuator/bus-refresh (en CUALQUIER nodo del Bus)               │
-│       ↓                                                                  │
-│  3. BusRefreshEndpoint crea BusRefreshEvent(originService, destination)  │
-│       ↓                                                                  │
-│  4. ApplicationEventPublisher.publishEvent(busRefreshEvent)              │
-│       ↓                                                                  │
-│  5. Spring Cloud Stream serializa el evento a JSON                       │
-│       ↓                                                                  │
-│  6. Mensaje publicado en springCloudBus (topic/exchange del broker)      │
-│       ↓                                                                  │
-│  7. TODOS los nodos suscritos reciben el mensaje                         │
-│       ↓                                                                  │
-│  8. ServiceMatcher evalúa: ¿este evento va dirigido a MI instancia?      │
-│       ↓ (sí)                                                             │
-│  9. RefreshListener.onApplicationEvent(BusRefreshEvent)                  │
-│       ↓                                                                  │
-│ 10. ContextRefresher.refresh() → recarga Environment desde Config Server │
-│       ↓                                                                  │
-│ 11. Beans @RefreshScope son destruidos y recreados con nuevas propiedades│
-└──────────────────────────────────────────────────────────────────────────┘
-```
+*Cadena de 11 pasos desde el commit en Git hasta la recreación de los beans `@RefreshScope` en todos los nodos del Bus.*
 
 ## El endpoint /actuator/bus-refresh
 
@@ -54,6 +63,20 @@ La variante con destination permite limitar el refresh a instancias o aplicacion
 | `POST /actuator/bus-refresh/{appName}` | Todas las instancias de la aplicación `appName` |
 | `POST /actuator/bus-refresh/{appName}:{profiles}` | Instancias de `appName` con perfil específico |
 | `POST /actuator/bus-refresh/{appName}:{profiles}:{index}` | Una única instancia específica |
+
+```mermaid
+timeline
+    title Alcance del destination pattern en bus-refresh
+    section Broadcast total
+        POST /actuator/bus-refresh : Todos los nodos (**) reciben el evento
+    section Por aplicación
+        POST .../bus-refresh/order-service : Todas las instancias de order-service
+    section Por perfil
+        POST .../bus-refresh/order-service:prod : order-service en perfil prod
+    section Instancia única
+        POST .../bus-refresh/order-service:prod:8080 : Una sola instancia exacta
+```
+*Granularidad del destination pattern: de broadcast total a instancia única usando los separadores `:` del `bus.id`.*
 
 > [EXAMEN] El destination pattern usa dos puntos (`:`) como separador entre `appName`, `profiles` e `index`. El doble asterisco (`**`) actúa como wildcard para cualquier valor. Por ejemplo: `order-service:**:**` refresca todas las instancias del servicio `order-service` independientemente de su perfil e índice.
 

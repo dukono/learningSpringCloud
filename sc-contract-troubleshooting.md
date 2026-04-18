@@ -224,27 +224,42 @@ src/test/java/com/example/BaseContractTest.java
 
 Ante cualquier fallo en Spring Cloud Contract, seguir este checklist en orden ahorra tiempo de diagnóstico.
 
-```
-CHECKLIST DE DIAGNÓSTICO SPRING CLOUD CONTRACT
-═══════════════════════════════════════════════
+```mermaid
+flowchart TD
+    START(("Fallo SCC"))
+    QP{{"¿Dónde ocurre\nel error?"}}
 
-LADO PRODUCTOR:
-  □ 1. ¿Existe src/test/resources/contracts/ con al menos un contrato?
-  □ 2. ¿El plugin está configurado en pom.xml con <extensions>true</extensions>?
-  □ 3. ¿baseClassForTests o baseClassMappings apuntan a una clase existente?
-  □ 4. ¿La clase base tiene @BeforeEach con RestAssuredMockMvc.standaloneSetup()?
-  □ 5. ¿mvn verify pasa localmente (tests generados + tests normales)?
-  □ 6. ¿mvn install o mvn deploy genera el JAR -stubs en target/stubs/?
+    subgraph "Lado Productor"
+        P1["¿Existen contratos en\nsrc/test/resources/contracts/?"]
+        P2["¿Plugin con extensions=true\nen pom.xml?"]
+        P3["¿baseClassForTests/Mappings\napuntan a clase existente?"]
+        P4["¿@BeforeEach con\nRestAssuredMockMvc.standaloneSetup()?"]
+        P5["mvn verify local\n→ confirmar tests pasan"]
+    end
 
-LADO CONSUMIDOR:
-  □ 7. ¿@AutoConfigureStubRunner está en la clase de test?
-  □ 8. ¿El campo ids tiene el formato correcto groupId:artifactId:version:stubs:port?
-  □ 9. ¿El stubsMode coincide con dónde están los stubs (LOCAL/CLASSPATH/REMOTE)?
-  □ 10. ¿Si LOCAL, el productor ha ejecutado mvn install?
-  □ 11. ¿Si REMOTE, repositoryRoot apunta al repositorio correcto?
-  □ 12. ¿El puerto del stub coincide con la URL configurada en el cliente HTTP?
-  □ 13. ¿WireMock verbose logging está habilitado para ver el mismatch?
+    subgraph "Lado Consumidor"
+        C1["¿@AutoConfigureStubRunner\nen clase de test?"]
+        C2["¿ids con formato\ngroupId:artifactId:version:stubs:port?"]
+        C3["¿stubsMode coincide\ncon ubicación de stubs?"]
+        C4["LOCAL → ¿mvn install\nen productor?"]
+        C5["REMOTE → ¿repositoryRoot\ncorrecto y accesible?"]
+        C6["¿Puerto del stub coincide\ncon URL del cliente?"]
+    end
+
+    START --> QP
+    QP -->|"Productor"| P1 --> P2 --> P3 --> P4 --> P5
+    QP -->|"Consumidor"| C1 --> C2 --> C3 --> C4 --> C5 --> C6
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+
+    class START,QP root
+    class P1,P2,P3,P4,P5 primary
+    class C1,C2,C3,C4,C5,C6 warning
 ```
+
+*Árbol de diagnóstico CDC dividido por lado: productor (plugin + clase base) y consumidor (Stub Runner + resolución de stubs).*
 
 ## Buenas y malas prácticas
 

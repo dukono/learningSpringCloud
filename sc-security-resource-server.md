@@ -14,23 +14,41 @@ Un Resource Server es cualquier microservicio que expone recursos protegidos y n
 
 El starter `spring-boot-starter-oauth2-resource-server` trae Spring Security con soporte JWT y la librería Nimbus JOSE+JWT para la verificación criptográfica. Con `issuer-uri`, Spring Boot descarga automáticamente en el arranque los metadatos OIDC (`.well-known/openid-configuration`) y desde allí obtiene la URL del JWKS endpoint para recuperar las claves públicas de verificación. No requiere acceso al Authorization Server en cada request.
 
+```mermaid
+flowchart TD
+    CLI(("Cliente"))
+    REQ["Authorization: Bearer JWT"]
+    F1["BearerTokenAuthenticationFilter\n1. extrae Bearer token"]
+    F2["NimbusJwtDecoder\n2. descarga claves JWKS\n3. verifica firma RSA"]
+    F3["JwtValidator\n4. valida iss, exp, aud, nbf"]
+    F4["JwtAuthenticationConverter\n5. claims → GrantedAuthority"]
+    SC[("SecurityContext\nJwtAuthenticationToken")]
+    CTRL["Controller\n@PreAuthorize evaluado"]
+    ERR["401 Unauthorized"]
+
+    CLI --> REQ --> F1 --> F2
+    F2 -->|"firma OK"| F3
+    F2 -->|"firma inválida"| ERR
+    F3 -->|"claims OK"| F4
+    F3 -->|"exp expirado / iss incorrecto"| ERR
+    F4 --> SC --> CTRL
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class CLI root
+    class REQ,F1 neutral
+    class F2,F3,F4 primary
+    class SC storage
+    class CTRL secondary
+    class ERR danger
 ```
-Flujo de validación stateless
-──────────────────────────────
-Cliente → [Authorization: Bearer <JWT>] → Resource Server
-                                                │
-                                    ┌───────────▼────────────┐
-                                    │ BearerTokenAuthFilter  │
-                                    │ 1. Extrae Bearer token  │
-                                    │ 2. NimbusJwtDecoder     │
-                                    │    verifica firma JWKS  │
-                                    │ 3. Valida iss, exp, aud │
-                                    │ 4. JwtAuthentication-   │
-                                    │    Converter → Authori- │
-                                    │    ties                 │
-                                    │ 5. SecurityContext      │
-                                    └────────────────────────┘
-```
+*Pipeline de validación stateless de un JWT en el Resource Server: desde la extracción del Bearer token hasta la población del SecurityContext.*
 
 ## Configuración properties: issuer-uri vs jwk-set-uri
 
@@ -57,6 +75,39 @@ spring:
           jwk-set-uri: http://auth-server:9000/oauth2/jwks
           # No valida claim 'iss' automáticamente
 ```
+
+```mermaid
+flowchart TD
+    Q{{"¿Qué propiedad\nconfiguro?"}}
+    IU["issuer-uri\nhttp://auth-server:9000"]
+    JU["jwk-set-uri\nhttp://auth-server:9000/oauth2/jwks"]
+    DISC["Autodiscovery OIDC\n/.well-known/openid-configuration\n→ extrae jwks-uri"]
+    VAL1["Valida claim iss\nautomáticamente"]
+    VAL2["NO valida claim iss\n(manual si es necesario)"]
+    OK(("JwtDecoder\nconfigured"))
+
+    Q -->|"recomendado"| IU
+    Q -->|"alternativa directa"| JU
+    IU --> DISC --> VAL1 --> OK
+    JU --> VAL2 --> OK
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class Q warning
+    class IU primary
+    class JU neutral
+    class DISC secondary
+    class VAL1 secondary
+    class VAL2 danger
+    class OK root
+```
+*issuer-uri añade autodiscovery y validación automática del claim iss; jwk-set-uri apunta directamente al JWKS sin validar el emisor.*
 
 > [ADVERTENCIA] Con `issuer-uri`, Spring Boot intenta contactar el Authorization Server al arrancar. Si el AS no está disponible, el microservicio no arranca. Para entornos donde el AS puede tardar en estar disponible, combinar con `spring.cloud.loadbalancer.retry.enabled=true` o usar `jwk-set-uri` con validación manual del `iss`.
 
@@ -206,6 +257,24 @@ public class JwtDecoderConfig {
 ## Opaque Token — introspección RFC 7662
 
 Cuando el Authorization Server emite tokens opacos (no JWT), el Resource Server no puede validarlos localmente: debe llamar al endpoint de introspección del AS en cada request. La propiedad `opaquetoken.introspection-uri` activa este modo. Es más costoso en red pero permite revocar tokens instantáneamente (el AS puede devolver `active: false` para tokens revocados).
+
+```mermaid
+sequenceDiagram
+    participant C as Cliente
+    participant RS as Resource Server
+    participant AS as Authorization Server
+
+    C->>RS: GET /api/resource<br/>Authorization: Bearer opaque_token
+    RS->>AS: POST /oauth2/introspect<br/>token=opaque_token<br/>(client_id + client_secret)
+    alt token activo
+        AS-->>RS: { "active": true, "sub": "...", "scope": "..." }
+        RS-->>C: 200 OK
+    else token revocado o expirado
+        AS-->>RS: { "active": false }
+        RS-->>C: 401 Unauthorized
+    end
+```
+*Con tokens opacos, el Resource Server llama al AS en cada petición para verificar si el token sigue activo — permite revocación inmediata a costa de latencia.*
 
 ```yaml
 spring:

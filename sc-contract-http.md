@@ -114,6 +114,37 @@ Contract.make {
 
 La elección entre `url`, `urlPath` y `urlPathPattern` tiene implicaciones directas en cómo el stub WireMock y el test generado del productor validan la URL.
 
+```mermaid
+flowchart TD
+    Q1{{"¿El path contiene\nsegmentos dinámicos\ncomo IDs variables?"}}
+    Q2{{"¿Hay query params?"}}
+    URL["url: '/orders/1'\n(literal exacto)"]
+    UPP["urlPathPattern: '/orders/[0-9]+'\n(regex, solo path)"]
+    QP["queryParameters { }\n(siempre en bloque separado)"]
+    NOTE>No mezclar query params\nen la cadena de url]
+
+    Q1 -->|"NO"| URL
+    Q1 -->|"SÍ"| UPP
+    URL --> Q2
+    UPP --> Q2
+    Q2 -->|"SÍ"| QP
+    Q2 -->|"NO"| NOTE
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class Q1,Q2 root
+    class URL secondary
+    class UPP primary
+    class QP warning
+    class NOTE neutral
+```
+
+*Decisión url vs urlPathPattern: los query params siempre van en bloque separado independientemente del tipo de URL elegido.*
+
 ```groovy
 // URL exacta — el stub solo responde a /orders/1 exactamente
 Contract.make {
@@ -237,6 +268,35 @@ response:
 ## Tabla de campos del bloque request
 
 Los campos disponibles en el bloque `request` de un contrato HTTP cubren todos los aspectos de una petición HTTP estándar.
+
+```mermaid
+mindmap
+  root((request))
+    (Obligatorio: uno de)
+      [url]
+      [urlPath]
+      [urlPathPattern]
+    method
+      GET
+      POST
+      PUT
+      DELETE
+      PATCH
+    (Opcionales)
+      headers
+        header
+        matching
+      body
+      bodyMatchers
+        jsonPath
+      queryParameters
+        parameter
+      cookies
+        cookie
+      multipart
+```
+
+*Jerarquía de campos del bloque `request`: solo uno de los tres campos de URL es válido; el resto son opcionales según el escenario.*
 
 | Campo | Tipo | Descripción |
 |---|---|---|

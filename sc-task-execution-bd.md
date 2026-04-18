@@ -14,35 +14,37 @@ Spring Cloud Task persiste cada ejecución en una base de datos relacional para 
 
 Spring Cloud Task crea automáticamente el schema al arrancar si la propiedad `spring.cloud.task.initialize-enabled` está en `true` (valor por defecto). El schema se compone de tres tablas relacionadas entre sí.
 
-```
-TASK_EXECUTION
-┌──────────────────────────┬────────────────────────────────────────┐
-│ Columna                  │ Descripción                            │
-├──────────────────────────┼────────────────────────────────────────┤
-│ TASK_EXECUTION_ID (PK)   │ Identificador único de la ejecución    │
-│ START_TIME               │ Timestamp de inicio                    │
-│ END_TIME                 │ Timestamp de fin (null si en curso)    │
-│ TASK_NAME                │ Nombre de la tarea                     │
-│ EXIT_CODE                │ Código de salida (0=ok, ≠0=error)      │
-│ EXIT_MESSAGE             │ Mensaje de salida personalizado        │
-│ ERROR_MESSAGE            │ Stacktrace si hubo excepción           │
-│ LAST_UPDATED             │ Timestamp de última actualización      │
-│ EXTERNAL_EXECUTION_ID    │ ID externo (ej: pod ID en K8s)        │
-│ PARENT_EXECUTION_ID      │ ID de la Task padre (Composed Tasks)   │
-└──────────────────────────┴────────────────────────────────────────┘
+```mermaid
+erDiagram
+    TASK_EXECUTION {
+        bigint TASK_EXECUTION_ID PK
+        timestamp START_TIME
+        timestamp END_TIME
+        varchar TASK_NAME
+        int EXIT_CODE
+        varchar EXIT_MESSAGE
+        varchar ERROR_MESSAGE
+        timestamp LAST_UPDATED
+        varchar EXTERNAL_EXECUTION_ID
+        bigint PARENT_EXECUTION_ID FK
+    }
 
-TASK_EXECUTION_PARAMS
-┌──────────────────────────┬────────────────────────────────────────┐
-│ TASK_EXECUTION_ID (FK)   │ Referencia a TASK_EXECUTION            │
-│ TASK_PARAM               │ Argumento de línea de comandos         │
-└──────────────────────────┴────────────────────────────────────────┘
+    TASK_EXECUTION_PARAMS {
+        bigint TASK_EXECUTION_ID FK
+        varchar TASK_PARAM
+    }
 
-TASK_TASK_BATCH  (solo con spring-cloud-task-batch)
-┌──────────────────────────┬────────────────────────────────────────┐
-│ TASK_EXECUTION_ID (FK)   │ Referencia a TASK_EXECUTION            │
-│ JOB_EXECUTION_ID (FK)    │ Referencia a BATCH_JOB_EXECUTION       │
-└──────────────────────────┴────────────────────────────────────────┘
+    TASK_TASK_BATCH {
+        bigint TASK_EXECUTION_ID FK
+        bigint JOB_EXECUTION_ID FK
+    }
+
+    TASK_EXECUTION ||--o{ TASK_EXECUTION_PARAMS : "tiene argumentos"
+    TASK_EXECUTION ||--o{ TASK_TASK_BATCH : "vincula con Batch Jobs"
+    TASK_EXECUTION ||--o| TASK_EXECUTION : "padre (Composed Tasks)"
 ```
+
+*Schema de Spring Cloud Task: TASK_EXECUTION es la tabla central; TASK_EXECUTION_PARAMS almacena argumentos y TASK_TASK_BATCH vincula con Spring Batch (solo con spring-cloud-task-batch).*
 
 ## Ejemplo central
 
@@ -123,6 +125,32 @@ La dependencia Maven para tener `TaskExplorer` disponible es:
 ## Tabla de elementos clave
 
 Los componentes DAO del módulo forman una jerarquía clara donde `SimpleTaskRepository` actúa como fachada de alto nivel y delega las operaciones CRUD en `JdbcTaskExecutionDao`.
+
+```mermaid
+mindmap
+  root((Task Repository\nLayer))
+    (TaskExplorer)
+      Solo lectura
+      findAll
+      findByName
+      getLatestTaskExecution
+    (SimpleTaskRepository)
+      Fachada START/END/FAIL
+      createTaskExecution
+      updateTaskExecution
+    (TaskExecutionDao)
+      Interfaz CRUD
+      findById
+      (JdbcTaskExecutionDao)
+        Implementación JDBC
+        gestiona TASK_EXECUTION
+        gestiona TASK_EXECUTION_PARAMS
+    [TaskExecution]
+      Entidad en memoria
+      campos de TASK_EXECUTION
+```
+
+*Jerarquía de componentes DAO: SimpleTaskRepository orquesta el ciclo de vida; TaskExplorer es la API de solo lectura para consultas.*
 
 | Componente | Rol | Descripción |
 |---|---|---|

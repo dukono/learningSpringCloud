@@ -14,16 +14,24 @@ La seguridad en microservicios requiere un enfoque diferente al del monolito: no
 
 Los JWT tienen fecha de expiración para limitar el daño si son robados. Los tokens de corta duración (access token: 5-15 minutos) se combinan con refresh tokens de larga duración para que los clientes puedan obtener nuevos access tokens sin reautenticación.
 
+```mermaid
+sequenceDiagram
+    participant CLI as Cliente
+    participant AS as Authorization Server
+    participant GW as API Gateway
+    participant OS as Orders Service
+
+    CLI->>AS: POST /token (credenciales)
+    AS-->>CLI: JWT (access_token + refresh_token)
+
+    CLI->>GW: GET /api/orders\nAuthorization: Bearer JWT
+    GW->>GW: verifica JWT (clave pública JWK Set)
+    GW->>OS: GET /orders\nAuthorization: Bearer JWT (TokenRelay)
+    OS->>OS: verifica JWT localmente\n(defensa en profundidad)
+    OS-->>GW: respuesta
+    GW-->>CLI: respuesta
 ```
-Cliente ──► POST /token (credenciales) ──► Authorization Server
-        ◄── JWT (access_token + refresh_token) ──
-        
-Cliente ──► GET /api/orders (Authorization: Bearer JWT) ──► API Gateway
-                                                              │ verifica JWT (clave pública)
-                                                              ▼
-                                                         Orders Service
-                                                         (verifica JWT localmente)
-```
+*Access Token Pattern: el JWT se obtiene una vez del Authorization Server y se verifica localmente tanto en Gateway como en cada microservicio.*
 
 ## API Gateway Auth: centralización de autenticación
 
@@ -33,6 +41,34 @@ La diferencia entre autenticación (¿quién eres?) y autorización (¿qué pued
 - **Autenticación**: siempre en el Gateway (verificación del JWT).
 - **Autorización de grano grueso** (acceso a una ruta): en el Gateway.
 - **Autorización de grano fino** (acceso a un recurso específico): en el microservicio, donde existe el contexto de negocio.
+
+```mermaid
+flowchart LR
+    REQ(["Petición del cliente"])
+
+    subgraph gw_layer["API Gateway"]
+        AUTHN["Autenticación\n¿quién eres?\nVerifica JWT"]
+        AUTHZ_COARSE["Autorización grano grueso\n¿puedes acceder a /api/orders?\nPathMatcher rules"]
+    end
+
+    subgraph svc_layer["Microservicio"]
+        AUTHZ_FINE["Autorización grano fino\n¿puedes acceder a este recurso?\n@PreAuthorize, contexto de negocio"]
+    end
+
+    REQ --> AUTHN --> AUTHZ_COARSE --> AUTHZ_FINE
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class REQ neutral
+    class AUTHN warning
+    class AUTHZ_COARSE primary
+    class AUTHZ_FINE secondary
+```
+*Capas de seguridad: autenticación y autorización de grano grueso en el Gateway; autorización de grano fino en el microservicio donde existe el contexto de negocio.*
 
 ## Service-to-Service Auth: mTLS y propagación de JWT
 

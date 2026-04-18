@@ -20,6 +20,40 @@ La siguiente tabla resume las diferencias entre ambos enfoques de acceso a Secre
 | Compatibilidad con rotación de secretos | Requiere reload de configuración (sc-kubernetes-reload.md) | Actualización automática del volumen (en K8s 1.21+) |
 | Recomendación | Evitar en producción si hay alternativa con volumen | Preferida por el principio de mínimo privilegio |
 
+```mermaid
+flowchart TD
+    Q{{"¿Cómo accede\nel pod al Secret?"}}
+    API["secrets.enabled=true\nAPI de Kubernetes"]
+    VOL["secrets.paths\nVolumen montado"]
+
+    RBAC1[/"RBAC: verbo get/list\nsobre secrets"/]
+    RBAC2[/"Sin RBAC adicional\nK8s monta el volumen"/]
+
+    RISK1[/"Riesgo ALTO\npod puede listar otros Secrets\ncon token SA"/]
+    RISK2[/"Riesgo BAJO\nsolo ve el contenido\ndel volumen montado"/]
+
+    ROT1["Reload manual\n(sc-kubernetes-reload)"]
+    ROT2["Actualización automática\n(K8s 1.21+)"]
+
+    Q -->|"API"| API --> RBAC1 --> RISK1 --> ROT1
+    Q -->|"Volumen (recomendado)"| VOL --> RBAC2 --> RISK2 --> ROT2
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+
+    class Q warning
+    class API primary
+    class VOL secondary
+    class RBAC1,RISK1 danger
+    class RBAC2,RISK2,ROT2 secondary
+    class ROT1 neutral
+```
+*Comparativa de los dos enfoques para consumir un Secret: el montado como volumen es el recomendado por su menor superficie de ataque RBAC.*
+
 > [CONCEPTO] La lectura de Secrets mediante la API de Kubernetes requiere que el ServiceAccount tenga el verbo `get` sobre `secrets`. Esto es más restrictivo que `configmaps` porque los Secrets contienen credenciales. Muchos equipos de seguridad prohíben dar este permiso y exigen el enfoque de volumen.
 
 > [CONCEPTO] Cuando un Secret se monta como volumen en el pod, Kubernetes escribe cada clave del Secret como un fichero independiente en el directorio de montaje. Spring Cloud Kubernetes puede leer esos ficheros usando `spring.cloud.kubernetes.secrets.paths`.

@@ -12,19 +12,39 @@ Los consumer groups son el mecanismo que permite escalar horizontalmente microse
 
 La diferencia clave entre un anonymous consumer y un consumer con grupo determina el comportamiento de entrega de mensajes. El diagrama siguiente ilustra los dos modelos:
 
-```
-SIN group (anonymous consumers) — cada instancia recibe todos los mensajes:
-  Topic: orders-topic
-    Mensaje M1 → Instancia A  ✓
-    Mensaje M1 → Instancia B  ✓  (duplicado — indeseable para procesamiento)
-    Mensaje M1 → Instancia C  ✓  (duplicado — indeseable para procesamiento)
+```mermaid
+flowchart TD
+    T[(orders-topic)]
+    subgraph "SIN group — anonymous consumers"
+        direction LR
+        A1["Instancia A\n✓ M1"]
+        B1["Instancia B\n✓ M1 (duplicado)"]
+        C1["Instancia C\n✓ M1 (duplicado)"]
+    end
+    subgraph "CON group: order-service — competing consumers"
+        direction LR
+        A2["Instancia A\n✓ M1"]
+        B2["Instancia B\n✓ M2"]
+        C2["Instancia C\n✓ M3"]
+    end
 
-CON group: order-service — competing consumers:
-  Topic: orders-topic
-    Mensaje M1 → Instancia A  ✓
-    Mensaje M2 → Instancia B  ✓
-    Mensaje M3 → Instancia C  ✓  (load balancing — deseable)
+    T -->|"M1 a todos"| A1
+    T -->|"M1 a todos"| B1
+    T -->|"M1 a todos"| C1
+    T -->|"M1"| A2
+    T -->|"M2"| B2
+    T -->|"M3"| C2
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class T storage
+    class A1,B1,C1 danger
+    class A2,B2,C2 secondary
 ```
+*Sin `group` cada instancia recibe todos los mensajes (broadcast indeseado); con `group` las instancias compiten y cada mensaje se procesa una sola vez.*
 
 ## Ejemplo central — configuración de consumer group
 

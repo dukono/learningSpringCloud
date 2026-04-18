@@ -123,6 +123,29 @@ La resolución de configuración sigue este orden de prioridad (mayor prioridad 
 3. Configuración `default` en `resilience4j.circuitbreaker.configs.default`
 4. Valores por defecto de `CircuitBreakerConfig.ofDefaults()`
 
+```mermaid
+flowchart TD
+    P1["registry.circuitBreaker(name, config)\nAPI programática directa"]
+    P2["instances.X.base-config + overrides\nYAML instancia específica"]
+    P3["configs.default\nYAML perfil default"]
+    P4["CircuitBreakerConfig.ofDefaults()\nValores de fábrica"]
+
+    P1 -->|"si no existe"| P2
+    P2 -->|"si no existe"| P3
+    P3 -->|"si no existe"| P4
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class P1 primary
+    class P2 secondary
+    class P3 secondary
+    class P4 neutral
+```
+*Cadena de herencia de configuración: mayor prioridad arriba, los valores de menor prioridad se aplican solo cuando el nivel superior no los define.*
+
 > [ADVERTENCIA] Las configuraciones YAML y programáticas pueden coexistir, pero si se crea un bean `CircuitBreakerRegistry` personalizado, Spring Boot autoconfiguration NO sobreescribe ese bean. El YAML de `resilience4j.*` solo tiene efecto cuando Spring Boot autoconfigura el registry, lo que implica que con un `@Bean CircuitBreakerRegistry` propio hay que gestionar toda la configuración programáticamente.
 
 ## Buenas y malas prácticas

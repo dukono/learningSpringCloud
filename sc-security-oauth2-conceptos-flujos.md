@@ -23,28 +23,65 @@ Los cuatro roles definidos en RFC 6749 mapean directamente a los componentes de 
 
 En una arquitectura de microservicios típica, el **API Gateway** actúa como Client (obtiene el token, lo relee, lo propaga), y cada microservicio backend actúa como Resource Server (valida el token). El Authorization Server es un componente separado, dedicado.
 
+```mermaid
+flowchart LR
+    RO(("Resource\nOwner"))
+    AS[["Authorization\nServer"]]
+    CL["Client\n(API Gateway)"]
+    RS1["Resource Server\n(Microservicio A)"]
+    RS2["Resource Server\n(Microservicio B)"]
+
+    RO -->|"autoriza"| AS
+    AS -->|"emite token"| CL
+    CL -->|"Bearer token"| RS1
+    CL -->|"Bearer token"| RS2
+    RS1 -.->|"verifica firma\n(JWKS)"| AS
+    RS2 -.->|"verifica firma\n(JWKS)"| AS
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class AS root
+    class CL primary
+    class RS1,RS2 secondary
+    class RO neutral
+```
+*Relación entre los cuatro roles OAuth2 en una arquitectura de microservicios: el AS emite tokens; el Client los obtiene y propaga; los Resource Servers los validan vía JWKS.*
+
 > [CONCEPTO] Un mismo servicio puede ser a la vez Resource Server (valida tokens entrantes) y Client (obtiene tokens para llamar a otros servicios). Esto es habitual en un Gateway que también protege sus propios endpoints.
 
 ## Flujo Authorization Code + PKCE
 
 El flujo Authorization Code con PKCE (Proof Key for Code Exchange, RFC 7636) es el flujo recomendado para cualquier aplicación que tenga un usuario final interactivo: aplicaciones web, SPAs y aplicaciones móviles. El diagrama siguiente muestra la secuencia completa.
 
-```
-Usuario          Client App         Authorization Server     Resource Server
-  |                 |                       |                      |
-  |-- login click ->|                       |                      |
-  |                 |-- (1) Redirige a AS   |                      |
-  |                 |    con code_challenge |                      |
-  |<-- redirect ----+---------------------->|                      |
-  |-- (2) Autentica y autoriza ----------->|                      |
-  |                 |<- (3) auth_code ------+                      |
-  |                 |-- (4) POST /token    |                      |
-  |                 |    code + verifier   |                      |
-  |                 |<- (5) access_token   |                      |
-  |                 |    refresh_token     |                      |
-  |                 |-- (6) GET /api ----------------------------->|
-  |                 |    Authorization: Bearer <access_token>      |
-  |                 |<- (7) 200 OK ---------------------------------|
+```mermaid
+sequenceDiagram
+    actor U as Usuario
+    participant C as Client App
+    participant AS as Authorization Server
+    participant RS as Resource Server
+
+    U->>C: click login
+    C->>C: genera code_verifier + code_challenge
+    C->>AS: (1) GET /oauth2/authorize<br/>response_type=code, code_challenge, S256
+    AS-->>U: redirect → pantalla de login
+    U->>AS: (2) autentica y autoriza
+    AS-->>C: (3) redirect con authorization_code
+
+    rect rgb(0, 80, 160)
+      Note over C,AS: Intercambio seguro del code
+      C->>AS: (4) POST /oauth2/token<br/>authorization_code + code_verifier
+      AS->>AS: SHA256(code_verifier) == code_challenge?
+      AS-->>C: (5) access_token + refresh_token
+    end
+
+    C->>RS: (6) GET /api/resource<br/>Authorization: Bearer access_token
+    RS-->>C: (7) 200 OK
 ```
 
 **Pasos clave:**
@@ -60,19 +97,20 @@ Usuario          Client App         Authorization Server     Resource Server
 
 El flujo Client Credentials (RFC 6749 §4.4) es el flujo para comunicación **service-to-service** sin usuario final interactivo. El cliente se autentica directamente con el Authorization Server usando su `client_id` y `client_secret` y obtiene un token de acceso que representa al servicio, no a un usuario.
 
-```
-Microservicio A        Authorization Server     Microservicio B
-     |                        |                       |
-     |-- POST /token -------->|                       |
-     |   client_id            |                       |
-     |   client_secret        |                       |
-     |   grant_type=          |                       |
-     |   client_credentials   |                       |
-     |<- access_token --------+                       |
-     |                        |                       |
-     |-- GET /api/recursos --------------------------->|
-     |   Authorization: Bearer <access_token>         |
-     |<- 200 OK --------------------------------------|
+```mermaid
+sequenceDiagram
+    participant A as Microservicio A
+    participant AS as Authorization Server
+    participant B as Microservicio B
+
+    rect rgb(0, 80, 160)
+      Note over A,AS: Autenticación máquina-a-máquina
+      A->>AS: POST /oauth2/token<br/>grant_type=client_credentials<br/>client_id + client_secret
+      AS-->>A: access_token (sub = client_id)
+    end
+
+    A->>B: GET /api/recursos<br/>Authorization: Bearer access_token
+    B-->>A: 200 OK
 ```
 
 **Características clave:**
@@ -87,15 +125,15 @@ Microservicio A        Authorization Server     Microservicio B
 
 El Refresh Token (RFC 6749 §6) no es un flujo independiente: es una extensión del Authorization Code que permite obtener un nuevo access_token sin que el usuario tenga que autenticarse de nuevo. Es esencial porque los access tokens son de vida corta (típicamente 5-60 minutos) por razones de seguridad.
 
-```
-Client                Authorization Server
-  |                           |
-  |-- POST /token ----------->|
-  |   grant_type=             |
-  |   refresh_token           |
-  |   refresh_token=<token>   |
-  |<- nuevo access_token -----+
-  |   (nuevo refresh_token)   |
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant AS as Authorization Server
+
+    Note over C: access_token expirado
+    C->>AS: POST /oauth2/token<br/>grant_type=refresh_token<br/>refresh_token=&lt;token&gt;
+    AS-->>C: nuevo access_token<br/>(+ nuevo refresh_token si reuseRefreshTokens=false)
+    Note over C: usa el nuevo access_token
 ```
 
 **Reglas importantes:**
@@ -107,6 +145,24 @@ Client                Authorization Server
 ## Cuándo usar cada flujo
 
 La elección del flujo correcto es una pregunta de examen frecuente. La regla general es: si hay un usuario interactivo, Authorization Code + PKCE; si es comunicación entre servicios, Client Credentials.
+
+```mermaid
+quadrantChart
+    title Elección de flujo OAuth2
+    x-axis "Sin usuario interactivo" --> "Con usuario interactivo"
+    y-axis "App privada (puede guardar secret)" --> "App pública (no guarda secret)"
+    quadrant-1 Authorization Code + PKCE
+    quadrant-2 Authorization Code + PKCE obligatorio
+    quadrant-3 Client Credentials
+    quadrant-4 Authorization Code (confidential client)
+    SPA React: [0.85, 0.85]
+    App móvil: [0.75, 0.9]
+    App web con login: [0.8, 0.3]
+    Microservicio a Microservicio: [0.1, 0.2]
+    Job batch: [0.05, 0.15]
+    Token Relay Gateway: [0.65, 0.4]
+```
+*Posición de cada escenario según si hay usuario interactivo y si la app puede almacenar un client_secret de forma segura.*
 
 | Escenario | Flujo correcto | Motivo |
 |---|---|---|

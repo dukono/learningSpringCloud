@@ -12,6 +12,22 @@ Spring Cloud Kubernetes puede detectar cambios en un ConfigMap o Secret de Kuber
 
 La siguiente tabla describe las tres estrategias disponibles, que son las enumeraciones del enum `ReloadStrategy` y el punto más evaluado en el examen sobre este módulo.
 
+```mermaid
+stateDiagram-v2
+    [*] --> Ejecutando
+    Ejecutando --> Ejecutando : ConfigMap cambia\n→ estrategia REFRESH\n(solo beans @RefreshScope)
+    state "RESTART_CONTEXT" as RC {
+        [*] --> ReinicioContexto
+        ReinicioContexto --> [*]
+    }
+    Ejecutando --> RC : estrategia RESTART_CONTEXT\n(breve interrupción)
+    RC --> Ejecutando
+    Ejecutando --> Apagado : estrategia SHUTDOWN\n(System.exit)
+    Apagado --> [*]
+    [*] --> Ejecutando : K8s reinicia el pod
+```
+*Las tres estrategias tienen impacto creciente: REFRESH actualiza solo beans anotados; RESTART_CONTEXT recrea el contexto; SHUTDOWN termina el proceso para que K8s reinicie el pod.*
+
 | Estrategia | Valor | Comportamiento | Impacto |
 |---|---|---|---|
 | REFRESH | `REFRESH` | Equivale a llamar `/actuator/refresh`; solo actualiza beans anotados con `@RefreshScope` | Bajo — sin reinicio del contexto |
@@ -28,29 +44,46 @@ La siguiente tabla describe las tres estrategias disponibles, que son las enumer
 
 El siguiente diagrama compara los dos modos de detección de cambios.
 
-```
-Modo POLLING:
-ConfigMap cambia en K8s
-        │
-Spring Cloud K8s (cada 15s por defecto)
-        │ GET /api/v1/namespaces/{ns}/configmaps/{name}
-        ▼
-Compara hash del contenido
-        │ si cambió
-        ▼
-Ejecuta estrategia configurada (REFRESH / RESTART_CONTEXT / SHUTDOWN)
+```mermaid
+flowchart TD
+    CM(("ConfigMap\ncambia en K8s"))
 
-Modo EVENT (watch):
-ConfigMap cambia en K8s
-        │
-K8s API Server envía evento MODIFIED al Watch activo
-        │ (notificación inmediata)
-        ▼
-Spring Cloud K8s recibe evento
-        │
-        ▼
-Ejecuta estrategia configurada
+    subgraph POLL["Modo POLLING (mode=polling)"]
+        direction TB
+        P1["Spring Cloud K8s\ncada 15s (configurable)"]
+        P2["GET configmaps/{name}\ncompara hash del contenido"]
+        P3{{"¿Contenido\ncambió?"}}
+        P4["ejecuta estrategia\n(REFRESH / RESTART_CONTEXT / SHUTDOWN)"]
+        P1 --> P2 --> P3 -->|"sí"| P4
+        P3 -->|"no"| P1
+    end
+
+    subgraph EVENT["Modo EVENT (mode=event)"]
+        direction TB
+        E1["Watch activo sobre\nK8s API Server"]
+        E2["K8s envía evento MODIFIED\n(notificación inmediata)"]
+        E3["Spring Cloud K8s recibe evento"]
+        E4["ejecuta estrategia\n(REFRESH / RESTART_CONTEXT / SHUTDOWN)"]
+        E1 --> E2 --> E3 --> E4
+    end
+
+    CM --> P1
+    CM --> E2
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class CM root
+    class P1,P2 neutral
+    class P3 warning
+    class P4 primary
+    class E1,E2,E3 neutral
+    class E4 secondary
 ```
+*Polling consulta periódicamente la API comparando hashes; event usa Watch de K8s para notificación inmediata (requiere verbo watch en el RBAC).*
 
 ## Ejemplo central
 

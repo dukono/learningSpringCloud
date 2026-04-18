@@ -12,11 +12,32 @@ El Kafka binder es la implementación más utilizada de la abstracción Binder e
 
 Las propiedades del Kafka binder se organizan en tres niveles: globales del binder, por binding consumer y por binding producer. Las propiedades globales afectan a todos los bindings Kafka; las de binding sobrescriben el comportamiento para ese binding específico.
 
+```mermaid
+mindmap
+  root((kafka binder))
+    (spring.cloud.stream.kafka.binder)
+      brokers
+      auto-create-topics
+      replication-factor
+      offset-reset-policy
+      min-partition-count
+      required-acks
+    (kafka.bindings.nombre.consumer)
+      start-offset
+      auto-commit-offset
+      enable-dlq
+      dlq-name
+      reset-offsets
+      max-attempts
+      back-off-initial-interval
+      back-off-multiplier
+    (kafka.bindings.nombre.producer)
+      sync
+      compression-type
+      buffer-size
+      message-key-expression
 ```
-spring.cloud.stream.kafka.binder.*          → Nivel global (todos los bindings Kafka)
-spring.cloud.stream.kafka.bindings.[nombre].consumer.* → Consumer específico
-spring.cloud.stream.kafka.bindings.[nombre].producer.* → Producer específico
-```
+*Tres niveles de configuración del Kafka binder: global aplica a todos los bindings; consumer y producer sobrescriben por binding específico.*
 
 ## Ejemplo central — configuración completa del Kafka binder
 
@@ -138,6 +159,38 @@ Estos dos conceptos son confundidos frecuentemente en el examen:
 | `start-offset: latest` | Solo primera ejecución del grupo | Lee solo mensajes nuevos |
 | `reset-offsets: true` + `start-offset` | En cada reinicio de la app | Resetea siempre el offset |
 | `reset-offsets: false` | En cada reinicio de la app | Continúa desde el último offset guardado |
+
+```mermaid
+stateDiagram-v2
+    [*] --> Arranque
+
+    state "¿Offset guardado en Kafka?" as offsetCheck {
+        [*] --> SinOffset
+        [*] --> ConOffset
+    }
+
+    Arranque --> offsetCheck
+
+    state "start-offset (solo sin offset previo)" as so {
+        SinOffset --> EarliestStart : start-offset=earliest
+        SinOffset --> LatestStart : start-offset=latest
+    }
+
+    state "reset-offsets=true (siempre)" as ro {
+        ConOffset --> EarliestReset : start-offset=earliest
+        ConOffset --> LatestReset : start-offset=latest
+    }
+
+    state "reset-offsets=false" as normal {
+        ConOffset --> ContinuaDesdeOffset
+    }
+
+    note right of EarliestStart : Lee historial completo
+    note right of LatestStart : Solo mensajes nuevos
+    note right of EarliestReset : Reprocesa todo — PELIGROSO en producción
+    note right of ContinuaDesdeOffset : Comportamiento normal
+```
+*`start-offset` solo aplica la primera vez que el grupo arranca (sin offset guardado); `reset-offsets: true` fuerza el reset en cada reinicio.*
 
 ## Buenas y malas prácticas
 

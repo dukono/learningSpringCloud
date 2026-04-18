@@ -12,23 +12,33 @@ Spring Integration es la infraestructura interna sobre la que Spring Cloud Strea
 
 Los bindings de Spring Cloud Stream son implementados internamente como `MessageChannel`s de Spring Integration. El flujo completo desde el broker hasta el bean funcional atraviesa estos canales:
 
+```mermaid
+flowchart TD
+    BIN[(Broker\nentrada)]
+    IA["Binder input adapter"]
+    CH1["DirectChannel / SubscribableChannel\nMessageChannel interno"]
+    CI{{"ChannelInterceptor(s)\npunto de extensión"}}
+    MH["MessageHandler\nFunction / Consumer bean"]
+    CH2["DirectChannel\ncanal de salida"]
+    OA["Binder output adapter"]
+    BOUT[(Broker\ntopic de salida)]
+
+    BIN --> IA --> CH1 --> CI --> MH --> CH2 --> OA --> BOUT
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class BIN,BOUT storage
+    class IA,OA primary
+    class CH1,CH2 neutral
+    class CI warning
+    class MH secondary
 ```
-Broker (Kafka / RabbitMQ)
-    │
-  [Binder input adapter]
-    │
-  DirectChannel / SubscribableChannel  ← MessageChannel interno
-    │
-  ChannelInterceptor(s)  ← punto de extensión
-    │
-  MessageHandler → Function/Consumer bean
-    │
-  DirectChannel  ← canal de salida
-    │
-  [Binder output adapter]
-    │
-Broker (topic de salida)
-```
+*Los bindings de Spring Cloud Stream son implementados como MessageChannels de Spring Integration; los ChannelInterceptors son el punto de extensión para logging, tracing o métricas sin modificar los beans funcionales.*
 
 ## Ejemplo central — PollableMessageSource y ChannelInterceptor
 

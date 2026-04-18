@@ -16,19 +16,27 @@
 
 El siguiente diagrama ilustra el flujo de lookup y composición programática desde el catálogo.
 
+```mermaid
+sequenceDiagram
+    participant CTX as ApplicationContext
+    participant CAT as FunctionCatalog
+    participant SVC as PipelineService
+
+    CTX->>CAT: registra @Bean uppercase
+    CTX->>CAT: registra @Bean trim
+    CTX->>CAT: registra @Bean logOutput
+
+    SVC->>CAT: lookup("uppercase")
+    CAT-->>SVC: FunctionInvocationWrapper&lt;String,String&gt;
+
+    SVC->>CAT: lookup("trim")
+    CAT-->>SVC: FunctionInvocationWrapper&lt;String,String&gt;
+
+    Note over SVC: uppercase.andThen(trim)
+    SVC->>SVC: pipeline.apply(input)
+    Note over SVC: Function compuesta: uppercase → trim
 ```
-ApplicationContext
-  @Bean uppercase  ──┐
-  @Bean trim       ──┤──► FunctionCatalog
-  @Bean logOutput  ──┘         │
-                               │  lookup("uppercase")
-                               ▼
-                    FunctionInvocationWrapper<String,String>
-                               │
-                    .andThen(catalog.lookup("trim"))
-                               ▼
-                    Function compuesta: uppercase → trim
-```
+*Flujo de registro en el catálogo y composición programática mediante lookup y andThen.*
 
 ## Ejemplo central
 

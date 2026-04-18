@@ -14,42 +14,37 @@ Cuando se usa `@FeignClient(name = "inventory-service")`, Feign no resuelve dire
 
 El flujo completo desde la llamada Java hasta la petición HTTP muestra cómo colaboran los tres componentes:
 
+```mermaid
+flowchart TD
+    ANN{{"@FeignClient\nname = inventory-service"}}
+    PROXY["Feign Proxy\nURL: lb://inventory-service"]
+    LB["Spring Cloud LoadBalancer\n(BlockingLoadBalancerClient)\nConsulta ServiceInstanceList"]
+    EUREKA[("Eureka Client\nDiscoveryClient\nCaché local del registro:\n10.0.1.5:8081\n10.0.1.6:8081")]
+    ALGO{{"RoundRobin\nelige instancia"}}
+    HTTP["HTTP Client\nenvía petición real a\nhttp://10.0.1.5:8081/api/v1/items/1"]
+
+    ANN -->|name → lb://inventory-service| PROXY
+    PROXY -->|delega resolución| LB
+    LB -->|obtiene instancias| EUREKA
+    EUREKA -->|lista de instancias| ALGO
+    ALGO -->|instancia elegida| HTTP
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class ANN root
+    class PROXY primary
+    class LB warning
+    class EUREKA storage
+    class ALGO warning
+    class HTTP secondary
 ```
-  @FeignClient(name = "inventory-service")
-              │
-              │ name → genera URL base: lb://inventory-service
-              ▼
-  ┌──────────────────────────────┐
-  │  Feign Proxy                 │
-  │  URL: lb://inventory-service │
-  └────────────┬─────────────────┘
-               │ delega resolución al LoadBalancerClient
-               ▼
-  ┌──────────────────────────────────────┐
-  │  Spring Cloud LoadBalancer           │
-  │  (ReactiveLoadBalancer /             │
-  │   BlockingLoadBalancerClient)        │
-  │                                      │
-  │  1. Consulta ServiceInstanceList     │
-  │     para "inventory-service"         │
-  └──────────────┬───────────────────────┘
-                 │ obtiene lista de instancias
-                 ▼
-  ┌──────────────────────────────────────┐
-  │  Eureka Client (DiscoveryClient)     │
-  │  Caché local del registro Eureka     │
-  │  [                                   │
-  │    {host: 10.0.1.5, port: 8081},     │
-  │    {host: 10.0.1.6, port: 8081},     │
-  │  ]                                   │
-  └──────────────┬───────────────────────┘
-                 │ RoundRobinLoadBalancer elige instancia
-                 ▼
-  ┌──────────────────────────────────────┐
-  │  HTTP Client envía petición real a   │
-  │  http://10.0.1.5:8081/api/v1/items/1 │
-  └──────────────────────────────────────┘
-```
+*Cadena de resolución: Feign genera lb://, LoadBalancer consulta Eureka y elige instancia por Round Robin, HTTP Client ejecuta la petición real.*
 
 ## Ejemplo central
 

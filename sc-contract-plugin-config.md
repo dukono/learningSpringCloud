@@ -116,28 +116,64 @@ La configuración mínima del plugin en Maven requiere declararlo en la sección
 
 > [CONCEPTO] `baseClassMappings` tiene prioridad sobre `baseClassForTests`. Cuando un proyecto tiene contratos de distintos dominios (orders, payments, notifications), cada grupo puede mapear a su propia clase base con una regex sobre el directorio del contrato. Esto es más flexible que una única clase base global.
 
+```mermaid
+flowchart TD
+    Q{{"¿Está configurado\nbaseClassMappings?"}}
+    BCM["Aplica baseClassMappings\n(regex → clase base)\nUna clase base por dominio"]
+    BCF{{"¿Está configurado\nbaseClassForTests?"}}
+    BCF2["Todos los tests extienden\nbaseClassForTests\n(clase base única global)"]
+    ERR(["Error de compilación\nTests generados sin clase base"])
+
+    Q -->|"SÍ (tiene prioridad)"| BCM
+    Q -->|"NO"| BCF
+    BCF -->|"SÍ"| BCF2
+    BCF -->|"NO"| ERR
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+
+    class Q,BCF root
+    class BCM primary
+    class BCF2 secondary
+    class ERR danger
+```
+
+*Prioridad de resolución de clase base: baseClassMappings siempre tiene precedencia sobre baseClassForTests.*
+
 ## Fases del ciclo de vida Maven
 
 El plugin se enlaza a dos fases del ciclo de vida Maven que se ejecutan automáticamente durante `mvn verify`.
 
+```mermaid
+flowchart TD
+    GTS["generate-test-sources\n→ generateTests\nLee contractsDslDir\nGenera JUnit 5 en generatedTestSourcesDir"]
+    TC["test-compile\nCompila tests generados\n+ clases base"]
+    T{"test\nEjecuta tests generados"}
+    FAIL(["BUILD FAIL\nNO se publican stubs"])
+    PKG["package\n→ generateStubs\nEmpaqueta WireMock stubs\nen JAR clasificador 'stubs'\n→ outputDirectory/target/stubs"]
+    DEPLOY["mvn deploy\nPublica JAR principal\n+ JAR stubs en Nexus"]
+
+    GTS --> TC --> T
+    T -->|"algún test falla"| FAIL
+    T -->|"todos pasan"| PKG --> DEPLOY
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class GTS,TC primary
+    class T root
+    class FAIL danger
+    class PKG secondary
+    class DEPLOY storage
 ```
-mvn verify ejecuta en orden:
-──────────────────────────────────────────────────────────────
-generate-test-sources  →  generateTests
-                           Lee contratos de contractsDslDir
-                           Genera clases JUnit 5 en generatedTestSourcesDir
-                           Las clases generadas extienden baseClassForTests
 
-test-compile           →  Compila las clases generadas junto con las clases base
-
-test                   →  Ejecuta los tests generados
-                           Si algún test falla → el build falla → NO se publican stubs
-
-package                →  generateStubs
-                           Empaqueta los stubs WireMock en un JAR clasificador 'stubs'
-                           Ubica el JAR en outputDirectory (target/stubs por defecto)
-──────────────────────────────────────────────────────────────
-```
+*Fases Maven del plugin: los stubs solo se generan y publican si todos los tests de contrato pasan.*
 
 > [ADVERTENCIA] El JAR de stubs solo se genera si `mvn package` o `mvn install` se ejecutan correctamente. En un pipeline CI típico se usa `mvn install` para que el JAR de stubs quede en el repositorio Maven local (útil para `StubsMode.LOCAL`) o `mvn deploy` para publicarlo en Nexus/Artifactory.
 

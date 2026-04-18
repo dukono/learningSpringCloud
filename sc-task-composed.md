@@ -14,25 +14,41 @@ Las Composed Tasks permiten definir grafos de ejecución de tareas donde múltip
 
 El DSL de Composed Tasks usa operadores específicos para expresar relaciones de flujo. Los operadores son los mismos que se usan en la interfaz gráfica de SCDF y en la API REST.
 
+```mermaid
+flowchart LR
+    subgraph "Espacio — secuencia"
+        A1["A"] --> B1["B"] --> C1["C"]
+    end
+
+    subgraph "&& — paralelismo"
+        START2((" ")) --> A2["A"]
+        START2 --> B2["B"]
+        A2 --> END2((" "))
+        B2 --> END2
+    end
+
+    subgraph "; — siempre ejecutar"
+        A3["A"] -.->|"pase o falle"| B3["B"]
+    end
+
+    subgraph "| — condicional"
+        A4["A"]
+        A4 -->|"exitCode=FAILED"| B4["B"]
+        A4 -->|"exitCode=OK"| SKIP4["(no ejecuta B)"]
+    end
+
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class A1,B1,C1,A2,B2,A4 primary
+    class B4 warning
+    class A3,B3 secondary
+    class SKIP4 neutral
 ```
-Operadores DSL:
 
-Espacio (secuencia):    A B C
-  → A se ejecuta primero, luego B, luego C
-
-&& (split/paralelismo): A && B
-  → A y B se ejecutan en paralelo; ambos deben completarse para continuar
-
-| (pipe condicional):   <A> | <B>
-  → Si A falla, se ejecuta B (condicional basado en exit code)
-
-; (siempre ejecutar):   A ; B
-  → B se ejecuta siempre, independientemente del resultado de A
-
-Combinaciones:
-  A B && C D         → (A luego B) en paralelo con (C luego D)
-  <A 'FAILED'> | B   → si A termina con exitCode FAILED, ejecutar B
-```
+*Cuatro operadores DSL de Composed Tasks: secuencia, paralelismo, siempre-ejecutar y condicional-por-exit-code.*
 
 ## Ejemplo central
 
@@ -130,17 +146,30 @@ Los operadores del DSL y los componentes de Composed Tasks tienen roles diferenc
 
 Cuando se ejecuta una Composed Task, se crean múltiples `TaskExecution` en la base de datos. La relación padre-hijo se establece mediante `PARENT_EXECUTION_ID`.
 
-```
-TASK_EXECUTION resultante de "validation-task processing-task && loading-task ; notification-task":
+```mermaid
+flowchart TD
+    ROOT["TASK_EXECUTION_ID=1\netl-pipeline (Composed Task Runner)\nPARENT=NULL"]
+    V["TASK_EXECUTION_ID=2\nvalidation-task\nPARENT=1"]
+    P["TASK_EXECUTION_ID=3\nprocessing-task\nPARENT=1"]
+    L["TASK_EXECUTION_ID=4\nloading-task\nPARENT=1"]
+    N["TASK_EXECUTION_ID=5\nnotification-task\nPARENT=1"]
 
-TASK_EXECUTION_ID | TASK_NAME          | EXIT_CODE | PARENT_EXECUTION_ID
-------------------+--------------------+-----------+--------------------
-1                 | etl-pipeline       | 0         | NULL           ← Composed Task Runner
-2                 | validation-task    | 0         | 1              ← sub-tarea
-3                 | processing-task    | 0         | 1              ← sub-tarea (paralelo)
-4                 | loading-task       | 0         | 1              ← sub-tarea (paralelo)
-5                 | notification-task  | 0         | 1              ← sub-tarea (siempre)
+    ROOT -->|"secuencia"| V
+    V -->|"completa"| P
+    V -->|"paralelo &&"| L
+    P -->|"siempre ;"| N
+    L -->|"siempre ;"| N
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+
+    class ROOT root
+    class V,P,L primary
+    class N secondary
 ```
+
+*Relación padre-hijo en TASK_EXECUTION: cada sub-tarea tiene PARENT_EXECUTION_ID apuntando al ID del Composed Task Runner.*
 
 > [ADVERTENCIA] Las Composed Tasks requieren SCDF para funcionar: el Composed Task Runner necesita llamar a la API REST de SCDF para lanzar cada sub-tarea. No es posible ejecutar Composed Tasks sin SCDF.
 

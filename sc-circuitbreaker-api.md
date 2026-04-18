@@ -51,6 +51,38 @@ public class OrderService {
 
 > [CONCEPTO] La selección del fallback es por especificidad de excepción: Resilience4j busca el fallback cuyo parámetro de excepción sea del tipo más específico que coincida con la excepción lanzada. Si hay empate, usa el primero encontrado por reflexión.
 
+```mermaid
+flowchart TD
+    EX(("Excepción lanzada\ne.g. SocketTimeoutException"))
+    CHK1{"¿Hay fallback\ncon ese tipo exacto?"}
+    CHK2{"¿Hay fallback con\nsuperclase más cercana?"}
+    CHK3{"¿Hay fallback\ncon Throwable?"}
+    FB1["Invoca fallback específico\n(más preciso)"]
+    FB2["Invoca fallback de superclase"]
+    FB3["Invoca fallback genérico (Throwable)"]
+    ERR["NoSuchMethodException\nen runtime"]
+
+    EX --> CHK1
+    CHK1 -->|"sí"| FB1
+    CHK1 -->|"no"| CHK2
+    CHK2 -->|"sí"| FB2
+    CHK2 -->|"no"| CHK3
+    CHK3 -->|"sí"| FB3
+    CHK3 -->|"no"| ERR
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+
+    class EX root
+    class CHK1,CHK2,CHK3 warning
+    class FB1,FB2,FB3 secondary
+    class ERR danger
+```
+*Algoritmo de selección de fallbackMethod: Resilience4j elige el método cuyo tipo de excepción es el más específico en la jerarquía de clases.*
+
 ## Ejemplo central
 
 El ejemplo muestra el uso completo de `CircuitBreakerRegistry` para acceso programático: crear una instancia con configuración específica, decorar una llamada con `executeSupplier`, y registrar un listener de estado:

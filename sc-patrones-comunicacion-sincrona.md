@@ -12,19 +12,34 @@ En una arquitectura de microservicios, los clientes externos no pueden ni deben 
 
 El siguiente diagrama muestra cómo el API Gateway actúa como fachada frente a múltiples microservicios internos, gestionando autenticación, enrutamiento y rate limiting de forma centralizada.
 
+```mermaid
+flowchart TD
+    CLI(["Cliente Web / Móvil / Externo"])
+    GW{{"API Gateway\nauthn · rate limiting · routing · SSL termination"}}
+
+    subgraph backend["Microservicios internos"]
+        direction LR
+        OS["Order\nService"]
+        IS["Inventory\nService"]
+        US["User\nService"]
+    end
+
+    CLI --> GW
+    GW --> OS
+    GW --> IS
+    GW --> US
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class CLI neutral
+    class GW warning
+    class OS,IS,US primary
 ```
-Cliente Web / Móvil / Externo
-          │
-          ▼
-  ┌─────────────────┐
-  │   API Gateway   │  ← autenticación, rate limiting, routing, SSL termination
-  └────────┬────────┘
-           │
-    ┌──────┼──────┐
-    ▼      ▼      ▼
- Order  Inventory  User
-Service  Service  Service
-```
+*El API Gateway como único punto de entrada: encapsula la topología interna y aplica políticas transversales.*
 
 > [CONCEPTO] **API Gateway pattern**: el gateway es la única entrada al sistema de microservicios desde el exterior. Sus responsabilidades incluyen: enrutamiento de peticiones, autenticación y autorización centralizada, terminación TLS/SSL, rate limiting, logging y trazabilidad, y transformación de protocolos (REST → gRPC, por ejemplo). En el ecosistema Spring Cloud, la implementación de referencia es Spring Cloud Gateway.
 
@@ -143,6 +158,36 @@ public class UserKeyResolver implements KeyResolver {
 ## Service Mesh vs Spring Cloud Gateway
 
 > [CONCEPTO] **Service Mesh vs Spring Cloud Gateway**: un Service Mesh (Istio, Linkerd) gestiona la comunicación **este-oeste** (service-to-service dentro del clúster), mientras que Spring Cloud Gateway gestiona la comunicación **norte-sur** (cliente externo → clúster). El Service Mesh opera a nivel de red (sidecar proxy) sin modificar el código de la aplicación, mientras que el Gateway opera a nivel de aplicación. Son complementarios: el Gateway para el acceso externo, el Service Mesh para las políticas de red interna.
+
+```mermaid
+flowchart LR
+    EXT(["Cliente externo"])
+    GW{{"API Gateway\nSpring Cloud Gateway\n(tráfico Norte–Sur)"}}
+
+    subgraph cluster["Clúster interno"]
+        direction TB
+        SVC_A["Service A"]
+        SVC_B["Service B"]
+        SVC_C["Service C"]
+        MESH{{"Service Mesh\nIstio / Linkerd\n(tráfico Este–Oeste)"}}
+        SVC_A <-->|"mTLS, retry,\ncircuit break"| MESH
+        SVC_B <--> MESH
+        SVC_C <--> MESH
+    end
+
+    EXT --> GW --> SVC_A
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class EXT neutral
+    class GW warning
+    class SVC_A,SVC_B,SVC_C primary
+    class MESH warning
+```
+*Complementariedad de Gateway y Service Mesh: el Gateway gestiona el tráfico Norte–Sur (entrada externa); el Service Mesh gestiona el tráfico Este–Oeste (servicio a servicio).*
 
 > [ADVERTENCIA] Un API Gateway mal diseñado puede convertirse en un cuello de botella o un punto único de fallo (SPOF). En producción debe desplegarse en alta disponibilidad con al menos 2 réplicas y un circuit breaker para los servicios downstream.
 

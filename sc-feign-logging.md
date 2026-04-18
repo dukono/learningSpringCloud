@@ -12,26 +12,39 @@ El logging de Feign responde a una necesidad concreta en el desarrollo y diagnó
 
 Feign delega la emisión de logs en el logger del framework (SLF4J/Logback), pero primero aplica su propio filtro de verbosidad. Son dos capas independientes que deben estar alineadas.
 
+```mermaid
+flowchart TD
+    HTTP(("Petición / Respuesta HTTP"))
+    FEIGN["Capa 1 — feign.Logger\n(Logger.Level)\nDecide QUÉ loguear:\nNONE: nada\nBASIC: método + URL + status\nHEADERS: + cabeceras\nFULL: + cuerpo"]
+    HAS_LOG{"¿Hay algo\nque loguear?"}
+    SLF4J["Capa 2 — SLF4J / Logback\n(logging.level)\nDecide SI imprime:\nINFO o superior → silencio\nDEBUG → output visible"]
+    HAS_DEBUG{"¿logging.level\n= DEBUG?"}
+    OUTPUT(("Output visible\nen consola / archivo"))
+    SILENCE["Silencio\n(sin output)"]
+
+    HTTP --> FEIGN
+    FEIGN --> HAS_LOG
+    HAS_LOG -->|Sí| SLF4J
+    HAS_LOG -->|No| SILENCE
+    SLF4J --> HAS_DEBUG
+    HAS_DEBUG -->|Sí| OUTPUT
+    HAS_DEBUG -->|No| SILENCE
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class HTTP root
+    class FEIGN,SLF4J primary
+    class HAS_LOG,HAS_DEBUG warning
+    class OUTPUT secondary
+    class SILENCE danger
 ```
-  Petición/Respuesta HTTP
-          │
-          ▼
-  ┌───────────────────┐
-  │  feign.Logger     │  Capa 1 — Feign decide QUÉ loguear (Logger.Level)
-  │  (Logger.Level)   │  NONE: nada | BASIC: método+URL+status
-  │                   │  HEADERS: + cabeceras | FULL: + cuerpo
-  └────────┬──────────┘
-           │ Si hay algo que loguear...
-           ▼
-  ┌───────────────────┐
-  │  SLF4J / Logback  │  Capa 2 — Framework decide SI lo imprime (nivel DEBUG)
-  │  logging.level    │  Si el nivel del paquete es INFO o superior → silencio
-  │  = DEBUG          │  Solo con DEBUG el mensaje llega a la consola/archivo
-  └───────────────────┘
-           │
-           ▼
-      Output visible
-```
+*Doble capa de logging: Feign filtra el contenido y SLF4J decide si llega a la salida — ambas deben estar alineadas.*
 
 ## Ejemplo central
 
@@ -171,6 +184,27 @@ La elección del nivel afecta tanto a la visibilidad como al rendimiento, porque
 | `BASIC` | Método HTTP, URL, código de estado, tiempo de respuesta | Mínimo | Producción (monitorización) |
 | `HEADERS` | Todo lo de BASIC + headers de petición y respuesta | Bajo | Pre-producción, debugging de autenticación |
 | `FULL` | Todo lo de HEADERS + cuerpo de petición y respuesta | Moderado | Desarrollo, debugging local |
+
+```mermaid
+timeline
+    title Progresión acumulativa de Logger.Level
+    section NONE
+        Sin output : nada se registra
+    section BASIC
+        Método HTTP : GET / POST / PUT
+        URL de la petición : http://servicio/ruta
+        Código de estado : 200 / 404 / 503
+        Tiempo de respuesta : 234ms
+    section HEADERS
+        Todo lo de BASIC : +
+        Headers de petición : Accept, Authorization…
+        Headers de respuesta : Content-Type, X-Request-Id…
+    section FULL
+        Todo lo de HEADERS : +
+        Cuerpo de petición : JSON / form payload
+        Cuerpo de respuesta : JSON completo recibido
+```
+*Cada nivel incluye acumulativamente lo del anterior — FULL expone el mayor detalle pero también el mayor riesgo en producción.*
 
 ## Buenas y malas prácticas
 

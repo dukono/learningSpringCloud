@@ -173,6 +173,22 @@ Las estrategias de protección de los endpoints del Bus se comparan según su ad
 | OAuth2/JWT | Muy alta | Alta | Producción con SSO corporativo |
 | Endpoint deshabilitado | Máxima | Mínima | Servicios que no necesitan bus-refresh externo |
 
+```mermaid
+quadrantChart
+    title Estrategias de seguridad: complejidad vs nivel de protección
+    x-axis "Baja complejidad" --> "Alta complejidad"
+    y-axis "Baja protección" --> "Alta protección"
+    quadrant-1 Producción con SSO
+    quadrant-2 Sobre-ingeniería
+    quadrant-3 No recomendado en producción
+    quadrant-4 Balance óptimo interno
+    Puerto de gestión separado: [0.2, 0.45]
+    HTTP Basic + roles: [0.45, 0.75]
+    OAuth2/JWT: [0.85, 0.92]
+    Endpoint deshabilitado: [0.1, 0.98]
+```
+*Comparación de estrategias según el balance entre complejidad de implementación y nivel de protección alcanzado.*
+
 ## Deshabilitar endpoints del Bus
 
 Cuando un servicio no necesita recibir llamadas externas al endpoint de Bus (por ejemplo, si el refresh se dispara desde otro servicio interno), la opción más segura es deshabilitar el endpoint completamente:

@@ -12,17 +12,37 @@ La Binder abstraction es el núcleo arquitectural que permite a Spring Cloud Str
 
 La interfaz `Binder` actúa como contrato entre el modelo funcional de la aplicación y el middleware. `BinderFactory` es el componente que instancia el binder correcto según la configuración. El descubrimiento de binders disponibles se realiza mediante el fichero `META-INF/spring.binders` incluido en cada artefacto de binder.
 
+```mermaid
+flowchart TD
+    APP["Aplicación\nFunction / Consumer / Supplier"]
+    BS["BindingService"]
+    BF{{"BinderFactory"}}
+    SB[["META-INF/spring.binders\n(descubrimiento automático)"]]
+    KB["KafkaBinder"]
+    RB["RabbitBinder"]
+    K[(Kafka Broker)]
+    R[(RabbitMQ Broker)]
+
+    APP --> BS --> BF
+    SB --> BF
+    BF --> KB --> K
+    BF --> RB --> R
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class APP root
+    class BS primary
+    class BF warning
+    class SB neutral
+    class KB,RB primary
+    class K,R storage
 ```
-Aplicación (Function/Consumer/Supplier)
-         |
-   BindingService
-         |
-   BinderFactory  ←── META-INF/spring.binders (descubrimiento automático)
-     /       \
-KafkaBinder  RabbitBinder
-     |              |
-  Kafka Broker   RabbitMQ Broker
-```
+*La BinderFactory instancia el binder correcto leyendo los descriptores META-INF/spring.binders incluidos en cada artefacto de binder.*
 
 ## Ejemplo central — configuración multi-binder
 
@@ -100,6 +120,35 @@ Spring Cloud Stream selecciona el binder en el siguiente orden de prioridad:
 | Por binding explícito | `bindings.[nombre].binder` | 1 (mayor) | `binder: kafka-primary` |
 | Binder por defecto | `spring.cloud.stream.default-binder` | 2 | `default-binder: kafka` |
 | Autodescubrimiento | `META-INF/spring.binders` | 3 (menor) | Solo si hay un único binder en classpath |
+
+```mermaid
+flowchart TD
+    Q{{"¿Binding tiene\n.binder explícito?"}}
+    E1["Usa el binder\nespecificado en el binding"]
+    Q2{{"¿default-binder\nconfigurado?"}}
+    E2["Usa el binder\npor defecto"]
+    Q3{{"¿Un único binder\nen classpath?"}}
+    E3["Autodescubrimiento\nvía spring.binders"]
+    ERR["ERROR: no puede\ndeterminar el binder"]
+
+    Q -->|sí| E1
+    Q -->|no| Q2
+    Q2 -->|sí| E2
+    Q2 -->|no| Q3
+    Q3 -->|sí| E3
+    Q3 -->|no| ERR
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+
+    class Q,Q2,Q3 warning
+    class E1,E2,E3 secondary
+    class ERR danger
+```
+*Orden de prioridad en la selección del binder: el explícito por binding tiene máxima prioridad; el autodescubrimiento solo funciona con un único binder en classpath.*
 
 > [CONCEPTO] El fichero `META-INF/spring.binders` está incluido en cada artefacto de binder (por ejemplo, en `spring-cloud-starter-stream-kafka`). Contiene el nombre del binder y la clase de autoconfiguración. Spring Cloud Stream lo usa para descubrir automáticamente los binders disponibles en el classpath sin configuración explícita.
 

@@ -14,28 +14,39 @@ Por defecto, cuando un servicio remoto responde con un código HTTP de error (4x
 
 El `ErrorDecoder` se invoca después de que Feign recibe la respuesta HTTP. El flujo de decisión determina si es el decoder normal o el error decoder quien procesa la respuesta.
 
+```mermaid
+flowchart TD
+    RESP(("Respuesta HTTP\nrecibida"))
+    IS300{"¿Status >= 300?"}
+    IS3XX{"¿Es redirección 3xx\ny followRedirects=true?"}
+    DECODER["Decoder normal\n(2xx → objeto Java)"]
+    REDIRECT["Seguir redirect\nautomáticamente"]
+    ERRDEC["ErrorDecoder.decode()\n(methodKey, response)"]
+    EXCEPTION(("Exception\nlanzada al llamador"))
+
+    RESP --> IS300
+    IS300 -->|No| DECODER
+    IS300 -->|Sí| IS3XX
+    IS3XX -->|Sí| REDIRECT
+    IS3XX -->|No| ERRDEC
+    ERRDEC --> EXCEPTION
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class RESP root
+    class IS300,IS3XX warning
+    class DECODER secondary
+    class REDIRECT primary
+    class ERRDEC danger
+    class EXCEPTION danger
 ```
-  Respuesta HTTP recibida
-          │
-          ▼
-  ¿Status >= 300?
-   /            \
-  No            Sí
-  │              │
-  ▼              ▼
-Decoder      ¿Es redirección
-(normal)     3xx y followRedirects=true?
-               /            \
-             Sí             No
-             │               │
-             ▼               ▼
-        Seguir           ErrorDecoder.decode()
-        redirect         (methodKey, response)
-                              │
-                              ▼
-                        Exception (lanzada
-                        al llamador)
-```
+*El ErrorDecoder solo se invoca cuando el status es ≥ 300 y no es una redirección seguida automáticamente.*
 
 ## Ejemplo central
 

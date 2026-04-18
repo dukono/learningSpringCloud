@@ -14,21 +14,46 @@ Spring Cloud OpenFeign crea un sub-contexto (ApplicationContext hijo) independie
 
 Feign sigue un modelo de herencia de contextos de Spring donde cada cliente tiene su propio contenedor de beans. Esto es lo que hace posible la configuración independiente por cliente.
 
+```mermaid
+flowchart TD
+    ROOT["ApplicationContext raíz\n(Spring Boot)"]
+
+    subgraph INV["sub-contexto: inventory-service"]
+        direction LR
+        I1["Encoder (personalizado)"]
+        I2["ErrorDecoder (personalizado)"]
+        I3["RequestInterceptor\n(solo para este cliente)"]
+    end
+
+    subgraph PAY["sub-contexto: payment-service"]
+        direction LR
+        P1["Encoder (por defecto)"]
+        P2["RequestInterceptor (diferente)"]
+    end
+
+    subgraph NOT["sub-contexto: notification-service"]
+        direction LR
+        N1["(usa todos los defaults)"]
+    end
+
+    ROOT --> INV
+    ROOT --> PAY
+    ROOT --> NOT
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class ROOT root
+    class I1,I2,I3 primary
+    class P1,P2 warning
+    class N1 neutral
 ```
-ApplicationContext raíz (Spring Boot)
-│
-├── sub-contexto: inventory-service
-│   ├── Encoder (personalizado)
-│   ├── ErrorDecoder (personalizado)
-│   └── RequestInterceptor (solo para este cliente)
-│
-├── sub-contexto: payment-service
-│   ├── Encoder (por defecto)
-│   └── RequestInterceptor (diferente)
-│
-└── sub-contexto: notification-service
-    └── (usa todos los defaults)
-```
+*Jerarquía de sub-contextos de Feign: cada cliente tiene su propio ApplicationContext hijo con beans independientes.*
 
 ## Ejemplo central
 
@@ -212,6 +237,37 @@ La clase de configuración Java puede registrar los siguientes beans para person
 El problema más importante de la configuración Java de Feign es la visibilidad de la clase. Si la clase de configuración de un cliente específico lleva `@Configuration` y está en un paquete que el component scan raíz detecta, sus `@Bean` se registran en el contexto padre y quedan disponibles para **todos** los clientes Feign, eliminando el efecto de configuración por cliente.
 
 La solución oficial es no anotar la clase con `@Configuration` cuando sea configuración por cliente. Si se necesita inyectar valores con `@Value` o usar `@Autowired`, eso funciona igual sin `@Configuration` porque Feign invoca los métodos `@Bean` de la clase instanciándola directamente en el sub-contexto.
+
+```mermaid
+flowchart TD
+    CLASS["Clase de configuración Feign"]
+    HAS_CFG{"¿Tiene\n@Configuration?"}
+    IN_SCAN{"¿Está dentro del\nbasePackage de scan?"}
+    GLOBAL["Beans registrados en\ncontexto RAÍZ\n→ afectan a TODOS los clientes"]
+    LOCAL["Beans registrados en\nsub-contexto del cliente\n→ solo ese cliente"]
+    SAFE["Sin @Configuration\nFuera del scan\n→ siempre seguro"]
+
+    CLASS --> HAS_CFG
+    HAS_CFG -->|Sí| IN_SCAN
+    HAS_CFG -->|No| LOCAL
+    IN_SCAN -->|Sí| GLOBAL
+    IN_SCAN -->|No| LOCAL
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class CLASS neutral
+    class HAS_CFG,IN_SCAN warning
+    class GLOBAL danger
+    class LOCAL secondary
+    class SAFE primary
+```
+*Árbol de decisión sobre visibilidad de beans: @Configuration + dentro del scan = contaminación global.*
 
 > [ADVERTENCIA] Si la clase de configuración específica de un cliente tiene `@Configuration` Y está dentro del basePackage del component scan, sus beans se volverán globales para todos los clientes Feign. Este es uno de los errores más frecuentes en la certificación Spring Professional.
 

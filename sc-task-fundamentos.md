@@ -16,24 +16,39 @@ La activación de Spring Cloud Task se realiza con una sola anotación. Al arran
 
 El siguiente diagrama muestra el flujo completo del ciclo de vida:
 
-```
-@SpringBootApplication arranca
-        │
-        ▼
-@EnableTask activa TaskLifecycleConfiguration
-        │
-        ▼
-SimpleTaskRepository.createTaskExecution()
-   → INSERT TASK_EXECUTION (START_TIME, TASK_NAME, EXIT_CODE=null)
-        │
-        ▼
-ApplicationRunner / CommandLineRunner ejecuta lógica de negocio
-        │
-        ├─── sin excepción ──→ EXIT_CODE = 0
-        │                     SimpleTaskRepository.update() → END_TIME, EXIT_CODE=0
-        │
-        └─── con excepción ──→ EXIT_CODE = 1 (o según ExitCodeExceptionMapper)
-                              SimpleTaskRepository.update() → END_TIME, EXIT_CODE≠0, ERROR_MESSAGE
+```mermaid
+stateDiagram-v2
+    [*] --> Arrancando : @SpringBootApplication inicia
+
+    state "Arrancando" as Arrancando {
+        [*] --> ActivandoTask
+        ActivandoTask : @EnableTask activa TaskLifecycleConfiguration
+        ActivandoTask --> Registrando
+        Registrando : SimpleTaskRepository.createTaskExecution()\nINSERT TASK_EXECUTION\nSTART_TIME, TASK_NAME, EXIT_CODE=null
+    }
+
+    Arrancando --> Ejecutando : contexto listo
+
+    state "Ejecutando" as Ejecutando {
+        [*] --> RunnerActivo
+        RunnerActivo : ApplicationRunner / CommandLineRunner\nejecutando lógica de negocio
+    }
+
+    Ejecutando --> Exitoso : sin excepción
+    Ejecutando --> Fallido : excepción no capturada
+
+    state "Exitoso" as Exitoso {
+        [*] --> Persistido0
+        Persistido0 : SimpleTaskRepository.update()\nEND_TIME, EXIT_CODE=0
+    }
+
+    state "Fallido" as Fallido {
+        [*] --> PersistidoN
+        PersistidoN : SimpleTaskRepository.update()\nEND_TIME, EXIT_CODE≠0\nERROR_MESSAGE (stacktrace)
+    }
+
+    Exitoso --> [*]
+    Fallido --> [*]
 ```
 
 ## Ejemplo central
@@ -104,6 +119,32 @@ Los componentes que Spring Cloud Task registra automáticamente en el contexto a
 Spring Cloud Task necesita un nombre para identificar cada tipo de tarea en la tabla `TASK_EXECUTION`. La resolución sigue el siguiente orden de prioridad.
 
 `SimpleTaskNameResolver` busca primero la propiedad `spring.cloud.task.name` en el entorno Spring. Si no existe, usa el nombre del artefacto (campo `spring.application.name`). Si tampoco está configurado, usa el nombre de la clase principal anotada con `@SpringBootApplication`.
+
+```mermaid
+flowchart TD
+    Q1{{"¿Está configurado\nspring.cloud.task.name?"}}
+    Q2{{"¿Está configurado\nspring.application.name?"}}
+    Q3["Usa nombre de la clase principal\n@SpringBootApplication"]
+    N1["Usa spring.cloud.task.name\n(máxima prioridad)"]
+    N2["Usa spring.application.name"]
+
+    Q1 -->|"SÍ"| N1
+    Q1 -->|"NO"| Q2
+    Q2 -->|"SÍ"| N2
+    Q2 -->|"NO"| Q3
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class Q1,Q2 root
+    class N1 primary
+    class N2 secondary
+    class Q3 neutral
+```
+
+*Orden de prioridad de resolución del nombre de tarea: spring.cloud.task.name tiene precedencia absoluta.*
 
 ```yaml
 spring:

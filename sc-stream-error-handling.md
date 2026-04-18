@@ -12,24 +12,45 @@ El manejo de errores en Spring Cloud Stream garantiza que los mensajes que falla
 
 El flujo de error handling sigue una secuencia determinista cuando un consumer handler lanza una excepción:
 
+```mermaid
+flowchart TD
+    MSG(("Mensaje\nrecibido"))
+    HANDLER["Handler ejecuta"]
+    EXC{{"¿Lanza excepción?"}}
+    OK(("Procesado\ncorrectamente"))
+    RETRY{{"¿Es retryable?"}}
+    DLQ_NOW["Envía a DLQ\no descarta"]
+    R1["Reintento #1\n(backOffInitialInterval)"]
+    FAIL1{{"¿Sigue fallando?"}}
+    R2["Reintento #2\n(interval × multiplier)"]
+    FAIL2{{"¿Agotó\nmaxAttempts?"}}
+    DLQ["Envía a DLQ"]
+
+    MSG --> HANDLER --> EXC
+    EXC -->|no| OK
+    EXC -->|sí| RETRY
+    RETRY -->|no retryable| DLQ_NOW
+    RETRY -->|retryable| R1 --> FAIL1
+    FAIL1 -->|no| OK
+    FAIL1 -->|sí| R2 --> FAIL2
+    FAIL2 -->|no| OK
+    FAIL2 -->|sí| DLQ
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class MSG root
+    class HANDLER primary
+    class EXC,RETRY,FAIL1,FAIL2 warning
+    class OK secondary
+    class R1,R2 primary
+    class DLQ,DLQ_NOW storage
 ```
-Mensaje recibido
-      │
-  Handler lanza excepción
-      │
-  ¿Es retryable?
-    NO → Envía inmediatamente a DLQ (si está configurada) o descarta
-    SÍ → Reintento #1 (backOffInitialInterval)
-             │
-         ¿Sigue fallando?
-             SÍ → Reintento #2 (interval * multiplier)
-                     │
-                 ¿Sigue fallando?
-                     SÍ → Reintento #3
-                             │
-                     ¿Agotó maxAttempts?
-                         SÍ → Envía a DLQ
-```
+*Flujo determinista de error handling: las excepciones non-retryable van directamente a DLQ; las retryable aplican backoff exponencial hasta agotar `maxAttempts`.*
 
 ## Ejemplo central — configuración completa de error handling
 

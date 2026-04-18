@@ -12,10 +12,20 @@ Spring Cloud Stream es el módulo de Spring Cloud que permite construir microser
 
 Spring Cloud Stream se compone de un artefacto core más un binder específico del broker. El artefacto core (`spring-cloud-stream`) proporciona el modelo de programación, la infraestructura de bindings y la autoconfiguración. Los binders son implementaciones intercambiables que conectan ese modelo al broker real.
 
-```
-spring-cloud-stream (core)
-    ├── spring-cloud-starter-stream-kafka   (incluye spring-cloud-stream + kafka-binder)
-    └── spring-cloud-starter-stream-rabbit  (incluye spring-cloud-stream + rabbit-binder)
+```mermaid
+mindmap
+  root((spring-cloud-stream))
+    (spring-cloud-starter-stream-kafka)
+      spring-cloud-stream
+      kafka-binder
+      spring-kafka
+    (spring-cloud-starter-stream-rabbit)
+      spring-cloud-stream
+      rabbit-binder
+      spring-amqp
+    [spring-cloud-stream-test-binder]
+      scope test
+      binder en memoria
 ```
 
 ## Configuración del BOM y dependencias Maven

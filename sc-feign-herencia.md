@@ -12,31 +12,36 @@ El patrón de herencia de interfaces en Feign permite que el contrato HTTP de un
 
 El patrón conecta tres artefactos: la interfaz API (normalmente en un módulo compartido), el servidor que la implementa, y el cliente Feign que la referencia.
 
+```mermaid
+flowchart TD
+    subgraph API["Módulo product-api (JAR compartido)"]
+        IFACE["interface ProductApi\n@GetMapping /products/{id}\n@PostMapping /products\n@DeleteMapping /products/{id}"]
+    end
+
+    subgraph SERVER["Módulo product-service (servidor)"]
+        CTRL["@RestController\n@RequestMapping /api/v1\nclass ProductController\nimplements ProductApi"]
+    end
+
+    subgraph CLIENT["Módulo orders-service (consumidor)"]
+        FEIGN["@FeignClient(name=product-service, path=/api/v1)\ninterface ProductClient\nextends ProductApi"]
+    end
+
+    API -->|implements| SERVER
+    API -->|extends| CLIENT
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class IFACE root
+    class CTRL secondary
+    class FEIGN primary
 ```
-  ┌──────────────────────────────────────────┐
-  │  Módulo: product-api (librería JAR)       │
-  │                                          │
-  │  public interface ProductApi {           │
-  │    @GetMapping("/products/{id}")         │
-  │    ProductResponse getProduct(           │
-  │      @PathVariable Long id);             │
-  │  }                                       │
-  └──────────────┬───────────────────────────┘
-                 │ implementa / extiende
-        ┌────────┴────────┐
-        │                 │
-        ▼                 ▼
-  ┌──────────────┐   ┌──────────────────────────────┐
-  │  Módulo:     │   │  Módulo: orders-service       │
-  │  product-    │   │                               │
-  │  service     │   │  @FeignClient(               │
-  │              │   │    name="product-service")    │
-  │  @RestCtrl   │   │  interface ProductClient      │
-  │  class Impl  │   │    extends ProductApi {}      │
-  │  implements  │   └──────────────────────────────┘
-  │  ProductApi  │
-  └──────────────┘
-```
+*Patrón de herencia: la interfaz base en el JAR compartido une al servidor (implements) y al cliente Feign (extends) en un único contrato.*
 
 ## Ejemplo central
 

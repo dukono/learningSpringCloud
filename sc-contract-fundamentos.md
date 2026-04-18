@@ -14,21 +14,40 @@ Consumer-Driven Contract Testing (CDC) es una técnica de verificación de contr
 
 El flujo CDC con Spring Cloud Contract sigue cuatro etapas claramente diferenciadas que garantizan el aislamiento de los tests de ambas partes.
 
+```mermaid
+flowchart TD
+    CON(("Consumidor"))
+    CTR[["contratos\n.groovy / .yaml"]]
+    PROD(("Productor"))
+    VER["mvn verify\ngeneraTests + ejecuta"]
+    STUBS[("stubs.jar\nclasificador stubs")]
+    NEXUS[(Nexus / Artifactory)]
+    SR["Stub Runner\nlevanta WireMock local"]
+    TEST["Tests del consumidor\nvs WireMock local"]
+
+    CON -->|"define expectativas"| CTR
+    CTR -->|"fuente única de verdad"| PROD
+    PROD --> VER
+    VER -->|"tests pasan"| STUBS
+    STUBS --> NEXUS
+    NEXUS -->|"descarga"| SR
+    SR --> TEST
+    TEST -->|"tests aislados"| CON
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class CON,PROD root
+    class CTR neutral
+    class VER,SR primary
+    class STUBS,NEXUS storage
+    class TEST secondary
 ```
-Consumidor                    Contrato                   Productor
-─────────                     ────────                   ─────────
-  define              →    .groovy / .yaml   →         verifica
-  expectativas              (fuente única                genera tests
-                              de verdad)                  genera stubs
-                                 │
-                                 ▼
-                          stubs.jar publicado
-                                 │
-                                 ▼
-Consumidor  ←──────────  Stub Runner descarga
-tests con                   y ejecuta stubs
-stubs locales              WireMock en puerto local
-```
+
+*Ciclo completo CDC: el consumidor define contratos, el productor los verifica y publica stubs, el consumidor los descarga para sus tests aislados.*
 
 El productor ejecuta `mvn verify`, que genera tests automáticos a partir de los contratos. Si los tests pasan, el productor empaqueta los stubs en un JAR clasificador y los publica en el repositorio de artefactos. El consumidor, en su CI, descarga ese JAR y usa `@AutoConfigureStubRunner` para levantar un servidor WireMock local que responde exactamente según el contrato.
 
@@ -37,6 +56,21 @@ El productor ejecuta `mvn verify`, que genera tests automáticos a partir de los
 ## Diferencia con integration testing end-to-end
 
 Los tests de integración end-to-end requieren que todos los servicios involucrados estén desplegados y disponibles simultáneamente. Esta dependencia genera tests lentos, frágiles y difíciles de mantener en entornos de CI/CD con muchos microservicios.
+
+```mermaid
+quadrantChart
+    title E2E vs CDC — velocidad de detección y coste de infraestructura
+    x-axis "Detección temprana" --> "Detección tardía"
+    y-axis "Baja infraestructura" --> "Alta infraestructura"
+    quadrant-1 Coste elevado, detección lenta
+    quadrant-2 Coste elevado, detección rápida
+    quadrant-3 Coste bajo, detección rápida
+    quadrant-4 Coste bajo, detección lenta
+    CDC: [0.15, 0.1]
+    Integration E2E: [0.8, 0.85]
+```
+
+*CDC requiere poca infraestructura y detecta incompatibilidades en el build del productor; E2E requiere todos los servicios desplegados y detecta errores al final del pipeline.*
 
 | Criterio | Integration Test E2E | Consumer-Driven Contract Testing |
 |---|---|---|

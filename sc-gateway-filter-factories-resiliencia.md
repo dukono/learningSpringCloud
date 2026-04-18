@@ -36,6 +36,39 @@ El filtro `RequestRateLimiter` implementa el algoritmo de **token bucket** usand
 
 > [CONCEPTO] El **KeyResolver** es un bean Spring `KeyResolver` que extrae del `ServerWebExchange` la clave de identificación del cliente (IP, usuario autenticado, API key, etc.). Es el único bean custom obligatorio para usar `RequestRateLimiter`.
 
+```mermaid
+flowchart LR
+    REQ(("Petición"))
+    KR["KeyResolver\nextrae clave del cliente\n(IP / user / API key)"]
+    BUCKET[("Token Bucket\nen Redis\nclave del cliente")]
+    CHK{"¿tokens\ndisponibles?"}
+    CONSUME["Consume 1 token\n(requested-tokens)"]
+    UPSTREAM["Envía al\nupstream"]
+    REJECT["429 Too Many Requests"]
+    REPLENISH{{"Cada limitRefreshPeriod:\nrecarga burst-capacity tokens"}}
+
+    REQ --> KR --> BUCKET --> CHK
+    CHK -->|"sí"| CONSUME --> UPSTREAM
+    CHK -->|"no"| REJECT
+    REPLENISH -.->|"recarga"| BUCKET
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class REQ root
+    class KR primary
+    class BUCKET storage
+    class CHK warning
+    class CONSUME,UPSTREAM secondary
+    class REJECT danger
+    class REPLENISH warning
+```
+*Algoritmo token bucket del RequestRateLimiter: Redis almacena el bucket por clave de cliente; el replenish recarga tokens a tasa constante independientemente del consumo.*
+
 ## Ejemplo central
 
 El siguiente ejemplo configura las tres factories de resiliencia con todos sus parámetros relevantes:

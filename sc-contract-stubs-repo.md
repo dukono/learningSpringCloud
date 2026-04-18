@@ -14,21 +14,22 @@ El repositorio de stubs es el mecanismo de distribución que permite al consumid
 
 El plugin de Spring Cloud Contract genera, además de los tests del productor, un JAR Maven con el clasificador `stubs` que contiene los stubs WireMock en formato JSON. Este JAR es el artefacto que el consumidor descarga y ejecuta mediante Stub Runner.
 
-```
-Estructura del JAR de stubs (order-service-1.2.3-stubs.jar):
-──────────────────────────────────────────────────────────────
-/META-INF/
-    MANIFEST.MF
-/contracts/                       ← Contratos originales (.groovy / .yaml)
-    order/
+```mermaid
+mindmap
+  root[["order-service-1.2.3-stubs.jar"]]
+    [META-INF]
+      MANIFEST.MF
+    [contracts]
+      order
         shouldReturnOrder.groovy
         shouldCreateOrder.groovy
-/mappings/                        ← Stubs WireMock generados (.json)
-    order/
+    [mappings]
+      order
         shouldReturnOrder.json
         shouldCreateOrder.json
-──────────────────────────────────────────────────────────────
 ```
+
+*Estructura interna del JAR clasificador stubs: /contracts contiene los contratos originales y /mappings los stubs WireMock en formato JSON listos para ser cargados por Stub Runner.*
 
 Los ficheros en `/mappings/` son los stubs WireMock que Stub Runner carga cuando levanta el servidor WireMock local. Cada fichero JSON corresponde a un contrato y describe el mapping request → response.
 
@@ -153,6 +154,35 @@ spring:
 | Repositorio Git | `git://https://github.com/org/stubs.git` | Git como almacén de stubs |
 | Repo local (archivo) | `file:///path/to/local/repo` | Directorio local simulando repositorio Maven |
 | Maven local | _(implícito en StubsMode.LOCAL)_ | `~/.m2/repository` |
+
+```mermaid
+flowchart LR
+    SR(("Stub Runner"))
+    Q1{{"repositoryRoot\nconfigurado?"}}
+    Q2{{"stubsMode?"}}
+    NEXUS[(Nexus / Artifactory\nhttps://...)]
+    GIT[(Repositorio Git\ngit://https://...)]
+    LOCAL[(Maven local\n~/.m2/repository)]
+    CLASP[(Classpath de test\nJAR en dependencias)]
+
+    SR --> Q1
+    Q1 -->|"SÍ → REMOTE"| Q2
+    Q1 -->|"NO → LOCAL/CLASSPATH"| Q2
+    Q2 -->|"REMOTE + https"| NEXUS
+    Q2 -->|"REMOTE + git://"| GIT
+    Q2 -->|"LOCAL"| LOCAL
+    Q2 -->|"CLASSPATH"| CLASP
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+
+    class SR,Q1,Q2 root
+    class NEXUS,GIT,LOCAL,CLASP storage
+```
+
+*Opciones de repositoryRoot según el modo de resolución de stubs.*
 
 ## Stubs en modo CLASSPATH
 

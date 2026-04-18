@@ -12,30 +12,40 @@ Los codecs de Feign son las piezas responsables de transformar objetos Java en c
 
 Cada petición Feign pasa por el Encoder antes de enviarse y cada respuesta pasa por el Decoder al recibirla. El proceso es sincrónico y se integra con el contrato de Spring MVC.
 
+```mermaid
+flowchart LR
+    OBJ(("Objeto Java\n@RequestBody"))
+    ENC["Encoder\nobjetoJava → bytes HTTP"]
+    REMOTE[("Servicio\nremoto")]
+    DEC["Decoder\nbytes → objeto Java\n(HTTP 2xx)"]
+    ERR["ErrorDecoder\nbytes → excepción\n(HTTP ≥ 300)"]
+    RESULT(("Objeto Java\nresultado"))
+    EXCEPT(("Excepción\nlanzada"))
+
+    OBJ --> ENC
+    ENC -->|HTTP Request| REMOTE
+    REMOTE -->|HTTP 2xx| DEC
+    REMOTE -->|HTTP ≥ 300| ERR
+    DEC --> RESULT
+    ERR --> EXCEPT
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class OBJ root
+    class ENC primary
+    class REMOTE storage
+    class DEC secondary
+    class ERR danger
+    class RESULT neutral
+    class EXCEPT danger
 ```
-  Método Feign llamado con objeto Java
-              │
-              ▼
-    ┌─────────────────┐
-    │    Encoder      │  @RequestBody → bytes HTTP
-    │  (serializa)    │
-    └────────┬────────┘
-             │ HTTP Request
-             ▼
-         Servicio remoto
-             │
-             │ HTTP Response (2xx)
-             ▼
-    ┌─────────────────┐
-    │    Decoder      │  bytes HTTP → objeto Java
-    │  (deserializa)  │
-    └────────┬────────┘
-             │
-             ▼         (status >= 300 y != redirect)
-    ┌─────────────────┐
-    │  ErrorDecoder   │  bytes HTTP → excepción
-    └─────────────────┘
-```
+*Flujo de codificación y decodificación: Encoder serializa la petición, Decoder o ErrorDecoder procesan la respuesta según el código HTTP.*
 
 ## Ejemplo central
 

@@ -59,6 +59,24 @@ public class OrderConsumerTest {
 
 El campo `ids` acepta múltiples formatos según lo que se necesite especificar. Las partes opcionales pueden omitirse.
 
+```mermaid
+mindmap
+  root((ids))
+    groupId
+    artifactId
+    (version)
+      fijo: 1.0.0
+      último: +
+      rango: 1.2.+
+    (classifier)
+      stubs
+    (port)
+      fijo: 8090
+      aleatorio: omitir
+```
+
+*Anatomía del campo ids: solo groupId y artifactId son obligatorios; classifier por defecto es `stubs` y port puede ser aleatorio.*
+
 ```
 Formato completo:
 groupId:artifactId:version:classifier:port
@@ -86,6 +104,36 @@ ids = {
 ## Los tres modos de StubsMode
 
 `StubsMode` controla dónde busca Stub Runner los stubs. Cada modo tiene un caso de uso concreto.
+
+```mermaid
+flowchart TD
+    SR(("Stub Runner\nresuelve stubs"))
+    Q1{{"stubsMode?"}}
+    LOCAL["LOCAL\nbusca en ~/.m2/repository\nRequiere: mvn install del productor"]
+    CLASP["CLASSPATH\nbusca JAR en classpath de test\nRequiere: dependencia de test declarada"]
+    REMOTE["REMOTE\ndescarga de repositoryRoot\nRequiere: URL + credenciales"]
+    OK1(["WireMock levantado\nen puerto configurado"])
+    OK2(["WireMock levantado\nen puerto configurado"])
+    OK3(["WireMock levantado\nen puerto configurado"])
+
+    SR --> Q1
+    Q1 -->|"LOCAL"| LOCAL --> OK1
+    Q1 -->|"CLASSPATH"| CLASP --> OK2
+    Q1 -->|"REMOTE"| REMOTE --> OK3
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+
+    class SR,Q1 root
+    class LOCAL primary
+    class CLASP warning
+    class REMOTE primary
+    class OK1,OK2,OK3 secondary
+```
+
+*Los tres modos de StubsMode determinan de dónde Stub Runner carga los stubs WireMock antes de levantar el servidor local.*
 
 ```java
 // StubsMode.LOCAL: busca en el repositorio Maven local (~/.m2)

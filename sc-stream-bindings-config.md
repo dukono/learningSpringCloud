@@ -12,6 +12,30 @@ La configuración de bindings es el vocabulario fundamental para conectar las fu
 
 Cada binding tiene un nombre derivado del bean funcional y un conjunto de propiedades configurables. El nombre sigue la convención `[nombre-bean]-in-[índice]` para inputs y `[nombre-bean]-out-[índice]` para outputs. La propiedad `destination` es el único campo obligatorio para producción; `group` es crítico para consumers.
 
+```mermaid
+mindmap
+  root((binding))
+    (nombre)
+      bean-in-0
+      bean-out-0
+    (comunes)
+      destination
+      content-type
+      binder
+    (consumer)
+      group
+      partitioned
+      instance-index
+      instance-count
+      max-attempts
+      concurrency
+    (producer)
+      partition-count
+      partition-key-expression
+      required-groups
+```
+*Jerarquía de propiedades de un binding: las comunes aplican a consumer y producer; las específicas sobrescriben solo su contexto.*
+
 ```
 spring.cloud.stream.bindings.[nombre-binding].[propiedad] = valor
 

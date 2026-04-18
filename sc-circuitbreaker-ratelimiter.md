@@ -14,12 +14,24 @@ RateLimiter y TimeLimiter son dos patrones de control temporal complementarios. 
 
 Resilience4j implementa RateLimiter con un algoritmo de **refresh por época** (epoch-based refresh), no un token bucket clásico. Al inicio de cada período (`limitRefreshPeriod`), los permisos se recargan a `limitForPeriod`. Las llamadas que llegan durante el período consumen permisos hasta agotarlos; las llamadas siguientes esperan hasta `timeoutDuration` para obtener un permiso del próximo período.
 
+```mermaid
+timeline
+    title Algoritmo RateLimiter — epoch-based refresh (limitForPeriod=5)
+    section Período 1 (0ms → 1000ms)
+        0ms   : Permiso 1 consumido
+        50ms  : Permiso 2 consumido
+        100ms : Permiso 3 consumido
+        150ms : Permiso 4 consumido
+        200ms : Permiso 5 consumido — permisos agotados
+    section Llamada 6 espera
+        201ms : Sin permiso disponible
+              : Espera hasta inicio del Período 2
+              : (máximo timeoutDuration ms)
+    section Período 2 (1000ms → 2000ms)
+        1000ms : 5 permisos recargados (no se acumulan del período anterior)
+               : Llamada 6 obtiene Permiso 1
 ```
-Período 1 (0ms → 1000ms):  [P1][P2][P3][P4][P5] ← se agotan a los 200ms
-                            Llamada 6: espera hasta inicio de Período 2
-
-Período 2 (1000ms → 2000ms): [P1][P2][P3][P4][P5] ← recargados
-```
+*El algoritmo no acumula permisos no usados entre períodos — cada época comienza siempre con limitForPeriod permisos frescos.*
 
 La diferencia con token bucket: los permisos no se acumulan entre períodos. Si en el Período 1 solo se usaron 2 permisos, el Período 2 comienza con `limitForPeriod` completo (no 5+3).
 

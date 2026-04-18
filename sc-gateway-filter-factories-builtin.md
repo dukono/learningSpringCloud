@@ -14,35 +14,32 @@ Las GatewayFilter Factories built-in son el mecanismo principal para transformar
 
 Las factories built-in se agrupan por su propósito: manipulación de headers de petición, manipulación de headers de respuesta, transformación de URL, control de flujo y utilidades.
 
+```mermaid
+mindmap
+  root((GatewayFilter Factories))
+    (Headers de petición)
+      AddRequestHeader
+      RemoveRequestHeader
+      SetRequestHeader
+      SetRequestHostHeader
+    (Headers de respuesta)
+      AddResponseHeader
+      RemoveResponseHeader
+      SetResponseHeader
+      DedupeResponseHeader
+    (Transformación de URL)
+      StripPrefix=N
+      RewritePath=regex,reemplazo
+      SetPath=plantilla
+      PrefixPath=/prefijo
+    (Redirección y estado)
+      RedirectTo=código,url
+      SetStatus=código
+    [Utilidades]
+      RequestSize=maxSize
+      SaveSession
 ```
-GatewayFilter Factories built-in
-│
-├── HEADERS DE PETICIÓN (REQUEST)
-│   ├── AddRequestHeader=nombre, valor
-│   ├── RemoveRequestHeader=nombre
-│   ├── SetRequestHeader=nombre, valor
-│   └── SetRequestHostHeader=host
-│
-├── HEADERS DE RESPUESTA (RESPONSE)
-│   ├── AddResponseHeader=nombre, valor
-│   ├── RemoveResponseHeader=nombre
-│   ├── SetResponseHeader=nombre, valor
-│   └── DedupeResponseHeader=nombre [estrategia]
-│
-├── TRANSFORMACIÓN DE URL / PATH
-│   ├── StripPrefix=partes            ← elimina N segmentos del inicio
-│   ├── RewritePath=regex, reemplazo  ← reescritura compleja
-│   ├── SetPath=plantilla             ← reemplaza el path completo
-│   └── PrefixPath=/prefijo           ← añade prefijo al path
-│
-├── REDIRECCIÓN Y ESTADO
-│   ├── RedirectTo=código, url
-│   └── SetStatus=código-http
-│
-└── UTILIDADES
-    ├── RequestSize=maxSize           ← rechaza peticiones grandes
-    └── SaveSession                   ← fuerza guardado de sesión WebSession
-```
+*GatewayFilter Factories built-in agrupadas por propósito — se configuran en la sección filters de cada ruta.*
 
 ## Ejemplo central
 

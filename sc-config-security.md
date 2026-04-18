@@ -16,20 +16,19 @@ El Config Server es una pieza crítica de seguridad en la arquitectura de micros
 
 La forma más directa de proteger el Config Server es añadir Spring Security al classpath y configurar un usuario con contraseña. Todos los clientes deberán incluir las credenciales en sus peticiones al servidor.
 
-```
-FLUJO DE AUTENTICACIÓN HTTP BASIC
-═══════════════════════════════════════════════════════
-  Config Client                      Config Server
-       │                                    │
-       │── GET /order-service/prod ─────────▶│
-       │                                    │── 401 Unauthorized (sin credenciales)
-       │◀───────────────────────────────────│
-       │                                    │
-       │── GET /order-service/prod ─────────▶│
-       │   Authorization: Basic dXNlcjpwYXNz│
-       │                                    │── Valida credenciales con Spring Security
-       │◀─── PropertySource[] ──────────────│
-═══════════════════════════════════════════════════════
+```mermaid
+sequenceDiagram
+    participant C as Config Client
+    participant S as Config Server
+
+    C->>S: GET /order-service/prod (sin credenciales)
+    S-->>C: 401 Unauthorized
+
+    C->>S: GET /order-service/prod<br/>Authorization: Basic dXNlcjpwYXNz
+    rect rgb(0, 80, 160)
+        Note over S: Valida credenciales<br/>con Spring Security
+    end
+    S-->>C: PropertySource[]
 ```
 
 ## Ejemplo central — Config Server securizado con Basic Auth y cifrado
@@ -166,6 +165,34 @@ curl -X POST http://configuser:changeme@localhost:8888/encrypt \
 curl http://configuser:changeme@localhost:8888/order-service/prod/main
 # La propiedad spring.datasource.password llegará ya descifrada al cliente
 ```
+
+```mermaid
+flowchart LR
+    DEV["Developer"]
+    ENC[["POST /encrypt\n(Config Server)"]]
+    GIT[("Git Repo\n'{cipher}AQB...'")]
+    SRV["Config Server\n(descifra en vuelo)"]
+    CLI["Config Client\n(recibe valor en claro)"]
+
+    DEV -->|"valor en claro"| ENC
+    ENC -->|"valor cifrado"| DEV
+    DEV -->|"'{cipher}...' en YAML"| GIT
+    GIT -->|"propiedad cifrada"| SRV
+    SRV -->|"PropertySource descifrado"| CLI
+
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class DEV neutral
+    class ENC danger
+    class GIT storage
+    class SRV primary
+    class CLI secondary
+```
+*Ciclo completo del cifrado con `{cipher}`: el valor nunca viaja en claro por el repositorio Git; el descifrado ocurre en el servidor antes de entregar al cliente.*
 
 ## Cifrado asimétrico con keystore JKS
 

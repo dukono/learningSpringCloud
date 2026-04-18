@@ -22,6 +22,29 @@ Los tres tipos de subdominios DDD determinan la prioridad de inversión:
 | Supporting Subdomain | Necesario pero no diferenciador | Desarrollar internamente o subcontratar |
 | Generic Subdomain | Commodity (autenticación, email) | Usar solución off-the-shelf o SaaS |
 
+```mermaid
+flowchart TD
+    D[/"Dominio del negocio"/]
+    CORE["Core Domain\n⬆ Máxima inversión\nDesarrollar internamente"]
+    SUP["Supporting Subdomain\n↔ Inversión media\nDesarrollar o subcontratar"]
+    GEN["Generic Subdomain\n⬇ Inversión mínima\nSaaS / off-the-shelf"]
+
+    D --> CORE
+    D --> SUP
+    D --> GEN
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class D root
+    class CORE primary
+    class SUP secondary
+    class GEN neutral
+```
+*Prioridad de inversión según el tipo de subdominio DDD: el Core Domain es el diferenciador competitivo y recibe el mayor esfuerzo de desarrollo.*
+
 ## Criterios de granularidad
 
 Un microservicio bien delimitado cumple el **principio de responsabilidad única** a nivel de servicio: cambia por una única razón de negocio. Los criterios de granularidad evitan dos antipatrones opuestos.
@@ -115,6 +138,29 @@ La siguiente tabla resume los conceptos de DDD aplicados a la descomposición de
 | Aggregate Root | Entidad raíz que garantiza consistencia | Unidad mínima de transacción |
 | Domain Event | Hecho ocurrido en el dominio | Mecanismo de integración entre contextos |
 | Context Map | Relaciones entre Bounded Contexts | Identifica ACLs y dependencias |
+
+```mermaid
+mindmap
+  root((DDD en\nMicroservicios))
+    (Bounded Context)
+      Límite del modelo de dominio
+      Límite del microservicio
+    (Ubiquitous Language)
+      Vocabulario negocio-técnico
+      Sin traducciones
+    (Aggregate Root)
+      Garantiza consistencia
+      Unidad mínima de transacción
+    (Domain Event)
+      Hecho ocurrido en el dominio
+      Integración entre contextos
+    [Context Map]
+      Shared Kernel
+      Customer-Supplier
+      Conformist
+      ACL
+```
+*Conceptos DDD y su impacto en los límites y la comunicación entre microservicios.*
 
 ## Buenas y malas prácticas
 

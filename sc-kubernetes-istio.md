@@ -12,29 +12,42 @@ Istio es un service mesh que gestiona el tráfico entre microservicios a nivel d
 
 La siguiente comparativa ilustra el flujo de tráfico con cada modo de load balancer.
 
-```
-MODO POD (sin Istio o sin delegar):
-  Llamada a "order-service"
-        │
-  Spring Cloud LB resuelve IPs de pods vía KubernetesDiscoveryClient
-        │ elige Pod-IP-1 o Pod-IP-2
-        ▼
-  Envoy sidecar intercepta el tráfico (doble balanceo) ← PROBLEMA
-        │
-        ▼
-  Pod destino
+```mermaid
+flowchart TD
+    subgraph POD_MODE["MODO POD (mode=POD — sin Istio o conflicto)"]
+        direction TB
+        C1["Llamada a 'order-service'"]
+        LB1["Spring Cloud LoadBalancer\nresuelve IPs de pods\nvía KubernetesDiscoveryClient"]
+        ENV1[/"Envoy sidecar\nintercepts (doble balanceo)\n⚠ políticas Istio no se aplican"/]
+        DST1(("Pod destino"))
+        C1 --> LB1 --> ENV1 --> DST1
+    end
 
-MODO SERVICE (con Istio):
-  Llamada a "order-service"
-        │
-  Spring Cloud LB usa DNS del Service K8s (no resuelve pods individuales)
-        │ → http://order-service.default.svc.cluster.local:8080
-        ▼
-  Envoy sidecar de Istio intercepta y aplica VirtualService/DestinationRule
-        │ Istio gestiona routing, retry, mTLS, circuit breaker
-        ▼
-  Pod destino (seleccionado por Istio)
+    subgraph SVC_MODE["MODO SERVICE (mode=SERVICE — con Istio)"]
+        direction TB
+        C2["Llamada a 'order-service'"]
+        LB2["Spring Cloud LB\nusa DNS del Service K8s\norder-service.default.svc.cluster.local"]
+        ENV2["Envoy sidecar de Istio\naaplica VirtualService /\nDestinationRule / mTLS /\nretry / circuit breaker"]
+        DST2(("Pod destino\n(seleccionado por Istio)"))
+        C2 --> LB2 --> ENV2 --> DST2
+    end
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+
+    class C1,C2 neutral
+    class LB1 warning
+    class ENV1 danger
+    class DST1 neutral
+    class LB2 primary
+    class ENV2 secondary
+    class DST2 secondary
 ```
+*En modo POD Spring Cloud LoadBalancer resuelve IPs directamente, evitando el sidecar Envoy y rompiendo la gobernanza Istio; en modo SERVICE delega todo el routing al mesh.*
 
 > [CONCEPTO] Con `spring.cloud.kubernetes.loadbalancer.mode=SERVICE`, Spring Cloud LoadBalancer no consulta `KubernetesDiscoveryClient` para obtener IPs de pods. En su lugar, construye la URL usando el nombre DNS del Service de Kubernetes (`{service-name}.{namespace}.svc.cluster.local`). Istio intercepta esa petición y aplica sus políticas de routing.
 

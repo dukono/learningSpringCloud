@@ -74,6 +74,27 @@ Las responsabilidades de `BusAutoConfiguration` son:
 | Registrar `BusEnvironmentEndpoint` | Expone `/actuator/bus-env` si está habilitado |
 | Crear el publisher de eventos | Configura el canal de salida de Stream para publicar eventos |
 
+```mermaid
+mindmap
+  root((BusAutoConfiguration))
+    (BusProperties)
+      spring.cloud.bus.enabled
+      spring.cloud.bus.destination
+      spring.cloud.bus.id
+    (ServiceMatcher)
+      bus.id de la instancia
+      evaluación de destinationService
+    (Endpoints Actuator)
+      BusRefreshEndpoint
+        /actuator/bus-refresh
+      BusEnvironmentEndpoint
+        /actuator/bus-env
+    (Stream bindings)
+      springCloudBusOutput
+      springCloudBusInput
+```
+*Responsabilidades que `BusAutoConfiguration` activa automáticamente al detectar el starter en el classpath con `spring.cloud.bus.enabled=true`.*
+
 ## Ejemplo central — Configuración completa con RabbitMQ y Kafka
 
 El siguiente ejemplo muestra la configuración completa de dos variantes de `application.yml`, una para RabbitMQ y otra para Kafka, con todos los parámetros relevantes explicados.

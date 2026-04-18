@@ -14,16 +14,40 @@ La lógica de negocio de una Spring Cloud Task se implementa mediante beans que 
 
 Cuando existen varios runners en el contexto, Spring Cloud Task los ejecuta en orden. La anotación `@Order` controla la secuencia. Si cualquiera de ellos lanza una excepción no capturada, la tarea termina con `EXIT_CODE ≠ 0` y los runners posteriores no se ejecutan.
 
+```mermaid
+flowchart TD
+    START(("@EnableTask\nregistra START"))
+    R1["@Order(1) Runner A"]
+    R2["@Order(2) Runner B"]
+    R3["@Order(3) Runner C"]
+    Q1{{"¿Runner A\nlanza excepción?"}}
+    Q2{{"¿Runner B\nlanza excepción?"}}
+    Q3{{"¿Runner C\nlanza excepción?"}}
+    OK(["EXIT_CODE = 0\nEND_TIME registrado"])
+    FAIL1(["EXIT_CODE = 1\nRunner B y C NO se ejecutan"])
+    FAIL2(["EXIT_CODE = 1\nRunner C NO se ejecuta"])
+    FAIL3(["EXIT_CODE = 1\nEND_TIME registrado"])
+
+    START --> R1 --> Q1
+    Q1 -->|"NO"| R2 --> Q2
+    Q1 -->|"SÍ"| FAIL1
+    Q2 -->|"NO"| R3 --> Q3
+    Q2 -->|"SÍ"| FAIL2
+    Q3 -->|"NO"| OK
+    Q3 -->|"SÍ"| FAIL3
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+
+    class START,Q1,Q2,Q3 root
+    class R1,R2,R3 primary
+    class OK secondary
+    class FAIL1,FAIL2,FAIL3 danger
 ```
-ApplicationContext arranca → @EnableTask activa registro START
-        │
-        ▼
-Runners se ejecutan por orden @Order (menor número = primero)
-        │
-        ├─── @Order(1) Runner A ──→ OK
-        ├─── @Order(2) Runner B ──→ OK
-        └─── @Order(3) Runner C ──→ Excepción → EXIT_CODE=1, runners posteriores NO se ejecutan
-```
+
+*Ejecución secuencial de runners con @Order: el primer runner que lanza excepción detiene la cadena y registra EXIT_CODE ≠ 0.*
 
 ## Ejemplo central
 
@@ -148,6 +172,28 @@ Los elementos involucrados en la ejecución de runners dentro de una Task tienen
 El comportamiento del `EXIT_CODE` depende directamente de cómo se propagan las excepciones desde los runners. Este es uno de los temas más importantes para la certificación.
 
 Spring Cloud Task envuelve la ejecución de todos los runners en un bloque try-catch a nivel de `TaskLifecycleListener`. Si cualquier runner lanza una excepción no capturada, el `TaskLifecycleListener` la intercepta, invoca `ExitCodeExceptionMapper` (si existe en el contexto) para determinar el código de salida, y persiste `EXIT_CODE` y `ERROR_MESSAGE` en `TASK_EXECUTION`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Running : Runner.run() invocado
+
+    Running --> ExitCode0 : termina sin excepción
+    Running --> ExcepcionCapturada : excepción en try-catch interno del runner
+    Running --> ExcepcionPropagada : excepción propagada al TaskLifecycleListener
+
+    ExcepcionCapturada --> ExitCode0 : EXIT_CODE = 0 (antipatrón)
+    note right of ExcepcionCapturada : silencia el fallo —\nno relanzar es un antipatrón
+
+    ExcepcionPropagada --> Mapper : ¿ExitCodeExceptionMapper en contexto?
+    Mapper --> ExitCodeN : EXIT_CODE = valor del mapper
+    Mapper --> ExitCode1 : EXIT_CODE = 1 (genérico)
+
+    ExitCode0 --> [*]
+    ExitCodeN --> [*]
+    ExitCode1 --> [*]
+```
+
+*Propagación de excepciones y EXIT_CODE: solo las excepciones que llegan al TaskLifecycleListener producen EXIT_CODE ≠ 0.*
 
 ```java
 // Ejemplo de ExitCodeExceptionMapper para distinguir tipos de error

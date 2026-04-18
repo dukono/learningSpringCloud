@@ -14,18 +14,23 @@ Los patrones de despliegue abordan cómo se estructura físicamente un sistema d
 
 El API Gateway es el componente central del Strangler Fig: actúa como la fachada que enruta el tráfico al monolito o a los nuevos microservicios según el estado de la migración.
 
+```mermaid
+timeline
+    title Strangler Fig — migración incremental del monolito
+    section Fase 1 — Inicio
+        Gateway   : 100% tráfico → Monolito
+        Monolito  : todas las funcionalidades
+    section Fase 2 — Migración parcial
+        Gateway         : tráfico dividido por ruta
+        Monolito        : funcionalidades no migradas
+        Orders Service  : nueva implementación (migrada)
+        Inventory Svc   : en migración con ACL
+    section Fase 3 — Completado
+        Gateway        : 100% tráfico → Microservicios
+        Monolito       : eliminado
+        Microservicios : autónomos y desplegables
 ```
-FASE 1 (inicio):
-Cliente ──► Gateway ──► Monolito (100% del tráfico)
-
-FASE 2 (migración):
-                      ──► Monolito (funcionalidades no migradas)
-Cliente ──► Gateway ─┤
-                      ──► Orders Service (nueva implementación)
-
-FASE 3 (completado):
-Cliente ──► Gateway ──► Microservicios (monolito eliminado)
-```
+*El API Gateway actúa como fachada del Strangler Fig: enruta gradualmente rutas del monolito a los nuevos microservicios sin cambios para los clientes.*
 
 **Estrategias de extracción durante la migración:**
 1. Empezar por las funcionalidades más independientes (menos acopladas al resto del monolito).
@@ -83,6 +88,38 @@ Los problemas que este patrón introduce y sus soluciones:
 | Consistencia transaccional entre servicios | Saga (patrón 13.4) |
 | Datos duplicados en proyecciones | CQRS con proyecciones (patrón 13.5) |
 | Consultas complejas multi-servicio | Read model materializado actualizado por eventos |
+
+```mermaid
+flowchart TD
+    DPS{{"Database per Service\n(cada servicio posee su BD)"}}
+
+    P1["Problema: JOINs\nya no son posibles"]
+    P2["Problema: consistencia\ntransaccional entre servicios"]
+    P3["Problema: datos duplicados\nen proyecciones"]
+    P4["Problema: consultas\ncomplejas multi-servicio"]
+
+    S1["Solución:\nAPI Composition / Aggregator\n(patrón 13.6)"]
+    S2["Solución:\nSaga\n(patrón 13.4)"]
+    S3["Solución:\nCQRS con proyecciones\n(patrón 13.5)"]
+    S4["Solución:\nRead model materializado\nalimentado por eventos"]
+
+    DPS --> P1 --> S1
+    DPS --> P2 --> S2
+    DPS --> P3 --> S3
+    DPS --> P4 --> S4
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class DPS root
+    class P1,P2,P3,P4 danger
+    class S1,S2,S3,S4 secondary
+```
+*Database per Service: cada problema introducido por la autonomía de datos tiene un patrón correctivo específico.*
 
 ## Ejemplo central: configuración Strangler Fig con Spring Cloud Gateway
 

@@ -14,35 +14,33 @@ Las Predicate Factories son los mecanismos de matching que determinan si una pet
 
 El siguiente diagrama muestra todas las Predicate Factories built-in organizadas por categoría de matching:
 
+```mermaid
+mindmap
+  root((Predicate Factories))
+    (URL / Path)
+      Path=/api/**
+      múltiples patterns
+    (Método HTTP)
+      Method=GET,POST
+    (Headers HTTP)
+      Header=nombre, regex
+      Host=**.example.com
+    (Parámetros / Cookies)
+      Query=nombre
+      Query=nombre, regex
+      Cookie=nombre, regex
+    (Temporal)
+      Before=ZonedDateTime
+      After=ZonedDateTime
+      Between=desde, hasta
+    (Dirección IP)
+      RemoteAddr=CIDR
+      XForwardedRemoteAddr=CIDR
+    (Distribución tráfico)
+      Weight=grupo, peso
+      canary / A-B testing
 ```
-Predicate Factories built-in
-│
-├── URL / PATH
-│   └── Path=/api/orders/**, /api/items/**
-│
-├── MÉTODO HTTP
-│   └── Method=GET,POST,PUT,DELETE
-│
-├── HEADERS HTTP
-│   ├── Header=X-Request-Id, \d+       (nombre, regex del valor)
-│   └── Host=**.example.com, **.test.com
-│
-├── PARÁMETROS / COOKIES
-│   ├── Query=color, gree.            (nombre, regex del valor — opcional)
-│   └── Cookie=sessionId, abc.        (nombre, regex del valor)
-│
-├── TEMPORAL
-│   ├── Before=2025-01-01T00:00:00+01:00[Europe/Madrid]
-│   ├── After=2024-06-01T00:00:00+01:00[Europe/Madrid]
-│   └── Between=2024-06-01T00:00:00+01:00[Europe/Madrid], 2025-01-01T00:00:00+01:00[Europe/Madrid]
-│
-├── DIRECCIÓN IP
-│   ├── RemoteAddr=192.168.1.0/24, 10.0.0.1
-│   └── XForwardedRemoteAddr=192.168.1.0/24
-│
-└── DISTRIBUCIÓN DE TRÁFICO
-    └── Weight=group1, 8              (grupo, peso relativo)
-```
+*Predicate Factories built-in agrupadas por categoría de matching — todos los predicates de una ruta se combinan con AND implícito.*
 
 ## Ejemplo central
 

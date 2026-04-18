@@ -16,16 +16,31 @@ Los patrones de resiliencia son principios de diseño arquitectural independient
 
 Los tres estados y sus transiciones:
 
+```mermaid
+stateDiagram-v2
+    [*] --> CLOSED
+
+    CLOSED --> OPEN : umbral de fallos superado\n(failureRateThreshold %)
+    note right of CLOSED
+        Flujo normal
+        Todas las llamadas pasan
+    end note
+
+    OPEN --> HALF_OPEN : timeout de espera\n(waitDurationInOpenState)
+    note right of OPEN
+        Fail-fast
+        Llamadas rechazadas inmediatamente
+    end note
+
+    state HALF_OPEN {
+        [*] --> Probando
+        Probando --> Evaluando
+    }
+
+    HALF_OPEN --> CLOSED : pruebas exitosas\n(permittedNumberOfCallsInHalfOpenState)
+    HALF_OPEN --> OPEN   : prueba fallida
 ```
-         umbral de fallos superado
-CLOSED ────────────────────────────► OPEN
-  ▲                                    │
-  │ pruebas exitosas                   │ timeout de espera
-  │                                    ▼
-HALF-OPEN ◄──────────────────────── (espera)
-              prueba fallida
-HALF-OPEN ──────────────────────────► OPEN
-```
+*Máquina de estados del Circuit Breaker: CLOSED es el estado normal; OPEN es el fail-fast; HALF-OPEN sondea la recuperación del servicio.*
 
 El beneficio arquitectural del Circuit Breaker no es solo proteger el servicio destino — es proteger al **llamador**: en lugar de acumular threads/goroutines bloqueadas esperando un servicio que no responde, los recursos del llamador se liberan inmediatamente con un fallo rápido.
 
@@ -164,6 +179,34 @@ class RateLimitExceededException extends RuntimeException {
     }
 }
 ```
+
+```mermaid
+flowchart LR
+    REQ(["Petición entrante"])
+    RL["@RateLimiter\n¿dentro del límite?"]
+    CB["@CircuitBreaker\n¿circuito cerrado?"]
+    RT["@Retry\nreintentos con backoff"]
+    BH["@Bulkhead\npool de concurrencia"]
+    TL["@TimeLimiter\ntimeout máximo"]
+    SVC["Servicio remoto"]
+
+    REQ --> RL --> CB --> RT --> BH --> TL --> SVC
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class REQ neutral
+    class RL danger
+    class CB warning
+    class RT primary
+    class BH primary
+    class TL warning
+    class SVC neutral
+```
+*Orden de evaluación de los aspectos Resilience4j: RateLimiter evalúa primero (mayor prioridad), TimeLimiter evalúa último justo antes del servicio remoto.*
 
 ## Buenas y malas prácticas
 

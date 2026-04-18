@@ -12,20 +12,36 @@
 
 El siguiente diagrama muestra cómo `KubernetesDiscoveryClient` resuelve un nombre de servicio lógico en instancias concretas comparado con Eureka.
 
-```
-Eureka (pila clásica):
-  FeignClient("order-service")
-       │
-       ▼ DiscoveryClient.getInstances("order-service")
-  Eureka Server → [10.0.0.1:8080, 10.0.0.2:8080]
+```mermaid
+flowchart LR
+    subgraph EUREKA["Pila clásica (Eureka)"]
+        direction TB
+        FC1["FeignClient('order-service')"]
+        EU[["Eureka Server"]]
+        I1["10.0.0.1:8080\n10.0.0.2:8080"]
+        FC1 -->|"getInstances()"| EU --> I1
+    end
 
-Kubernetes:
-  FeignClient("order-service")
-       │
-       ▼ KubernetesDiscoveryClient.getInstances("order-service")
-  K8s API Server → GET /api/v1/namespaces/default/endpoints/order-service
-                 → [Pod IP 1:8080, Pod IP 2:8080]
+    subgraph K8S["Kubernetes"]
+        direction TB
+        FC2["FeignClient('order-service')"]
+        KDC["KubernetesDiscoveryClient"]
+        KAPI[["K8s API Server\nGET /api/v1/namespaces/default/\nendpoints/order-service"]]
+        I2["Pod IP 1:8080\nPod IP 2:8080"]
+        FC2 -->|"getInstances()"| KDC --> KAPI --> I2
+    end
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class FC1,FC2 neutral
+    class EU primary
+    class KDC,KAPI secondary
+    class I1,I2 neutral
 ```
+*Ambos stacks implementan la misma interfaz DiscoveryClient: el código con FeignClient no cambia al migrar de Eureka a KubernetesDiscoveryClient.*
 
 > [CONCEPTO] `KubernetesDiscoveryClient` implementa exactamente la misma interfaz `DiscoveryClient` que `EurekaDiscoveryClient`. Esto significa que toda la lógica de balanceo de carga de Spring Cloud LoadBalancer, que consume `DiscoveryClient`, funciona sin cambios en el código de aplicación.
 
@@ -153,6 +169,37 @@ La siguiente tabla resume las propiedades más relevantes para configurar el des
 ## Headless Services vs ClusterIP
 
 Cuando un Service de Kubernetes tiene `clusterIP: None` (headless), el DNS devuelve directamente los registros A de los pods individuales en lugar de la IP del Service. `KubernetesDiscoveryClient` detecta este tipo de service y devuelve las IPs individuales de los pods, lo que permite que Spring Cloud LoadBalancer balancee directamente a nivel de pod. Con un Service de ClusterIP normal, la lista de instancias contiene una única entrada con la IP del Service, y el balanceo ocurre dentro de kube-proxy.
+
+```mermaid
+flowchart TD
+    Q{{"¿Tipo de Service\nde Kubernetes?"}}
+    CLIP["ClusterIP normal\n(clusterIP: 10.x.x.x)"]
+    HEAD["Headless Service\n(clusterIP: None)"]
+
+    CLIP_R["KubernetesDiscoveryClient\ndevuelve 1 instancia\n→ IP del Service"]
+    HEAD_R["KubernetesDiscoveryClient\ndevuelve N instancias\n→ IPs individuales de pods"]
+
+    LB1["kube-proxy balancea\ntráfico internamente"]
+    LB2["Spring Cloud LoadBalancer\nbalancea directamente a pods"]
+
+    Q -->|"ClusterIP"| CLIP --> CLIP_R --> LB1
+    Q -->|"Headless"| HEAD --> HEAD_R --> LB2
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+
+    class Q warning
+    class CLIP neutral
+    class HEAD neutral
+    class CLIP_R primary
+    class HEAD_R secondary
+    class LB1 primary
+    class LB2 secondary
+```
+*Con ClusterIP el DiscoveryClient devuelve la IP del Service (balanceo por kube-proxy); con Headless devuelve las IPs de pod individuales (balanceo por Spring Cloud LoadBalancer).*
 
 ## Buenas y malas prácticas
 

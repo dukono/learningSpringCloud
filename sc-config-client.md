@@ -16,25 +16,31 @@ El Config Client es cualquier microservicio Spring Boot que obtiene su configura
 
 Entender la evolución histórica es crítico para el examen porque preguntas de distintas versiones mezclan ambos mecanismos. Hasta Spring Boot 2.3, la conexión usaba un "bootstrap context" separado que cargaba `bootstrap.yml` antes que `application.yml`. Desde Spring Boot 2.4 y especialmente en 3.x, el mecanismo de importación (`spring.config.import`) hace innecesario el bootstrap context.
 
+```mermaid
+flowchart TD
+    subgraph old ["Spring Boot ≤ 2.3 — Bootstrap Context"]
+        direction LR
+        OC[/"bootstrap.yml\nspring.cloud.config.uri"/] --> OB[["bootstrap context (separado)"]]
+        OB --> OA[("ApplicationContext")]
+    end
+
+    subgraph new ["Spring Boot 3.x — Import Phase"]
+        direction LR
+        NC[/"application.yml\nspring.config.import=configserver:..."/] --> NB[["spring.config.import phase"]]
+        NB --> NA[("ApplicationContext")]
+    end
+
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+
+    class OC,NC storage
+    class OB warning
+    class NB primary
+    class OA,NA secondary
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│              EVOLUCIÓN DEL MECANISMO DE CONEXIÓN                │
-│                                                                  │
-│  Spring Boot ≤ 2.3 (Spring Cloud Hoxton)                        │
-│  ┌─────────────────┐     ┌──────────────────────────────────┐   │
-│  │  bootstrap.yml  │────▶│  bootstrap context (separado)    │   │
-│  │  spring.cloud   │     │  → carga config remota           │   │
-│  │  .config.uri    │     │  → luego crea ApplicationContext  │   │
-│  └─────────────────┘     └──────────────────────────────────┘   │
-│                                                                  │
-│  Spring Boot 3.x (Spring Cloud 2022.x / 2025.x)                 │
-│  ┌─────────────────┐     ┌──────────────────────────────────┐   │
-│  │  application.yml│────▶│  spring.config.import phase      │   │
-│  │  spring.config  │     │  → importa configserver:http://  │   │
-│  │  .import=...    │     │  → fusiona propiedades           │   │
-│  └─────────────────┘     └──────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-```
+*Evolución del mecanismo de conexión: bootstrap context separado (legado) vs. import phase integrada (Spring Boot 3.x).*
 
 [LEGACY] El mecanismo bootstrap (`bootstrap.yml` + `spring-cloud-starter-bootstrap`) sigue funcionando en Spring Boot 3.x si se añade el starter `spring-cloud-starter-bootstrap`, pero es un patrón legado. No usarlo en proyectos nuevos.
 

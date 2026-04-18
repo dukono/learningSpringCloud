@@ -32,17 +32,38 @@ Un ejemplo de `spring.cloud.bus.id` podría ser: `order-service:prod:8080`.
 
 El algoritmo de evaluación funciona así:
 
+```mermaid
+flowchart TD
+    EVT["Evento llega\ndestinationService = order-service:**:**"]
+    SELF{{"ServiceMatcher\n¿isFromSelf(event)?"}}
+    ORIG["Es el nodo originador\n(puede ignorarse o procesarse)"]
+    FORM{{"ServiceMatcher\n¿isForSelf(event)?"}}
+    MATCH["Compara patrón con bus.id\norder-service:**:** vs order-service:prod:8080"]
+    ACCEPT(("Procesar\nevento"))
+    DISCARD(("Descartar\nevento"))
+
+    EVT --> SELF
+    SELF -->|sí| ORIG
+    SELF -->|no| FORM
+    FORM --> MATCH
+    MATCH -->|"appName ✓\nprofiles ** ✓\nindex ** ✓"| ACCEPT
+    MATCH -->|"no coincide"| DISCARD
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class EVT neutral
+    class SELF,FORM warning
+    class MATCH primary
+    class ORIG neutral
+    class ACCEPT secondary
+    class DISCARD danger
 ```
-1. Evento llega con destinationService = "order-service:**:**"
-2. Instancia actual tiene bus.id = "order-service:prod:8080"
-3. ServiceMatcher.isFromSelf(event) → verifica si la instancia es el originService
-4. ServiceMatcher.isForSelf(event) → verifica si destinationService hace match con bus.id
-   → "order-service:**:**" vs "order-service:prod:8080"
-   → appName coincide: "order-service" == "order-service" ✓
-   → profiles wildcard: "**" == cualquier valor ✓
-   → index wildcard: "**" == cualquier valor ✓
-   → RESULTADO: el evento está destinado a esta instancia → procesar
-```
+*El `ServiceMatcher` evalúa primero si la instancia es el origen del evento y luego si el patrón `destinationService` hace match con su propio `bus.id` usando wildcards.*
 
 ## El destination pattern y sus wildcards
 
@@ -50,18 +71,27 @@ El destination pattern usa el separador `:` para delimitar los tres componentes 
 
 El siguiente diagrama muestra los diferentes patrones de destino y su alcance:
 
+```mermaid
+mindmap
+  root((**))
+    Todos los nodos
+      todos los servicios
+      todos los perfiles
+      todos los puertos
+    (order-service:**:**)
+      Todas las instancias de order-service
+      cualquier perfil
+      cualquier puerto
+      (order-service:prod:**)
+        perfil prod
+        cualquier puerto
+        (order-service:prod:8080)
+          única instancia exacta
+    (order-service,payment:**:**)
+      order-service Y payment-service
+      todos los perfiles y puertos
 ```
-PATRONES DE DESTINO Y SU ALCANCE
-─────────────────────────────────────────────────────────────────
- Patrón                        Alcance
-─────────────────────────────────────────────────────────────────
- **                            Todos los nodos de todos los servicios
- order-service:**:**           Todas las instancias de order-service
- order-service:prod:**         order-service en perfil prod (todos los puertos)
- order-service:prod:8080       Una única instancia exacta
- order-service,payment:**:**   order-service Y payment-service (todos)
-─────────────────────────────────────────────────────────────────
-```
+*Jerarquía de destination patterns: cada nivel de especificidad reduce el conjunto de nodos que recibirán el evento.*
 
 Los ejemplos de llamadas al endpoint con destination son:
 

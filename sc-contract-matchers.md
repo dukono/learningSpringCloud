@@ -232,20 +232,37 @@ La siguiente tabla recoge todos los matchers de la API `BodyMatchers` con su des
 
 El uso del matcher determina qué validación se aplica en cada lado del contrato.
 
-```
-PRODUCTOR (test generado):
-──────────────────────────────────────────────────────────────
-body.price = 999.99 (en el stub)
-bodyMatchers: jsonPath('$.price', byType())
-→ El test llama al productor real y verifica que $.price sea un número
+```mermaid
+flowchart LR
+    subgraph "Contrato"
+        BV["body.price = 999.99\n(valor fijo)"]
+        BM["bodyMatchers\njsonPath('$.price', byType())"]
+    end
 
-CONSUMIDOR (stub WireMock):
-──────────────────────────────────────────────────────────────
-body.price = 999.99 (valor fijo del stub)
-→ El stub devuelve SIEMPRE 999.99 al consumidor
-→ El consumidor puede asumir que el campo price es un número
-──────────────────────────────────────────────────────────────
+    subgraph "Consumidor"
+        STUB["Stub WireMock\ndevuelve SIEMPRE 999.99"]
+        CT["Test consumidor\nasume que price es número"]
+    end
+
+    subgraph "Productor"
+        TGEN["Test generado\nllama al productor real"]
+        VALID["Verifica que $.price\nsea efectivamente un número"]
+    end
+
+    BV -->|"stub usa valor fijo"| STUB --> CT
+    BM -->|"test usa validación dinámica"| TGEN --> VALID
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class BV,BM root
+    class STUB,CT secondary
+    class TGEN,VALID primary
 ```
+
+*Dualidad body/bodyMatchers: el body fija el valor del stub para el consumidor; bodyMatchers define la validación dinámica del test del productor.*
 
 > [ADVERTENCIA] Si un campo tiene `byType()` en `bodyMatchers` pero el productor real devuelve una cadena donde se espera un número, el test del productor fallará. El cuerpo del stub (valores fijos en `body`) no afecta este fallo — el fallo ocurre en el test del productor, no en el consumidor.
 

@@ -18,32 +18,26 @@ Spring Cloud Function permite declarar funciones que trabajan con `Message<T>` e
 
 El siguiente diagrama muestra cómo los headers fluyen desde la petición HTTP hacia la función y de vuelta a la respuesta.
 
+```mermaid
+sequenceDiagram
+    participant CLI as Cliente HTTP
+    participant CTL as FunctionController
+    participant FN as enrichedProcess()
+
+    CLI->>CTL: POST /enrichedProcess\nX-Correlation-Id: abc-123\nBody: {"name":"order-1"}
+
+    rect rgb(0, 80, 160)
+        Note over CTL: Construye Message&lt;String&gt;\npayload = body\nheaders = HTTP headers mapeados
+    end
+
+    CTL->>FN: Message&lt;String&gt; con headers incluidos
+    Note over FN: getHeaders().get("X-Correlation-Id") → "abc-123"
+    Note over FN: MessageBuilder.withPayload(result)\n.copyHeadersIfAbsent(...)\n.setHeader("X-Processed","true")
+    FN-->>CTL: Message&lt;String&gt; respuesta enriquecida
+
+    CTL-->>CLI: HTTP 200\nX-Correlation-Id: abc-123\nX-Processed: true\nBody: resultado
 ```
-HTTP Request
-  POST /enrichedProcess
-  X-Correlation-Id: abc-123
-  Content-Type: application/json
-  Body: {"name": "order-1"}
-         │
-         ▼
-  FunctionController (SCF)
-  Construye Message<String> con:
-    payload = {"name": "order-1"}
-    headers = {X-Correlation-Id: abc-123, contentType: application/json}
-         │
-         ▼
-  Function<Message<String>, Message<String>> enrichedProcess
-    getHeaders().get("X-Correlation-Id") → "abc-123"
-    MessageBuilder.withPayload(result)
-                  .setHeader("X-Processed", "true")
-                  .copyHeadersIfAbsent(original.getHeaders())
-         │
-         ▼
-  HTTP Response 200
-  X-Correlation-Id: abc-123
-  X-Processed: true
-  Body: resultado
-```
+*Propagación de headers HTTP a través de Message&lt;T&gt;: entrada mapeada automáticamente, salida construida con MessageBuilder.*
 
 ## Ejemplo central
 

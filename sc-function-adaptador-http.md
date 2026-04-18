@@ -16,26 +16,21 @@ El adaptador HTTP de Spring Cloud Function expone automáticamente cada función
 
 El siguiente diagrama muestra el flujo de una petición HTTP hasta la invocación de la función.
 
+```mermaid
+sequenceDiagram
+    participant CLI as Cliente HTTP
+    participant CTL as FunctionController
+    participant CAT as FunctionCatalog
+    participant FN as uppercase()
+
+    CLI->>CTL: POST /uppercase\nContent-Type: application/json\n"hello world"
+    CTL->>CAT: lookup("uppercase")
+    CAT-->>CTL: Function&lt;String,String&gt;
+    CTL->>FN: apply("hello world")
+    FN-->>CTL: "HELLO WORLD"
+    CTL-->>CLI: HTTP 200 OK\n"HELLO WORLD"
 ```
-Cliente HTTP
-  POST /uppercase
-  Content-Type: application/json
-  Body: "hello world"
-       │
-       ▼
-  FunctionController (auto-configurado por SCF)
-       │  lookup("uppercase") en FunctionCatalog
-       ▼
-  Function<String,String> uppercase
-       │  apply("hello world")
-       ▼
-  "HELLO WORLD"
-       │
-       ▼
-  HTTP 200 OK
-  Content-Type: application/json
-  Body: "HELLO WORLD"
-```
+*Flujo de una petición HTTP a través del FunctionController auto-configurado hasta la función de negocio.*
 
 ## Ejemplo central
 
@@ -135,6 +130,20 @@ La siguiente tabla compara los dos starters del adaptador HTTP.
 | Thread model | Bloqueante | No bloqueante |
 | Starter | `spring-cloud-starter-function-web` | `spring-cloud-starter-function-webflux` |
 | Debug | `web.export.debug=true` | `web.export.debug=true` |
+
+```mermaid
+quadrantChart
+    title Elección de adaptador HTTP: stack vs tipo de función
+    x-axis "Tipo imperativo" --> "Tipo reactivo Flux"
+    y-axis "Servlet / bloqueante" --> "Netty / no bloqueante"
+    quadrant-1 function-webflux
+    quadrant-2 Incompatible
+    quadrant-3 function-web
+    quadrant-4 function-web (Mono limitado)
+    function-web: [0.15, 0.15]
+    function-webflux: [0.85, 0.85]
+```
+*Criterio de elección entre los dos starters según el modelo de concurrencia y el tipo de función.*
 
 ## Buenas y malas prácticas
 

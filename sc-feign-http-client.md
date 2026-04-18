@@ -12,29 +12,34 @@ Feign es un cliente HTTP declarativo pero no implementa el transporte HTTP por s
 
 Hay dos capas donde se pueden configurar timeouts: la capa de Feign y la capa del cliente HTTP subyacente. Ambas deben estar alineadas para un comportamiento predecible.
 
+```mermaid
+flowchart TD
+    CALL(("Llamada Feign"))
+    FLAYER["Capa Feign\nspring.cloud.openfeign.client.config\nconnectTimeout = 2000 ms\nreadTimeout = 5000 ms\n← límite superior Feign"]
+    MIN{"Timeout efectivo =\nmínimo de ambas capas"}
+    HTTPLAYER["Cliente HTTP subyacente\n(OkHttp3 / Apache HC5 / HttpURLConnection)\nconnection pool · keep-alive\npropios timeouts del cliente\n← puede ser más restrictivo"]
+    TCP(("Petición TCP real"))
+
+    CALL --> FLAYER
+    FLAYER --> MIN
+    MIN --> HTTPLAYER
+    HTTPLAYER --> TCP
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class CALL root
+    class FLAYER primary
+    class MIN warning
+    class HTTPLAYER storage
+    class TCP secondary
 ```
-  Llamada Feign
-      │
-      ▼
-  ┌─────────────────────────────────────────┐
-  │  Capa Feign                              │
-  │  spring.cloud.openfeign.client.config   │
-  │  .connectTimeout = 2000 ms              │  ← límite superior Feign
-  │  .readTimeout    = 5000 ms              │
-  └───────────────────┬─────────────────────┘
-                      │ si Feign no tiene timeout propio configurado
-                      │ o el cliente HTTP tiene timeout más corto
-                      ▼
-  ┌─────────────────────────────────────────┐
-  │  Cliente HTTP subyacente                │
-  │  (OkHttp3 / Apache HC5 / HttpURLConn.)  │
-  │  connection pool, keep-alive            │
-  │  propios timeouts del cliente           │  ← puede ser más restrictivo
-  └─────────────────────────────────────────┘
-                      │
-                      ▼
-              Petición TCP real
-```
+*El timeout efectivo es el más corto de las dos capas — configurar solo Feign no es suficiente si el cliente HTTP tiene un límite más restrictivo.*
 
 ## Ejemplo central
 
@@ -211,6 +216,21 @@ class FeignTimeoutTest {
 | Reintentos de conexión | No | Configurable | Configurable |
 | Configuración en YAML | Solo Feign | `okhttp.enabled=true` | `httpclient.hc5.enabled=true` |
 | Uso recomendado | Tests / desarrollo | Producción (ligero) | Producción (avanzado) |
+
+```mermaid
+quadrantChart
+    title Clientes HTTP de Feign: capacidad de producción vs simplicidad de configuración
+    x-axis "Configuración simple" --> "Configuración avanzada"
+    y-axis "Sin connection pool" --> "Pool + keep-alive + HTTP2"
+    quadrant-1 Producción avanzada
+    quadrant-2 Capacidad sin complejidad
+    quadrant-3 Solo desarrollo/tests
+    quadrant-4 Complejo pero limitado
+    HttpURLConnection (default): [0.1, 0.05]
+    OkHttp3: [0.45, 0.85]
+    Apache HttpClient 5: [0.85, 0.80]
+```
+*Posicionamiento de los tres clientes HTTP de Feign: el cliente default queda fuera de producción por falta de connection pool.*
 
 ## Buenas y malas prácticas
 

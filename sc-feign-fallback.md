@@ -14,29 +14,43 @@ La integración de Feign con Resilience4j permite añadir circuit breaker y fall
 
 El circuit breaker envuelve cada método del cliente Feign en un `CircuitBreaker` de Resilience4j. Si el método lanza una excepción o supera el timeout, el circuit breaker registra el fallo.
 
+```mermaid
+flowchart TD
+    CALL(("Llamada a método\nde interfaz Feign"))
+    CB{"CircuitBreaker\nResilience4j\n¿Estado?"}
+    CLOSED["Estado CLOSED\nejecutar Feign"]
+    OPEN["Estado OPEN\nsaltar al fallback\ndirectamente"]
+    EXEC["Ejecutar petición HTTP\n(Feign proxy)"]
+    OK{"¿Éxito?"}
+    RESULT(("Resultado\nnormal"))
+    FALLBACK["Fallback\n(implementación alternativa)"]
+
+    CALL --> CB
+    CB -->|CLOSED| CLOSED
+    CB -->|OPEN| FALLBACK
+    CLOSED --> EXEC
+    EXEC --> OK
+    OK -->|Éxito| RESULT
+    OK -->|Fallo / excepción| FALLBACK
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class CALL root
+    class CB warning
+    class CLOSED primary
+    class OPEN danger
+    class EXEC primary
+    class OK warning
+    class RESULT secondary
+    class FALLBACK danger
 ```
-  Llamada a método de interfaz Feign
-              │
-              ▼
-  ┌─────────────────────────────────┐
-  │  CircuitBreaker Resilience4j    │
-  │  (generado para cada método)    │
-  │                                 │
-  │  Estado CLOSED: ejecuta Feign   │
-  │  Estado OPEN:   salta directo   │
-  │                 al fallback     │
-  └──────────────┬──────────────────┘
-                 │
-         ┌───────┴───────┐
-    Éxito│               │Fallo / Open
-         │               │
-         ▼               ▼
-  Resultado normal  ┌────────────────┐
-                    │    Fallback     │
-                    │ (implementación │
-                    │  alternativa)   │
-                    └────────────────┘
-```
+*El fallback se invoca tanto con el circuito OPEN como ante cualquier excepción con el circuito CLOSED.*
 
 ## Ejemplo central
 
@@ -231,6 +245,37 @@ public record PaymentResponse(
     }
 }
 ```
+
+## Estados del CircuitBreaker y activación del fallback
+
+El fallback no solo actúa cuando el circuito está abierto. Conocer los estados ayuda a entender cuándo se invoca.
+
+```mermaid
+stateDiagram-v2
+    [*] --> CLOSED
+
+    state "CLOSED — llamadas permitidas" as CLOSED {
+        [*] --> Contando
+        Contando --> Contando : éxito (registra)
+        Contando --> Contando : fallo (registra + invoca fallback)
+    }
+
+    state "OPEN — llamadas bloqueadas" as OPEN {
+        [*] --> Bloqueando
+        Bloqueando --> Bloqueando : toda llamada → fallback inmediato
+    }
+
+    state "HALF_OPEN — sondeo de recuperación" as HALF_OPEN {
+        [*] --> Probando
+        Probando --> Probando : llamadas de prueba permitidas
+    }
+
+    CLOSED --> OPEN : tasa de fallos >= umbral\n(failureRateThreshold)
+    OPEN --> HALF_OPEN : waitDurationInOpenState expirado
+    HALF_OPEN --> CLOSED : pruebas exitosas
+    HALF_OPEN --> OPEN : pruebas fallidas
+```
+*Ciclo de vida del CircuitBreaker de Resilience4j integrado con Feign — el fallback actúa en OPEN y también en CLOSED cuando hay excepciones.*
 
 ## Tabla comparativa: fallback vs FallbackFactory
 

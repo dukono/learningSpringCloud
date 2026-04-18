@@ -14,34 +14,50 @@ El patrón Bulkhead toma su nombre de los compartimentos estancos de los barcos:
 
 La diferencia fundamental entre ambos tipos es dónde se ejecuta el código protegido y cómo se gestiona la concurrencia:
 
-```
-SEMAPHORE Bulkhead:
-┌─────────────────────────────────────────────────────┐
-│ Thread de llamada (ej: Tomcat worker thread)        │
-│                                                     │
-│  adquirir permiso ──────────────────────────────►  │
-│  (maxConcurrentCalls=3, actualmente 3 activas)      │
-│                                                     │
-│  ¿Hay permiso libre? NO → BulkheadFullException     │
-│  (tras esperar maxWaitDuration ms)                  │
-└─────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph SEM["SEMAPHORE Bulkhead"]
+        direction TD
+        S_CALL["Tomcat worker thread\n(hilo llamante)"]
+        S_ACQ{"¿permiso libre?\nmaxConcurrentCalls"}
+        S_EXEC["Ejecuta en\nel mismo hilo"]
+        S_WAIT["Espera maxWaitDuration"]
+        S_ERR["BulkheadFullException"]
 
-THREADPOOL Bulkhead:
-┌────────────────────────────────────────────────────────────────┐
-│ Thread de llamada (ej: Tomcat worker thread)                   │
-│       │                                                        │
-│       │ submit a pool ──────────────────────────────────────►  │
-│       │                    ┌──────────────────────────────┐    │
-│       │                    │ Pool dedicado (maxThreads=3) │    │
-│       │                    │  thread-1: ejecutando        │    │
-│       │                    │  thread-2: ejecutando        │    │
-│       │                    │  thread-3: ejecutando        │    │
-│       │                    │  queue (cap=10): llena       │    │
-│       │                    └──────────────────────────────┘    │
-│       │                                                        │
-│       │ ¿queue llena? → BulkheadFullException en thread orig.  │
-└────────────────────────────────────────────────────────────────┘
+        S_CALL --> S_ACQ
+        S_ACQ -->|"sí"| S_EXEC
+        S_ACQ -->|"no"| S_WAIT
+        S_WAIT -->|"timeout"| S_ERR
+    end
+
+    subgraph TP["THREADPOOL Bulkhead"]
+        direction TD
+        T_CALL["Tomcat worker thread\n(hilo llamante)"]
+        T_SUB["Submit al pool dedicado"]
+        T_CHK{"¿pool + queue\ncon espacio?"}
+        T_EXEC["Thread del pool\nejecutando"]
+        T_ERR2["BulkheadFullException\nen hilo llamante"]
+
+        T_CALL --> T_SUB --> T_CHK
+        T_CHK -->|"sí"| T_EXEC
+        T_CHK -->|"pool lleno\n+ queue llena"| T_ERR2
+    end
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class S_CALL,T_CALL root
+    class S_ACQ,T_CHK warning
+    class S_EXEC,T_EXEC secondary
+    class S_WAIT neutral
+    class S_ERR,T_ERR2 danger
+    class T_SUB primary
 ```
+*SEMAPHORE ejecuta en el hilo llamante y bloquea hasta maxWaitDuration; THREADPOOL delega a un pool aislado y rechaza inmediatamente si pool y queue están llenos.*
 
 ## Ejemplo central
 

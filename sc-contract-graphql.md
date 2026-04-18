@@ -244,6 +244,40 @@ public abstract class BaseGraphQLTest {
 | Estructura del body response | Objeto de dominio | `{ data: { ... } }` o `{ errors: [...] }` |
 | Errores de dominio | HTTP 4xx/5xx | HTTP 200 con campo `errors` |
 
+```mermaid
+flowchart LR
+    subgraph "Contrato REST"
+        RM["method GET/POST/PUT\nurl: /orders/{id}\nContentType: application/json"]
+        RR["response body:\n{ id, status, ... }"]
+        RE["error: HTTP 4xx/5xx"]
+    end
+
+    subgraph "Contrato GraphQL"
+        GM["method POST\nurl: /graphql\nContentType: application/graphql"]
+        GB["request body:\n{ query: '...', variables: {} }"]
+        GR["response body:\n{ data: { ... } }"]
+        GE["error: HTTP 200\n{ errors: [...] }"]
+    end
+
+    RM --> RR
+    RM --> RE
+    GM --> GB --> GR
+    GM --> GE
+
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class RM,GM neutral
+    class RR,GR secondary
+    class RE danger
+    class GB primary
+    class GE primary
+```
+
+*Diferencias estructurales entre contratos REST y GraphQL: GraphQL siempre usa POST a /graphql y envuelve el body en `data` o `errors`.*
+
 ## Buenas y malas prácticas
 
 **Buenas prácticas**:

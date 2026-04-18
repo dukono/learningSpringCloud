@@ -14,27 +14,36 @@ Spring Cloud OpenFeign permite configurar cada cliente Feign directamente desde 
 
 Cuando ambos mecanismos están activos, la configuración por propiedades prevalece sobre la Java. Este comportamiento se controla con la propiedad `spring.cloud.openfeign.client.config.default.default-to-properties` (true por defecto). Si se invierte a `false`, la configuración Java gana.
 
+```mermaid
+flowchart TD
+    P1["config.&lt;nombre-cliente&gt;.*\nPropiedades específicas del cliente\n★ MAYOR PRECEDENCIA"]
+    P2["config.default.*\nPropiedades por defecto para todos"]
+    P3["configuration = MiClaseJava.class\nBeans Java específicos del cliente"]
+    P4["defaultConfiguration en @EnableFeignClients\nBeans Java globales\n★ MENOR PRECEDENCIA"]
+    CTRL{{"default-to-properties\n= true (defecto)"}}
+    NOTE>Propiedades ganan sobre Java.\nInvertir con default-to-properties=false]
+
+    P1 -->|gana sobre| P2
+    P2 -->|gana sobre| P3
+    P3 -->|gana sobre| P4
+    CTRL -.-> NOTE
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class P1 primary
+    class P2 secondary
+    class P3 warning
+    class P4 neutral
+    class CTRL root
+    class NOTE neutral
 ```
-┌─────────────────────────────────────────────────────────┐
-│             Resolución de configuración Feign            │
-│                                                          │
-│  1. config.<nombre-cliente>.*  ← MAYOR precedencia      │
-│     (propiedades específicas del cliente)                │
-│                                                          │
-│  2. config.default.*                                     │
-│     (propiedades por defecto para todos)                 │
-│                                                          │
-│  3. configuration = MiClaseJava.class                    │
-│     (beans Java específicos del cliente)                 │
-│                                                          │
-│  4. defaultConfiguration en @EnableFeignClients          │
-│     (beans Java globales)   ← MENOR precedencia          │
-│                                                          │
-│  spring.cloud.openfeign.client.default-to-properties     │
-│  = true  → propiedades ganan sobre Java (defecto)        │
-│  = false → Java gana sobre propiedades                   │
-└─────────────────────────────────────────────────────────┘
-```
+*Orden de precedencia de configuración Feign: propiedades específicas de cliente > default > Java por cliente > Java global.*
 
 ## Ejemplo central
 

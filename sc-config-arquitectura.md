@@ -14,21 +14,18 @@ Spring Cloud Config Server resuelve uno de los problemas fundamentales de las ar
 
 El flujo de resolución de configuración sigue un camino bien definido: el Config Client arranca, construye la URL de petición usando su nombre de aplicación, perfil activo y etiqueta (rama), y llama al Config Server. El servidor resuelve la configuración desde el backend (Git por defecto), fusiona los ficheros relevantes y devuelve un documento de propiedades al cliente.
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                      ARQUITECTURA CONFIG                          │
-│                                                                   │
-│  ┌─────────────┐    GET /{app}/{profile}/{label}  ┌───────────┐  │
-│  │ Config      │ ─────────────────────────────→  │  Config   │  │
-│  │ Client      │ ←─────────────────────────────  │  Server   │  │
-│  │ (microsvs)  │     PropertySource[]             │           │  │
-│  └─────────────┘                                  └─────┬─────┘  │
-│                                                         │         │
-│                                           ┌─────────────▼──────┐ │
-│                                           │  Backend (Git/FS/  │ │
-│                                           │  Vault/JDBC)       │ │
-│                                           └────────────────────┘ │
-└──────────────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant C as Config Client
+    participant S as Config Server
+    participant B as Backend (Git / Vault / JDBC)
+
+    C->>S: GET /{application}/{profile}/{label}
+    rect rgb(0, 80, 160)
+        S->>B: Busca ficheros de configuración
+        B-->>S: Ficheros YAML / properties
+    end
+    S-->>C: PropertySource[]
 ```
 
 La triple tupla `{application}/{profile}/{label}` determina exactamente qué ficheros de configuración entrega el servidor:
@@ -38,6 +35,27 @@ La triple tupla `{application}/{profile}/{label}` determina exactamente qué fic
 - **label**: la rama, etiqueta o commit del repositorio Git (ej. `main`, `v2.1.0`)
 
 El servidor construye una lista de PropertySources por prioridad decreciente: primero `{application}-{profile}.yml`, luego `{application}.yml`, luego `application-{profile}.yml`, finalmente `application.yml`. Las claves del primer fichero tienen mayor precedencia.
+
+```mermaid
+flowchart LR
+    AP["{application}-{profile}.yml"]
+    A["{application}.yml"]
+    GP["application-{profile}.yml"]
+    G["application.yml"]
+
+    AP -->|"mayor prioridad"| A --> GP -->|"menor prioridad"| G
+
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class AP primary
+    class A secondary
+    class GP warning
+    class G neutral
+```
+*Orden de fusión de los cuatro PropertySources que devuelve el servidor: las claves del fichero más a la izquierda ganan.*
 
 > [EXAMEN] La triple tupla `{application}/{profile}/{label}` es la pregunta más frecuente sobre Config Server. `application` = nombre del servicio cliente, `profile` = entorno, `label` = rama Git.
 

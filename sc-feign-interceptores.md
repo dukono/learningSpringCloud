@@ -14,24 +14,35 @@ El `RequestInterceptor` de Feign es el mecanismo para enriquecer o modificar cua
 
 El `RequestInterceptor` se ejecuta después de que Feign construye el `RequestTemplate` con los parámetros del método (path, query params, body) y antes de que el cliente HTTP subyacente envíe la petición.
 
+```mermaid
+flowchart LR
+    CALL(("Método Feign\ninvocado"))
+    TMPL["Feign construye\nRequestTemplate\n(path, headers, body)"]
+    INT1{{"interceptor1.apply(template)\nañade headers, params…"}}
+    INT2{{"interceptor2.apply(template)\nañade headers, params…"}}
+    INTN{{"interceptorN.apply(template)\n(en orden de registro)"}}
+    HTTP["HTTP Client envía\nla petición\n(OkHttp / HC5 / default)"]
+
+    CALL --> TMPL
+    TMPL --> INT1
+    INT1 --> INT2
+    INT2 --> INTN
+    INTN --> HTTP
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class CALL root
+    class TMPL primary
+    class INT1,INT2,INTN warning
+    class HTTP storage
 ```
-  Método Feign invocado
-          │
-          ▼
-  Feign construye RequestTemplate
-  (path, headers, body del método)
-          │
-          ▼
-  Para cada RequestInterceptor registrado:
-  ┌─────────────────────────────┐
-  │  interceptor.apply(template)│  ← aquí se añaden headers, params, etc.
-  └─────────────────────────────┘
-  (se aplican en el orden de registro)
-          │
-          ▼
-  HTTP Client envía la petición
-  (OkHttp / Apache HC5 / default)
-```
+*El RequestInterceptor actúa después de construir el RequestTemplate y antes de enviar la petición — los interceptores se aplican en cadena.*
 
 ## Ejemplo central
 
@@ -204,6 +215,40 @@ La diferencia de alcance es uno de los conceptos más evaluados en el examen:
 
 - **Global**: el interceptor es un `@Component` o un `@Bean` en una clase con `@Configuration` dentro del scan. Se aplica a **todos** los clientes Feign del contexto.
 - **Por cliente**: el interceptor es un `@Bean` registrado en la clase de configuración específica del cliente (referenciada en `configuration = MiConfig.class`). Se aplica **solo** a ese cliente.
+
+```mermaid
+flowchart TD
+    subgraph GLOBAL["Alcance GLOBAL — @Component"]
+        G1{{"BearerTokenInterceptor"}}
+        G2{{"CorrelationIdInterceptor"}}
+    end
+
+    subgraph CLIENTS["Clientes Feign"]
+        IC["InventoryClient\n(no tiene configuración específica)"]
+        PC["PaymentClient\nconfiguration = PaymentFeignConfig"]
+    end
+
+    subgraph SPECIFIC["Alcance POR CLIENTE — @Bean en PaymentFeignConfig"]
+        S1{{"PaymentApiKeyInterceptor"}}
+    end
+
+    GLOBAL -->|aplica a todos| IC
+    GLOBAL -->|aplica a todos| PC
+    SPECIFIC -->|solo a este cliente| PC
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class G1,G2 primary
+    class IC,PC neutral
+    class S1 warning
+```
+*Interceptores globales llegan a todos los clientes; los interceptores por cliente solo afectan al cliente que referencia su configuración.*
 
 Un interceptor global que lee el `SecurityContext` puede causar problemas en threads que no tienen autenticación (calls asíncronas, scheduled tasks). Hay que manejar los nulos con cuidado.
 

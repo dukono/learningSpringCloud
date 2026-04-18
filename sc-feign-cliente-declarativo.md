@@ -14,34 +14,45 @@ Spring Cloud OpenFeign convierte una interfaz Java anotada en un cliente HTTP to
 
 Feign opera como un proxy dinámico: en tiempo de arranque Spring registra un bean proxy para cada interfaz anotada con `@FeignClient`. Cuando se invoca un método del proxy, Feign construye un `RequestTemplate`, aplica los interceptores registrados, delega la ejecución HTTP al cliente subyacente (por defecto `java.net.HttpURLConnection`), y finalmente decodifica la respuesta con el `Decoder` configurado.
 
+```mermaid
+flowchart LR
+    CALL(("Llamada Java"))
+    PROXY["Proxy dinámico Feign\n(generado en arranque)"]
+    TMPL["RequestTemplate"]
+    INTERCEPT{{"RequestInterceptors\naplicados aquí"}}
+    HTTP["HTTP Client\n(default / OkHttp / HC5)"]
+    REMOTE[("Servicio\nremoto")]
+    DEC["Decoder"]
+    ERR["ErrorDecoder"]
+    RESULT(("Objeto Java"))
+
+    CALL --> PROXY
+    PROXY -->|construye| TMPL
+    TMPL --> INTERCEPT
+    INTERCEPT -->|ejecuta| HTTP
+    HTTP -->|petición| REMOTE
+    REMOTE -->|respuesta 2xx| DEC
+    REMOTE -->|respuesta 4xx/5xx| ERR
+    DEC --> RESULT
+    ERR -->|excepción| RESULT
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class CALL root
+    class PROXY,TMPL primary
+    class INTERCEPT warning
+    class HTTP,REMOTE storage
+    class DEC secondary
+    class ERR danger
+    class RESULT neutral
 ```
-  Llamada Java
-       │
-       ▼
- ┌─────────────────────────┐
- │   Proxy dinámico Feign  │
- │  (generado en arranque) │
- └────────────┬────────────┘
-              │ construye
-              ▼
-      ┌───────────────────┐
-      │  RequestTemplate  │  ← RequestInterceptors aplicados aquí
-      └────────┬──────────┘
-               │ ejecuta
-               ▼
-      ┌───────────────────┐
-      │  HTTP Client      │  (default / OkHttp / Apache HC5)
-      └────────┬──────────┘
-               │ respuesta HTTP
-               ▼
-      ┌───────────────────┐
-      │  Decoder / Error  │
-      │  Decoder          │
-      └───────────────────┘
-               │
-               ▼
-         Objeto Java
-```
+*Pipeline interno de Feign: del proxy dinámico al objeto Java de respuesta, mostrando dónde actúan interceptores y decoders.*
 
 ## Ejemplo central
 

@@ -14,47 +14,49 @@ El flujo CI/CD de Spring Cloud Contract establece una dependencia de pipeline en
 
 El pipeline CDC tiene dos pipelines interdependientes que deben ejecutarse en el orden correcto. El productor siempre va primero.
 
-```
-PIPELINE DEL PRODUCTOR (debe completarse primero)
-──────────────────────────────────────────────────────────────────────
-[1] Checkout código fuente + contratos
-    │
-    ▼
-[2] Compilar código del productor
-    │
-    ▼
-[3] mvn verify (o gradle build)
-    │  → Plugin lee contratos de src/test/resources/contracts/
-    │  → Genera tests en target/generated-test-sources/contracts/
-    │  → Ejecuta tests generados contra el productor real
-    │  → Si algún test falla: BUILD FAIL → NO se publican stubs
-    │
-    ▼
-[4] mvn deploy (si los tests pasan)
-    │  → Publica order-service-1.2.3.jar en Nexus
-    │  → Publica order-service-1.2.3-stubs.jar en Nexus (clasificador stubs)
-    │
-    ▼
-[5] Notifica a downstream pipelines (si CI/CD lo permite)
+```mermaid
+flowchart TD
+    subgraph "Pipeline del Productor (primero)"
+        P1["Checkout código + contratos"]
+        P2["Compilar productor"]
+        P3["mvn verify\nGenera + ejecuta tests de contrato"]
+        P4{"¿Tests de contrato\npasan?"}
+        P5["mvn deploy\nPublica JAR + stubs.jar en Nexus"]
+        PFAIL(["BUILD FAIL\nNO se publican stubs"])
+    end
 
-──────────────────────────────────────────────────────────────────────
-PIPELINE DEL CONSUMIDOR (requiere que el productor haya publicado stubs)
-──────────────────────────────────────────────────────────────────────
-[1] Checkout código fuente del consumidor
-    │
-    ▼
-[2] Compilar código del consumidor
-    │
-    ▼
-[3] mvn test
-    │  → @AutoConfigureStubRunner descarga order-service-1.2.3-stubs.jar de Nexus
-    │  → Levanta servidor WireMock local en puerto configurado
-    │  → Ejecuta tests del consumidor contra el servidor WireMock local
-    │
-    ▼
-[4] Si todos los tests pasan: BUILD SUCCESS
-──────────────────────────────────────────────────────────────────────
+    subgraph "Pipeline del Consumidor (después)"
+        C1["Checkout consumidor"]
+        C2["Compilar consumidor"]
+        C3["mvn test\n@AutoConfigureStubRunner descarga stubs\nLevanta WireMock local"]
+        C4{"¿Tests del consumidor\npasan?"}
+        CSUCCESS(["BUILD SUCCESS"])
+        CFAIL(["BUILD FAIL\nNo stubs found o mismatch"])
+    end
+
+    P1 --> P2 --> P3 --> P4
+    P4 -->|"NO"| PFAIL
+    P4 -->|"SÍ"| P5
+    P5 -->|"stubs disponibles en Nexus"| C1
+    C1 --> C2 --> C3 --> C4
+    C4 -->|"SÍ"| CSUCCESS
+    C4 -->|"NO"| CFAIL
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class P4,C4 root
+    class P1,P2,P3 primary
+    class P5 storage
+    class C1,C2,C3 primary
+    class CSUCCESS secondary
+    class PFAIL,CFAIL danger
 ```
+
+*Dependencia entre pipelines: el consumidor solo puede ejecutar sus tests después de que el productor haya publicado los stubs correctamente.*
 
 > [CONCEPTO] El orden es crítico: si el consumidor intenta ejecutar sus tests antes de que el productor haya publicado los stubs, Stub Runner lanzará `No stubs found` y el build del consumidor fallará. El pipeline del productor es un prerequisito del pipeline del consumidor.
 
@@ -164,31 +166,30 @@ Estrategias de versionado en el consumidor:
 
 Un cambio en el productor que rompe un contrato existente romperá también los tests del consumidor. La estrategia de compatibilidad define cómo gestionar estos cambios.
 
-```
-CAMBIO COMPATIBLE (no rompe consumidores):
-───────────────────────────────────────────────
-Productor añade campo 'description' al response de /orders/{id}:
-{
-  "id": 1,
-  "status": "CONFIRMED",
-  "description": "New field"    ← nuevo campo opcional
-}
-→ Los contratos existentes NO validan 'description'
-→ Los stubs existentes NO incluyen 'description'
-→ Los consumidores existentes NO se rompen
+```mermaid
+flowchart LR
+    CHANGE{{"Cambio en el\nproductor"}}
+    COMPAT["Añade campo nuevo\no añade endpoint nuevo\n(additive change)"]
+    INCOMPAT["Renombra campo\nElimina campo\nCambia tipo\n(breaking change)"]
+    OK(["Tests del productor PASAN\nConsumidores NO se rompen"])
+    FAIL(["Tests del productor FALLAN\nBuild bloqueado"])
+    NEGOCIAR["Negociar con consumidores\nMantener versión antigua temporalmente\nMigrar a nueva versión gradualmente"]
 
-CAMBIO INCOMPATIBLE (rompe consumidores):
-───────────────────────────────────────────────
-Productor renombra 'status' a 'orderStatus':
-{
-  "id": 1,
-  "orderStatus": "CONFIRMED"   ← campo renombrado
-}
-→ Los contratos existentes validan '$.status'
-→ Los tests del productor FALLAN (contrato roto)
-→ Los stubs devuelven 'status' pero el productor devuelve 'orderStatus'
-→ Los consumidores que leen 'status' obtendrán null
+    CHANGE -->|"compatible"| COMPAT --> OK
+    CHANGE -->|"incompatible"| INCOMPAT --> FAIL --> NEGOCIAR
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+
+    class CHANGE root
+    class COMPAT,OK secondary
+    class INCOMPAT,FAIL danger
+    class NEGOCIAR warning
 ```
+
+*Clasificación de cambios en el productor: los cambios aditivos son compatibles; renombrar o eliminar campos activa el mecanismo de negociación CDC.*
 
 > [ADVERTENCIA] Cuando el productor necesita hacer un cambio incompatible, el flujo recomendado es: (1) mantener la versión antigua del endpoint/campo temporalmente, (2) negociar con los consumidores para que actualicen sus contratos, (3) eliminar la versión antigua solo cuando todos los consumidores hayan migrado. Esto es el patrón **Tolerant Reader** aplicado a CDC.
 

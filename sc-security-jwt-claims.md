@@ -22,22 +22,29 @@ SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c    ← SIGNATURE (Base64URL)
 
 El header decodificado: `{"alg": "RS256", "typ": "JWT", "kid": "key-id-1"}`. El campo `kid` (Key ID) identifica qué clave del JWKS usar para verificar — permite rotación de claves.
 
+```mermaid
+flowchart LR
+    subgraph "JWT = HEADER.PAYLOAD.SIGNATURE"
+        direction LR
+        H["HEADER\nalg: RS256\ntyp: JWT\nkid: key-id-1"]
+        P["PAYLOAD (claims)\nsub: user123\niss: http://auth:9000\naud: product-service\nexp: 1234567890\niat: 1234560000\njti: uuid\nscope: read write"]
+        S[("SIGNATURE\nBASE64URL(\n  RSA_Sign(\n    header.payload,\n    privateKey\n  )\n)")]
+    end
+
+    H -. "Base64URL" .-> P
+    P -. "firmado con" .-> S
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class H primary
+    class P neutral
+    class S storage
 ```
-┌────────────────────────────────────────────────┐
-│              JWT Structure                      │
-│                                                 │
-│  HEADER          PAYLOAD         SIGNATURE      │
-│  ┌──────────┐   ┌─────────────┐  ┌──────────┐  │
-│  │ alg: RS256│  │ sub: user1  │  │ HMAC/RSA │  │
-│  │ typ: JWT  │  │ iss: http:// │  │ signed   │  │
-│  │ kid: k1   │  │ aud: [svc]  │  │ with     │  │
-│  └──────────┘  │ exp: 1234567│  │ privKey  │  │
-│                 │ iat: 1234560│  └──────────┘  │
-│                 │ jti: uuid   │                 │
-│                 │ scope: read │                 │
-│                 └─────────────┘                 │
-└────────────────────────────────────────────────┘
-```
+*Las tres partes del JWT: header describe el algoritmo, payload contiene los claims, signature garantiza la integridad usando la clave privada del AS.*
 
 ## Claims estándar RFC 7519
 
@@ -110,6 +117,35 @@ public class OrderController {
 
 Por defecto, `JwtGrantedAuthoritiesConverter` lee el claim `scope` (o `scp`) y añade el prefijo `SCOPE_`. Este comportamiento es configurable: se puede cambiar el claim fuente, el prefijo, o reemplazar el converter por completo para lógica personalizada.
 
+```mermaid
+flowchart LR
+    JWT[("JWT\nclaims: scope,\nroles, sub...")]
+    GC["JwtGrantedAuthoritiesConverter\nclaim: 'scope'\nprefijo: 'SCOPE_'"]
+    RC["Converter personalizado\nclaim: 'roles'\nprefijo: 'ROLE_'"]
+    MERGE["Stream.concat()"]
+    AUTH["Collection&lt;GrantedAuthority&gt;\nSCOPE_read, SCOPE_write\nROLE_admin, ..."]
+    TOKEN["JwtAuthenticationToken\nen SecurityContext"]
+
+    JWT --> GC --> MERGE
+    JWT --> RC --> MERGE
+    MERGE --> AUTH --> TOKEN
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+
+    class JWT storage
+    class GC primary
+    class RC warning
+    class MERGE neutral
+    class AUTH secondary
+    class TOKEN root
+```
+*Pipeline de conversión JWT → GrantedAuthority: scopes con prefijo SCOPE_ y roles personalizados con prefijo ROLE_ se combinan en las autoridades del SecurityContext.*
+
 ```java
 package com.example.orderservice.config;
 
@@ -173,6 +209,38 @@ public class JwtConverterConfig {
 ## JwtValidators personalizados
 
 `JwtValidators` proporciona validadores predefinidos (expiración, not-before). Se pueden añadir validadores propios implementando `OAuth2TokenValidator<Jwt>`. Esto es útil para validar claims de negocio como el `tenant_id` o para rechazar tokens sin el claim `jti` (prevención de replay).
+
+```mermaid
+flowchart TD
+    JWT(("JWT\nentrante"))
+    DEL["DelegatingOAuth2TokenValidator\n(compone todos y acumula errores)"]
+    V1["JwtValidators\n.createDefaultWithIssuer()\n→ valida iss, exp, nbf"]
+    V2["JtiValidator\n→ rechaza si jti == null"]
+    V3["AudienceValidator\n→ rechaza si aud no contiene\n'product-service'"]
+    OK(("Token\nválido"))
+    ERR(("401\nUnauthorized"))
+
+    JWT --> DEL
+    DEL --> V1
+    DEL --> V2
+    DEL --> V3
+    V1 & V2 & V3 -->|"todos OK"| OK
+    V1 & V2 & V3 -->|"cualquiera falla"| ERR
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+
+    class JWT neutral
+    class DEL root
+    class V1,V2,V3 primary
+    class OK secondary
+    class ERR danger
+```
+*DelegatingOAuth2TokenValidator ejecuta todos los validadores en cadena; basta con que uno falle para rechazar el token.*
 
 ```java
 package com.example.orderservice.config;

@@ -14,30 +14,43 @@ Spring Cloud Bus implementa un canal de mensajería distribuida que permite prop
 
 Spring Cloud Bus define una arquitectura de publicación-suscripción donde cada microservicio actúa simultáneamente como publicador y suscriptor de eventos del Bus. La capa de transporte es abstraída completamente por Spring Cloud Stream, de modo que el mismo código funciona con RabbitMQ o Kafka sin cambios.
 
+```mermaid
+flowchart TD
+    BROKER[("BROKER\nRabbitMQ / Kafka\nTopic/Exchange: springCloudBus")]
+
+    subgraph "Microservicio A"
+        A_OUT["springCloudBusOutput\n(publica eventos)"]
+        A_IN["springCloudBusInput\n(consume eventos)"]
+        A_CFG{{"BusAutoConfiguration"}}
+    end
+    subgraph "Microservicio B"
+        B_IN["springCloudBusInput\n(consume eventos)"]
+        B_OUT["springCloudBusOutput\n(publica eventos)"]
+        B_CFG{{"BusAutoConfiguration"}}
+    end
+    subgraph "Microservicio C"
+        C_IN["springCloudBusInput\n(consume eventos)"]
+        C_CFG{{"BusAutoConfiguration"}}
+    end
+
+    A_OUT --> BROKER
+    BROKER --> A_IN
+    BROKER --> B_IN
+    BROKER --> C_IN
+    B_OUT --> BROKER
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class BROKER storage
+    class A_OUT,B_OUT primary
+    class A_IN,B_IN,C_IN secondary
+    class A_CFG,B_CFG,C_CFG warning
 ```
-                   ┌─────────────────────────────────────────────────────┐
-                   │              BROKER (RabbitMQ / Kafka)              │
-                   │         Topic/Exchange: springCloudBus               │
-                   └──────────┬───────────────────────┬──────────────────┘
-                              │                       │
-               ┌──────────────▼──────────┐  ┌────────▼─────────────────┐
-               │  Microservicio A        │  │  Microservicio B          │
-               │  ┌───────────────────┐  │  │  ┌───────────────────┐   │
-               │  │ SC Stream Output  │  │  │  │ SC Stream Input    │   │
-               │  │ (Bus publica)     │  │  │  │ (Bus consume)      │   │
-               │  └───────────────────┘  │  │  └───────────────────┘   │
-               │  ┌───────────────────┐  │  │  ┌───────────────────┐   │
-               │  │ BusAutoConfig     │  │  │  │ BusAutoConfig      │   │
-               │  └───────────────────┘  │  │  └───────────────────┘   │
-               └─────────────────────────┘  └──────────────────────────┘
-                              │
-               ┌──────────────▼──────────┐
-               │  Microservicio C (N)     │
-               │  ┌───────────────────┐  │
-               │  │ SC Stream Input   │  │
-               │  └───────────────────┘  │
-               └─────────────────────────┘
-```
+*Arquitectura pub-sub del Bus: cualquier nodo puede publicar eventos que llegan simultáneamente a todos los suscriptores a través del broker compartido.*
 
 ## Spring Cloud Stream como capa de transporte
 

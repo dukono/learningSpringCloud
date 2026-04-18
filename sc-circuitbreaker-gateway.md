@@ -14,23 +14,40 @@ Spring Cloud Gateway puede proteger rutas completas con un CircuitBreaker de Res
 
 El filtro CircuitBreaker actúa como GatewayFilter en la cadena de filtros de la ruta. Envuelve la llamada al downstream en un CircuitBreaker reactivo. Si el downstream responde con un statusCode configurado como fallo, o lanza una excepción de red, el CB registra el fallo y eventualmente abre el circuito.
 
+```mermaid
+flowchart TD
+    CLIENT(("Cliente HTTP"))
+    GW["Spring Cloud Gateway"]
+    CBF{{"Filtro CircuitBreaker\n(GatewayFilter)"}}
+    DS["Downstream Service"]
+    RESP(["Respuesta OK\nal cliente"])
+    CBCHK{"¿CB abierto\no fallo/timeout?"}
+    FB["fallbackUri\nforward:/fallback/...\no redirect:http://..."]
+    FBC["FallbackController\n(mismo Gateway)"]
+
+    CLIENT --> GW --> CBF
+    CBF --> DS
+    DS -->|"respuesta exitosa"| RESP
+    DS -->|"error HTTP / timeout\n/ red"| CBCHK
+    CBF -->|"CB ya abierto"| CBCHK
+    CBCHK -->|"sí"| FB --> FBC --> CLIENT
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class CLIENT root
+    class GW primary
+    class CBF warning
+    class DS storage
+    class RESP secondary
+    class CBCHK danger
+    class FB,FBC neutral
 ```
-Cliente HTTP
-     │
-     ▼
-Spring Cloud Gateway
-     │
-     ├─► Filtro CircuitBreaker ────► Downstream Service
-     │         │                          │
-     │         │ (fallo o CB abierto)     │ response
-     │         ▼                          │
-     │     fallbackUri                    │
-     │    (forward:/fallback              │
-     │     o redirect:http://...)         │
-     │         │                          │
-     └─────────┴──────────────────────────┘
-                    respuesta al cliente
-```
+*El filtro CircuitBreaker intercepta tanto los fallos del downstream como el estado OPEN del CB, redirigiendo en ambos casos a la fallbackUri configurada.*
 
 ## Ejemplo central
 

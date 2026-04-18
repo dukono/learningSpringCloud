@@ -189,6 +189,47 @@ El flujo de propagación de excepciones desde Feign hacia el CircuitBreaker:
 4. En estado OPEN, se lanza `CallNotPermittedException` directamente (sin llamar al downstream).
 5. La excepción (sea `FeignException` o `CallNotPermittedException`) llega al `FallbackFactory.create()`.
 
+```mermaid
+flowchart TD
+    REQ(("Llamada\nFeign"))
+    CBOPEN{"¿CB en\nOPEN?"}
+    DS["Llama al\nDownstream"]
+    FEIGNEX{"¿FeignException\no error red?"}
+    RECCHK{"¿En record-exceptions?\n(y no en ignore)"}
+    THRSH{"¿Umbral\nsuperado?"}
+    TRANS["CB → OPEN\n(STATE_TRANSITION)"]
+    CNPE["CallNotPermittedException"]
+    FFcnp["FallbackFactory.create()\nCallNotPermittedException"]
+    FFfeign["FallbackFactory.create()\nFeignException"]
+    OK["Respuesta OK\nal llamante"]
+
+    REQ --> CBOPEN
+    CBOPEN -->|"sí"| CNPE --> FFcnp
+    CBOPEN -->|"no"| DS
+    DS --> FEIGNEX
+    FEIGNEX -->|"no"| OK
+    FEIGNEX -->|"sí"| RECCHK
+    RECCHK -->|"no (ignored)"| OK
+    RECCHK -->|"sí"| THRSH
+    THRSH -->|"no"| FFfeign
+    THRSH -->|"sí"| TRANS --> FFfeign
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class REQ root
+    class CBOPEN,FEIGNEX,RECCHK,THRSH warning
+    class DS primary
+    class OK secondary
+    class CNPE,TRANS danger
+    class FFcnp,FFfeign neutral
+```
+*La excepción que llega al FallbackFactory difiere según si el CB estaba ya abierto (CallNotPermittedException) o si el fallo viene del downstream (FeignException).*
+
 ## Buenas y malas prácticas
 
 **Buenas prácticas:**

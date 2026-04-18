@@ -14,31 +14,37 @@ La combinación de Spring Cloud Task con Spring Batch es uno de los patrones de 
 
 La integración se basa en el `BatchTaskListener`, que actúa como puente entre los eventos del ciclo de vida de Spring Batch y el repositorio de Spring Cloud Task. El diagrama muestra cómo se relacionan los eventos.
 
+```mermaid
+sequenceDiagram
+    participant AR as ApplicationRunner
+    participant JL as JobLauncher
+    participant BTL as BatchTaskListener
+    participant TR as TaskRepository
+    participant DB as Base de datos
+
+    AR->>JL: jobLauncher.run(reportJob, params)
+    JL->>BTL: beforeJob(JobExecution)
+    BTL->>DB: INSERT TASK_TASK_BATCH\n(TASK_EXECUTION_ID, JOB_EXECUTION_ID)
+
+    rect rgb(0, 80, 160)
+        Note over JL,DB: Job ejecuta Steps...
+        JL->>JL: Step 1, Step 2, ...
+    end
+
+    alt Job exitStatus = COMPLETED
+        JL->>BTL: afterJob(COMPLETED)
+        BTL-->>TR: EXIT_CODE permanece 0
+    else Job exitStatus = FAILED
+        JL->>BTL: afterJob(FAILED)
+        BTL->>TR: actualiza EXIT_CODE = 1
+        TR->>DB: UPDATE TASK_EXECUTION EXIT_CODE=1
+    end
+
+    JL-->>AR: JobExecution retornado
+    AR-->>TR: Task finaliza → END_TIME actualizado
 ```
-@EnableTask + @EnableBatchProcessing activos
-        │
-        ▼
-BatchTaskListener se auto-configura (via spring-cloud-task-batch)
-        │
-Spring Batch lanza Job
-        │
-        ▼
-BatchTaskListener.beforeJob(JobExecution)
-   → INSERT en TASK_TASK_BATCH:
-     (TASK_EXECUTION_ID=actual, JOB_EXECUTION_ID=jobExecution.id)
-        │
-        ▼
-Job ejecuta Steps...
-        │
-        ▼
-BatchTaskListener.afterJob(JobExecution)
-   → Lee JobExecution.exitStatus
-   → Si exitStatus = FAILED → actualiza TaskExecution.exitCode = 1
-   → Si exitStatus = COMPLETED → TaskExecution.exitCode permanece 0
-        │
-        ▼
-Task finaliza → TASK_EXECUTION actualizado con END_TIME y EXIT_CODE final
-```
+
+*BatchTaskListener como puente: vincula JobExecution con TaskExecution en TASK_TASK_BATCH y sincroniza el EXIT_CODE según el resultado del Job.*
 
 ## Ejemplo central
 
@@ -153,6 +159,33 @@ La integración introduce componentes y tablas adicionales que no existen en un 
 La sincronización entre el exitStatus de Spring Batch y el exitCode de Spring Cloud Task sigue reglas específicas que es importante conocer para el examen.
 
 Spring Batch usa `ExitStatus` con strings como `COMPLETED`, `FAILED`, `STOPPED`. Spring Cloud Task usa enteros para `EXIT_CODE`. El `BatchTaskListener` realiza la traducción: si el `JobExecution.exitStatus` es `FAILED`, establece `EXIT_CODE = 1` en la `TaskExecution`. Para cualquier otro estado, el `EXIT_CODE` queda en 0 a menos que el runner lance una excepción.
+
+```mermaid
+flowchart LR
+    BE["Spring Batch\nExitStatus (string)"]
+    COMP["COMPLETED"]
+    FAIL["FAILED"]
+    STOP["STOPPED"]
+    EC0["EXIT_CODE = 0"]
+    EC1["EXIT_CODE = 1"]
+    ECN["EXIT_CODE = 0\n(solo cambia si runner\nlanza excepción)"]
+
+    BE --> COMP --> EC0
+    BE --> FAIL --> EC1
+    BE --> STOP --> ECN
+
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class COMP,EC0 secondary
+    class FAIL,EC1 danger
+    class STOP,ECN warning
+    class BE neutral
+```
+
+*Traducción ExitStatus → EXIT_CODE: solo FAILED produce EXIT_CODE = 1; STOPPED no produce EXIT_CODE ≠ 0 automáticamente.*
 
 ```yaml
 # Configuración necesaria cuando Batch y Task comparten la misma BD

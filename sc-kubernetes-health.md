@@ -12,21 +12,48 @@ Spring Cloud Kubernetes añade indicadores de salud e información de pod al sis
 
 El siguiente diagrama muestra cómo Kubernetes consulta los endpoints de Actuator para determinar si el pod está vivo y listo para recibir tráfico.
 
+```mermaid
+flowchart TD
+    KL(("Kubernetes\nkubelet"))
+
+    subgraph LIVE["Liveness Probe"]
+        direction TB
+        LP["GET /actuator/health/liveness"]
+        LI["LivenessStateHealthIndicator"]
+        LOK(("200 OK\npod sigue ejecutando"))
+        LERR(("503\nK8s mata y reinicia el pod"))
+        LP --> LI
+        LI -->|"UP"| LOK
+        LI -->|"DOWN"| LERR
+    end
+
+    subgraph READY["Readiness Probe"]
+        direction TB
+        RP["GET /actuator/health/readiness"]
+        RI["ReadinessStateHealthIndicator\n+ KubernetesHealthIndicator"]
+        ROK(("200 OK\npod recibe tráfico"))
+        RERR(("503\nK8s saca el pod del Service Endpoints"))
+        RP --> RI
+        RI -->|"UP"| ROK
+        RI -->|"DOWN"| RERR
+    end
+
+    KL --> LP
+    KL --> RP
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class KL root
+    class LP,RP neutral
+    class LI,RI primary
+    class LOK,ROK secondary
+    class LERR,RERR danger
 ```
-Kubernetes kubelet
-        │
-        ├── liveness probe  → GET /actuator/health/liveness
-        │         │                   │
-        │         │                   ▼ LivenessStateHealthIndicator
-        │         │              200 OK → pod sigue ejecutando
-        │         │              503   → K8s mata y reinicia el pod
-        │
-        └── readiness probe → GET /actuator/health/readiness
-                  │                   │
-                  │                   ▼ ReadinessStateHealthIndicator
-                  │              200 OK → pod recibe tráfico
-                  │              503   → K8s saca el pod del Service Endpoints
-```
+*El kubelet consulta periódicamente liveness (¿sigue vivo el proceso?) y readiness (¿puede recibir tráfico?); cada uno tiene consecuencias distintas ante un fallo.*
 
 > [CONCEPTO] `KubernetesHealthIndicator` comprueba que la conexión con la API de Kubernetes está operativa. Si el pod pierde acceso a la API (p.ej., fallo del API Server), el health indicator pasa a `DOWN`, lo que puede afectar al estado `readiness` del pod según cómo esté configurado el `HealthEndpointGroups`.
 
@@ -166,6 +193,32 @@ Es importante distinguir dos conceptos que el examen suele mezclar:
 `KubernetesHealthIndicator` es un componente de Spring Cloud Kubernetes que verifica la conectividad con la API del clúster y contribuye al endpoint `/actuator/health`. Es específico de Spring Cloud Kubernetes.
 
 Los endpoints de liveness y readiness (`/actuator/health/liveness` y `/actuator/health/readiness`) son una funcionalidad de Spring Boot 2.3+ (puro Spring Boot, no Spring Cloud Kubernetes) que expone el estado del ciclo de vida de la aplicación. Spring Cloud Kubernetes se integra con este mecanismo pero no lo define.
+
+```mermaid
+flowchart LR
+    SB["Spring Boot 2.3+\n(puro)"]
+    SCK["Spring Cloud Kubernetes"]
+
+    LR["/actuator/health/liveness\n/actuator/health/readiness\nCiclo de vida de la app"]
+    KHI["KubernetesHealthIndicator\nconectividad API K8s\n/actuator/health"]
+    KIC["KubernetesInfoContributor\nmetadatos pod\n/actuator/info"]
+
+    SB -->|"define"| LR
+    SCK -->|"añade"| KHI
+    SCK -->|"añade"| KIC
+    KHI -->|"se integra en grupo\nreadiness (recomendado)"| LR
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class SB primary
+    class SCK secondary
+    class LR neutral
+    class KHI,KIC secondary
+```
+*Spring Boot define los probes de liveness/readiness; Spring Cloud Kubernetes añade KubernetesHealthIndicator como indicador adicional que debe asignarse al grupo readiness, no al liveness.*
 
 ## Buenas y malas prácticas
 

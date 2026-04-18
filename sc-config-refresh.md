@@ -16,30 +16,23 @@ El refresh de configuración en caliente resuelve el problema más práctico de 
 
 El refresh manual es el mecanismo base. Entenderlo es obligatorio antes de ver el refresh distribuido via Bus.
 
+```mermaid
+sequenceDiagram
+    actor D as Developer
+    participant C as Config Client
+    participant S as Config Server
+    participant G as Git Repo
+
+    D->>G: git push (actualiza config)
+    D->>C: POST /actuator/refresh
+    C->>S: GET /{app}/{profile}/{label}
+    S->>G: git pull
+    G-->>S: Ficheros actualizados
+    S-->>C: PropertySource[] (nuevos valores)
+    Note over C: Spring recrea beans @RefreshScope
+    C-->>D: ["app.max-orders", ...] (propiedades cambiadas)
 ```
-FLUJO DE REFRESH MANUAL
-════════════════════════════════════════════════════════════════
-  1. Developer hace commit en el repositorio Git de configuración
-     └─ Cambia order-service.yml: app.max-orders=500 → 1000
-
-  2. Developer llama manualmente al endpoint del cliente:
-     POST http://order-service:8080/actuator/refresh
-
-  3. El cliente contacta al Config Server:
-     GET http://config-server:8888/order-service/prod/main
-
-  4. Config Server lee el repositorio Git actualizado y devuelve
-     las nuevas propiedades
-
-  5. Spring recrea todos los beans @RefreshScope del cliente
-     con los nuevos valores
-
-  6. GET http://order-service:8080/actuator/env/app.max-orders
-     → {"value": "1000"}  ← Confirmación del cambio
-════════════════════════════════════════════════════════════════
-IMPORTANTE: Solo afecta al microservicio al que se llama
-            Las demás instancias siguen con los valores antiguos
-```
+*Refresh manual: afecta solo a la instancia que recibe el POST; las demás instancias conservan los valores anteriores.*
 
 > [EXAMEN] `@RefreshScope` es la pregunta más frecuente del módulo Config en el examen VMware. Sin esta anotación en el bean, el endpoint `/actuator/refresh` responde 200 pero el bean sigue con los valores anteriores. La anotación está en el paquete `org.springframework.cloud.context.config.annotation`.
 
@@ -154,21 +147,27 @@ curl http://localhost:8080/api/config
 
 Cuando hay múltiples instancias del mismo microservicio, el refresh manual requiere llamar al endpoint de cada instancia individualmente. Spring Cloud Bus resuelve este problema publicando un evento de refresh en un broker de mensajes (RabbitMQ o Kafka), y todas las instancias suscritas lo reciben y ejecutan el refresh simultáneamente.
 
+```mermaid
+sequenceDiagram
+    actor D as Developer
+    participant CS as Config Server
+    participant B as Broker (RabbitMQ/Kafka)
+    participant O1 as order-service:8080
+    participant O2 as order-service:8081
+    participant O3 as order-service:8082
+    participant P as payment-service:9090
+
+    D->>CS: POST /actuator/busrefresh
+    CS->>B: publica RefreshRemoteApplicationEvent
+    par Refresh simultáneo
+        B-)O1: evento refresh
+        B-)O2: evento refresh
+        B-)O3: evento refresh
+        B-)P: evento refresh
+    end
+    Note over O1,P: Cada instancia recarga @RefreshScope de forma independiente
 ```
-FLUJO DE REFRESH DISTRIBUIDO CON SPRING CLOUD BUS
-══════════════════════════════════════════════════
-  POST /actuator/busrefresh (en el Config Server o en cualquier cliente)
-         │
-         ▼
-  Spring Cloud Bus publica RefreshRemoteApplicationEvent
-  en el broker (RabbitMQ / Kafka)
-         │
-         ├──▶ order-service:8080  (instancia 1)  → refresh local
-         ├──▶ order-service:8081  (instancia 2)  → refresh local
-         ├──▶ order-service:8082  (instancia 3)  → refresh local
-         └──▶ payment-service:9090               → refresh local
-══════════════════════════════════════════════════
-```
+*Bus refresh: un único POST propaga el evento a todas las instancias suscritas al broker.*
 
 **Dependencias adicionales para Bus con RabbitMQ**:
 

@@ -14,21 +14,22 @@ Aunque Git es el backend por defecto y el más utilizado en producción, Spring 
 
 El backend native sirve configuración desde el sistema de archivos local o desde el classpath de la aplicación. Es el más simple de configurar y es la opción estándar para tests de integración: no requiere Git, no requiere red, y los ficheros de configuración pueden vivir en `src/test/resources`.
 
+```mermaid
+mindmap
+  root((src/))
+    (main/)
+      resources/
+        [config/]
+          application.yml
+          order-service.yml
+          order-service-prod.yml
+    (test/)
+      resources/
+        [config/]
+          application.yml
+          order-service.yml
 ```
-ESTRUCTURA DE FICHEROS CON BACKEND NATIVE
-src/
-├── main/
-│   └── resources/
-│       └── config/
-│           ├── application.yml           ← Config global
-│           ├── order-service.yml         ← Config de order-service
-│           └── order-service-prod.yml    ← Config de order-service en prod
-└── test/
-    └── resources/
-        └── config/
-            ├── application.yml           ← Config de test (sobrescribe main)
-            └── order-service.yml
-```
+*Estructura de ficheros para backend native: `classpath:/config` apunta a ambas ramas; `test/resources` sobrescribe `main/resources` durante los tests.*
 
 La activación requiere añadir el perfil `native` al Config Server y definir las rutas de búsqueda:
 
@@ -177,6 +178,32 @@ spring:
 ```
 
 Con esta configuración, una clave que existe en Vault y en Git tendrá el valor de Vault. Las claves que solo existen en Git se entregan desde Git. El cliente no sabe de qué backend viene cada propiedad.
+
+```mermaid
+flowchart LR
+    C["Config Client"]
+    CS["Config Server\n(composite)"]
+    V[("Vault\norder=1")]
+    G[("Git\norder=2")]
+
+    C -->|"GET /{app}/{profile}"| CS
+    CS -->|"consulta primero"| V
+    CS -->|"consulta si no hay en Vault"| G
+    V -->|"secretos: DB pass, API keys"| CS
+    G -->|"config general"| CS
+    CS -->|"PropertySource[] fusionado"| C
+
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class C primary
+    class CS secondary
+    class V danger
+    class G storage
+```
+*Composite backend: Vault (order=1) tiene precedencia sobre Git (order=2); el cliente recibe las propiedades fusionadas sin saber su origen.*
 
 ## Tabla comparativa de backends
 

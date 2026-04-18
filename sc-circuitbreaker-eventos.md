@@ -27,6 +27,45 @@ Los tipos de eventos del CircuitBreaker son:
 | `FAILURE_RATE_EXCEEDED` | La tasa de fallos superó el umbral |
 | `SLOW_CALL_RATE_EXCEEDED` | La tasa de llamadas lentas superó el umbral |
 
+```mermaid
+flowchart LR
+    CALL(("Llamada"))
+    CHK{"¿CB en OPEN?"}
+    EXEC["Ejecuta llamada"]
+    OK(["Resultado OK"])
+    ERR{{"¿Excepción?"}}
+    IGN{"¿En\nignore-exceptions?"}
+
+    CALL --> CHK
+    CHK -->|"sí"| NP["Evento: NOT_PERMITTED\nCallNotPermittedException"]
+    CHK -->|"no"| EXEC
+    EXEC --> OK --> EVS["Evento: SUCCESS\no SLOW_CALL"]
+    EXEC --> ERR
+    ERR -->|"sí"| IGN
+    IGN -->|"sí"| EVIE["Evento: IGNORED_ERROR\n(no cuenta en window)"]
+    IGN -->|"no"| EVE["Evento: ERROR\n(cuenta en sliding window)"]
+    EVE --> EVAL{{"¿Umbral\nsuperado?"}}
+    EVAL -->|"failureRate"| EVFR["Evento: FAILURE_RATE_EXCEEDED"]
+    EVAL -->|"slowCallRate"| EVSC["Evento: SLOW_CALL_RATE_EXCEEDED"]
+    EVFR --> ST["Evento: STATE_TRANSITION\nCLOSED → OPEN"]
+    EVSC --> ST
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+
+    class CALL root
+    class CHK,ERR,IGN,EVAL warning
+    class OK,EVS secondary
+    class EVIE neutral
+    class NP,EVE,EVFR,EVSC,ST danger
+    class EXEC primary
+```
+*Árbol de decisión que determina qué evento publica el CircuitBreaker según el resultado de cada llamada.*
+
 ## Ejemplo central
 
 El ejemplo muestra el registro de listeners de eventos para CircuitBreaker y Retry, junto con la configuración de métricas y el endpoint de Actuator:

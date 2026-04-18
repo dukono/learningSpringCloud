@@ -18,27 +18,35 @@ Spring Cloud Function soporta de forma nativa los tipos reactivos de Project Rea
 
 El siguiente diagrama compara el ciclo de vida de una función imperativa frente a una reactiva.
 
-```
-Función imperativa Function<String,String>:
-  Petición 1 → apply("a") → "A"   (invocación 1)
-  Petición 2 → apply("b") → "B"   (invocación 2)
-  Petición 3 → apply("c") → "C"   (invocación 3)
-  Cada petición HTTP = una invocación = un resultado
+```mermaid
+flowchart LR
+    subgraph imperativa["Función imperativa Function&lt;String,String&gt;"]
+        direction TB
+        R1["Petición 1 → apply('a') → 'A'"]
+        R2["Petición 2 → apply('b') → 'B'"]
+        R3["Petición 3 → apply('c') → 'C'"]
+    end
 
-Función reactiva Function<Flux<String>,Flux<String>>:
-  SCF construye Flux["a","b","c","d",...]
-         │
-         ▼
-  Function recibe el Flux completo
-  Aplica operadores Reactor: map, filter, flatMap...
-         │
-         ▼
-  Devuelve Flux transformado
-         │
-         ▼
-  SCF suscribe y emite los elementos al cliente (SSE/streaming)
-  Backpressure gestionado automáticamente
+    subgraph reactiva["Función reactiva Function&lt;Flux&lt;String&gt;,Flux&lt;String&gt;&gt;"]
+        direction LR
+        FLUX[/"Flux['a','b','c','d',...]"/]
+        OPS["map / filter / flatMap\n(operadores Reactor)"]
+        SUB["SCF suscribe\nBackpressure automático"]
+        EMIT[/"Flux transformado\n→ SSE / streaming"/]
+        FLUX --> OPS --> SUB --> EMIT
+    end
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class R1,R2,R3 neutral
+    class FLUX,EMIT neutral
+    class OPS primary
+    class SUB secondary
 ```
+*Diferencia en el ciclo de vida: imperativa invoca una vez por elemento; reactiva recibe el Flux completo y delega la suscripción a Reactor.*
 
 ## Ejemplo central
 
@@ -151,6 +159,22 @@ La siguiente tabla compara las variantes de función según el tipo de dato.
 | `Function<Flux<I>, Flux<O>>` | N → N stream | WebFlux | Procesamiento de streams, SSE |
 | `Supplier<Flux<O>>` | Sin entrada → N | WebFlux / Stream | Generación de eventos continuos |
 | `Consumer<Flux<I>>` | N → sin salida | Stream | Sink de stream (persistencia) |
+
+```mermaid
+quadrantChart
+    title Variantes de función: complejidad vs capacidad de streaming
+    x-axis "Una sola respuesta" --> "Stream / N respuestas"
+    y-axis "Síncrono / bloqueante" --> "Asíncrono / no bloqueante"
+    quadrant-1 WebFlux streaming
+    quadrant-2 Reactivo puro (Flux)
+    quadrant-3 Imperativo simple
+    quadrant-4 Reactivo 1:1 (Mono)
+    "Function&lt;T,R&gt;": [0.1, 0.1]
+    "Function&lt;Mono,Mono&gt;": [0.2, 0.75]
+    "Function&lt;Flux,Flux&gt;": [0.85, 0.85]
+    "Supplier&lt;Flux&gt;": [0.9, 0.65]
+```
+*Posicionamiento de las variantes de función según su capacidad de manejo de streams y modelo de concurrencia.*
 
 ## Buenas y malas prácticas
 

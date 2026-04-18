@@ -247,6 +247,34 @@ spring:
 | Registro | `@Component` o `@Bean` | `@Component` o `@Bean` |
 | Fase de ejecución | Evaluación en matching de ruta | PRE y/o POST en la cadena de filtros |
 
+```mermaid
+flowchart TD
+    REQUEST(("Petición\nentrante"))
+    PRE["FASE PRE\n(antes de chain.filter)\n→ leer headers, capturar tiempo,\nmodificar request via mutate()"]
+    CHAIN["chain.filter(exchange)\nPropaga al siguiente filtro\no al upstream"]
+    UPSTREAM[("Upstream\nService")]
+    POST["FASE POST\n(.then() o .doFinally())\n→ modificar response headers,\nañadir métricas, logging"]
+    RESP(("Respuesta\nal cliente"))
+
+    REQUEST --> PRE --> CHAIN --> UPSTREAM
+    UPSTREAM -->|"respuesta"| POST --> RESP
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class REQUEST root
+    class PRE warning
+    class CHAIN primary
+    class UPSTREAM storage
+    class POST neutral
+    class RESP secondary
+```
+*Estructura PRE/POST de una Custom GatewayFilter Factory: la fase PRE actúa sobre el request antes de chain.filter(); la fase POST actúa sobre la respuesta en el Mono retornado.*
+
 ## Detalles sobre la clase Config interna
 
 La clase `Config` interna es un simple POJO con campos, getters y setters. Spring Cloud Gateway usa esta clase para deserializar los argumentos de configuración del YAML a un objeto tipado que se pasa al método `apply()`. Los campos deben tener setters con el mismo nombre que las claves en YAML.

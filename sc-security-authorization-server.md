@@ -37,6 +37,24 @@ Tras añadir la dependencia, Spring Boot auto-configura los siguientes endpoints
 | OIDC Discovery | `/.well-known/openid-configuration` | Metadatos del proveedor OIDC |
 | AS Metadata | `/.well-known/oauth-authorization-server` | Metadatos OAuth2 estándar (RFC 8414) |
 
+```mermaid
+mindmap
+  root(("Authorization\nServer"))
+    (OAuth2 Endpoints)
+      /oauth2/authorize
+      /oauth2/token
+      /oauth2/introspect
+      /oauth2/revoke
+    (JWKS & Discovery)
+      /oauth2/jwks
+      /.well-known/openid-configuration
+      /.well-known/oauth-authorization-server
+    (OIDC)
+      /userinfo
+      /connect/register
+```
+*Árbol de endpoints que Spring Authorization Server expone automáticamente al añadir el starter.*
+
 > [CONCEPTO] El endpoint `/.well-known/openid-configuration` permite a los Resource Servers descubrir automáticamente el `jwks-uri` usando solo el `issuer-uri`. Spring Boot auto-configura `JwtDecoder` usando este endpoint cuando se especifica `spring.security.oauth2.resourceserver.jwt.issuer-uri`.
 
 ## RegisteredClient y RegisteredClientRepository
@@ -114,6 +132,41 @@ public class AuthorizationServerConfig {
 ## Configuración del Authorization Server con SecurityFilterChain
 
 Spring Authorization Server requiere dos `SecurityFilterChain` separados: uno para el protocolo OAuth2/OIDC (endpoints del AS) y otro para la seguridad de la propia aplicación del AS (login del usuario, UI de consentimiento).
+
+```mermaid
+flowchart TD
+    REQ(("HTTP Request"))
+    CHK1{{"¿Path /oauth2/*\no /.well-known/*?"}}
+    CHK2{{"¿Usuario\nautenticado?"}}
+    CHAIN1["SecurityFilterChain @Order(1)\nendpoints OAuth2/OIDC\napplyDefaultSecurity()"]
+    CHAIN2["SecurityFilterChain @Order(2)\nformLogin + anyRequest.authenticated()"]
+    LOGIN["redirect /login"]
+    RESP(("Response"))
+
+    REQ --> CHK1
+    CHK1 -->|"sí"| CHAIN1
+    CHK1 -->|"no"| CHK2
+    CHK2 -->|"sí"| CHAIN2
+    CHK2 -->|"no"| LOGIN
+    CHAIN1 --> RESP
+    CHAIN2 --> RESP
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class REQ root
+    class CHK1,CHK2 warning
+    class CHAIN1 primary
+    class CHAIN2 secondary
+    class LOGIN danger
+    class RESP neutral
+```
+*Prioridad de los dos SecurityFilterChain: el de protocolo OAuth2 (Order 1) intercepta primero los endpoints del AS; el de aplicación (Order 2) gestiona el login del usuario.*
 
 ```java
 // SecurityConfig.java — dos SecurityFilterChain obligatorios
@@ -241,6 +294,36 @@ public class JwksConfig {
 ## Personalización de claims con OAuth2TokenCustomizer
 
 `OAuth2TokenCustomizer` permite añadir claims personalizados al JWT emitido por el Authorization Server. Es el mecanismo para incluir información de negocio (roles, tenantId, organizationId) que los Resource Servers necesitan para tomar decisiones de autorización.
+
+```mermaid
+flowchart LR
+    CTX["JwtEncodingContext\n(token type, principal,\nregistered client)"]
+    CHK{{"¿tokenType ==\nACCESS_TOKEN?"}}
+    ADD["context.getClaims()\n.claim('roles', ...)\n.claim('client_id', ...)"]
+    SKIP["sin modificación\n(ID Token, etc.)"]
+    JWT[("JWT firmado\ncon claims\npersonalizados")]
+
+    CTX --> CHK
+    CHK -->|"sí"| ADD
+    CHK -->|"no"| SKIP
+    ADD --> JWT
+    SKIP --> JWT
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class CTX neutral
+    class CHK warning
+    class ADD primary
+    class SKIP danger
+    class JWT storage
+```
+*El OAuth2TokenCustomizer solo modifica el ACCESS_TOKEN: añade claims de negocio antes de firmar el JWT.*
 
 ```java
 // TokenCustomizerConfig.java

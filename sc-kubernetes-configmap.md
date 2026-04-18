@@ -12,24 +12,30 @@ Spring Cloud Kubernetes permite usar un ConfigMap de Kubernetes como fuente de p
 
 El siguiente diagrama muestra cómo Spring Cloud Kubernetes carga el ConfigMap durante el arranque de la aplicación y lo inyecta en el `Environment` de Spring.
 
+```mermaid
+flowchart TD
+    BOOT(("Arranque\nSpring Boot"))
+    CTX["BootstrapContext /\nApplicationContext"]
+    LOADER["KubernetesConfigDataLoader\nlee spring.cloud.kubernetes.config.*"]
+    API[["API K8s\nGET /api/v1/namespaces/{ns}/configmaps/{name}"]]
+    PS["ConfigMapPropertySource\nañadido al Environment\n(mayor precedencia que application.yml)"]
+    APP(("@Value /\n@ConfigurationProperties\nresueltos"))
+
+    BOOT --> CTX --> LOADER --> API --> PS --> APP
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class BOOT root
+    class CTX,LOADER primary
+    class API neutral
+    class PS storage
+    class APP secondary
 ```
-Arranque Spring Boot
-        │
-        ▼
-BootstrapContext / ApplicationContext
-        │
-        ▼
-KubernetesConfigDataLoader
-        │ lee spring.cloud.kubernetes.config.*
-        ▼
-API K8s: GET /api/v1/namespaces/{ns}/configmaps/{name}
-        │
-        ▼
-ConfigMapPropertySource
-        │ se añade al Environment con mayor precedencia
-        ▼
-@Value / @ConfigurationProperties resueltos
-```
+*Pipeline de carga del ConfigMap durante el arranque: el contenido se integra en el Environment de Spring con mayor precedencia que las propiedades locales.*
 
 > [CONCEPTO] El ConfigMap puede contener datos en formato `key=value` (estilo `application.properties`) o como un bloque YAML bajo la clave `application.yml`. Spring Cloud Kubernetes detecta automáticamente el formato y convierte el contenido en propiedades de Spring.
 
@@ -167,6 +173,19 @@ La siguiente tabla detalla todas las propiedades relevantes para configurar Conf
 Spring Cloud Kubernetes aplica soporte de perfiles al cargar ConfigMaps: además del ConfigMap con el nombre base (`my-service`), también carga automáticamente el ConfigMap `my-service-{profile}` si existe. Las propiedades del ConfigMap de perfil sobrescriben las del ConfigMap base, respetando la misma lógica de precedencia que los perfiles de Spring Boot.
 
 Por ejemplo, con `spring.profiles.active=prod` la aplicación cargará primero `my-service` y luego sobreescribirá con `my-service-prod`. Esto permite tener configuración común en el ConfigMap base y configuración específica de entorno en los ConfigMaps de perfil, sin duplicar propiedades.
+
+```mermaid
+timeline
+    title Carga de ConfigMaps con perfil prod activo
+    section Arranque
+      ConfigMap base : my-service → carga primero
+    section Sobreescritura de perfil
+      ConfigMap de perfil : my-service-prod → sobreescribe propiedades del base
+    section Environment final
+      Propiedades resueltas : base + override de perfil
+      @Value / @ConfigurationProperties : leen valores finales
+```
+*Con profiles.active=prod se cargan en orden my-service (base) y my-service-prod (override): las propiedades duplicadas del perfil tienen precedencia.*
 
 ## Buenas y malas prácticas
 

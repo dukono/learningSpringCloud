@@ -26,18 +26,70 @@ El aggregator puede ubicarse en varios puntos de la arquitectura:
 
 La siguiente comparativa ilustra el impacto en latencia:
 
+```mermaid
+sequenceDiagram
+    participant AGG as Aggregator
+    participant A as Catalog (200ms)
+    participant B as Inventory (150ms)
+    participant C as Reviews (100ms)
+
+    Note over AGG,C: Llamadas PARALELAS — latencia total = 200ms (el más lento)
+
+    rect rgb(0, 80, 160)
+        par Llamadas simultáneas
+            AGG->>A: GET /products/{id}
+        and
+            AGG->>B: GET /stock/{id}
+        and
+            AGG->>C: GET /reviews?productId={id}
+        end
+    end
+
+    A-->>AGG: CatalogProduct (t=200ms)
+    B-->>AGG: InventoryStock (t=150ms)
+    C-->>AGG: List&lt;Review&gt; (t=100ms)
+    Note over AGG: Mono.zip → combina los tres resultados
+    AGG-->>AGG: ProductDetail (compuesto)
 ```
-SECUENCIAL:        Servicio A (200ms) → Servicio B (150ms) → Servicio C (100ms) = 450ms total
-PARALELO:          Servicio A (200ms)
-                   Servicio B (150ms)  ─── todos en paralelo ─── = 200ms total (el más lento)
-                   Servicio C (100ms)
-```
+*Llamadas paralelas con `Mono.zip`: la latencia total es la del servicio más lento, no la suma de todos.*
 
 ## Fallos parciales y estrategias de degradación
 
 > [CONCEPTO] **Latencia y fallos parciales**: cuando uno de los servicios del aggregator falla o es lento, la estrategia de respuesta define la experiencia del usuario. Las opciones son: propagar el error (respuesta parcial inaceptable), degradar la respuesta (devolver datos sin la parte fallida con un indicador de ausencia), o devolver datos cacheados (la última respuesta válida conocida).
 
 La elección depende del dominio: en datos críticos (precio, disponibilidad), propagar el error; en datos enriquecedores (reseñas, recomendaciones), degradar con datos vacíos o cacheados.
+
+```mermaid
+flowchart TD
+    FAIL["Fallo parcial en servicio downstream"]
+    CRITICAL{{"¿Dato crítico\npara la respuesta?"}}
+    PROP(["Propagar error 5xx\nal cliente"])
+    ENRICH{{"¿Dato enriquecedor\n(reseñas, recomendaciones)?"}}
+    CACHE{{"¿Cache válida\ndisponible?"}}
+    DEGRADE(["Degradar: respuesta parcial\ncampo vacío + reviewsAvailable=false"])
+    CACHED(["Devolver datos\ncacheados"])
+
+    FAIL --> CRITICAL
+    CRITICAL -->|"sí"| PROP
+    CRITICAL -->|"no"| ENRICH
+    ENRICH -->|"sí"| CACHE
+    CACHE -->|"sí"| CACHED
+    CACHE -->|"no"| DEGRADE
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class FAIL neutral
+    class CRITICAL,ENRICH,CACHE warning
+    class PROP danger
+    class DEGRADE secondary
+    class CACHED primary
+```
+*Árbol de decisión para fallos parciales: dato crítico → error; dato enriquecedor → degradación elegante o cache.*
 
 ## Ejemplo central: Aggregator reactivo con WebClient y Resilience4j
 

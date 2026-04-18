@@ -199,6 +199,45 @@ public class TaskExitCodeMapper implements ExitCodeExceptionMapper {
 
 La siguiente tabla resume los síntomas más frecuentes con su causa y solución para consulta rápida.
 
+```mermaid
+flowchart TD
+    SYMPTOM(("Síntoma"))
+    Q1{{"¿TASK_EXECUTION\nvacía?"}}
+    Q2{{"¿EXIT_CODE=0\npero la Task falló?"}}
+    Q3{{"¿'Task already running'\nal arrancar?"}}
+    Q4{{"¿BadSqlGrammarException\nal arrancar?"}}
+    Q5{{"¿TASK_EXECUTION_PARAMS\nvacío?"}}
+
+    FIX1["Verificar @EnableTask\ny datasource configurado"]
+    FIX2["Runner captura excepción\nsin relanzar — añadir throw e"]
+    FIX3["Ejecución huérfana con END_TIME=NULL\nLimpiar fila o desactivar\nsingle-instance-enabled"]
+    FIX4["initialize-enabled=false\nsin schema creado\nActivar o crear schema manualmente"]
+    FIX5["Argumentos pasados con -D\nen lugar de --key=value"]
+
+    SYMPTOM --> Q1
+    SYMPTOM --> Q2
+    SYMPTOM --> Q3
+    SYMPTOM --> Q4
+    SYMPTOM --> Q5
+
+    Q1 -->|"SÍ"| FIX1
+    Q2 -->|"SÍ"| FIX2
+    Q3 -->|"SÍ"| FIX3
+    Q4 -->|"SÍ"| FIX4
+    Q5 -->|"SÍ"| FIX5
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+
+    class SYMPTOM root
+    class Q1,Q2,Q3,Q4,Q5 danger
+    class FIX1,FIX2,FIX3,FIX4,FIX5 warning
+```
+
+*Árbol de diagnóstico rápido: cada síntoma apunta a su causa raíz más frecuente y solución directa.*
+
 | Síntoma | Causa raíz | Solución |
 |---|---|---|
 | `TASK_EXECUTION` vacía | `@EnableTask` falta o datasource no configurado | Añadir anotación y datasource |

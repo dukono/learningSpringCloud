@@ -14,25 +14,47 @@ Spring Cloud Data Flow (SCDF) es la plataforma de orquestación externa que perm
 
 La relación entre SCDF y las Tasks se articula en tres fases: registro de la definición, lanzamiento y monitorización. El siguiente diagrama muestra el flujo completo.
 
+```mermaid
+flowchart TD
+    OPS(("Operador / CI"))
+    SCDF["SCDF Server\n:9393"]
+    REG["POST /apps/task/{name}\nRegistra artefacto Maven/Docker"]
+    DEF["POST /tasks/definitions\nCrea Task definition con DSL"]
+    LAUNCH["POST /tasks/executions\nLanza con argumentos"]
+    DEP{{"Deployer"}}
+    LOCAL["Deployer Local\nProceso Java en mismo servidor"]
+    K8S["Deployer Kubernetes\nPod / Job en K8s"]
+    CF["Deployer Cloud Foundry\nTask en CF"]
+    TASK["Aplicación Task\n@EnableTask\nEjecuta lógica y escribe\nTASK_EXECUTION"]
+    DB[(Datasource\ncompartido\nTASK_EXECUTION)]
+    QUERY["GET /tasks/executions\nConsulta estado"]
+
+    OPS --> REG --> SCDF
+    OPS --> DEF --> SCDF
+    OPS --> LAUNCH --> SCDF
+    SCDF --> DEP
+    DEP -->|"local"| LOCAL --> TASK
+    DEP -->|"kubernetes"| K8S --> TASK
+    DEP -->|"cloudfoundry"| CF --> TASK
+    TASK --> DB
+    SCDF -->|"lee"| DB
+    OPS --> QUERY --> SCDF
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class SCDF,DEP root
+    class REG,DEF,LAUNCH,QUERY primary
+    class LOCAL,K8S,CF neutral
+    class TASK secondary
+    class DB storage
+    class OPS root
 ```
-SPRING CLOUD DATA FLOW SERVER
-        │
-        ├─── 1. Registro de Task definition
-        │    POST /tasks/definitions
-        │    { "name": "etl-task", "definition": "maven://com.example:etl-task:1.0.0" }
-        │
-        ├─── 2. Lanzamiento de ejecución
-        │    POST /tasks/executions
-        │    { "name": "etl-task", "arguments": "--date=2025-01-01" }
-        │    │
-        │    └─── Deployer (Local/K8s/CF) lanza: java -jar etl-task.jar --date=2025-01-01
-        │         La Task arranca, ejecuta lógica, escribe en TASK_EXECUTION y termina
-        │
-        └─── 3. Consulta de estado
-             GET /tasks/executions/{id}
-             └─── SCDF lee TASK_EXECUTION del datasource compartido
-                  → devuelve exitCode, startTime, endTime, etc.
-```
+
+*Arquitectura SCDF: el servidor orquesta el registro, lanzamiento y monitorización de Tasks a través de deployers; la Task escribe directamente en el datasource compartido.*
 
 ## Ejemplo central
 

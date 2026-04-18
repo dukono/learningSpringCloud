@@ -188,35 +188,31 @@ spring:
 
 El flujo de serialización y propagación de un evento personalizado sigue estos pasos precisos:
 
+```mermaid
+sequenceDiagram
+    participant CS as CacheService<br/>(order-service)
+    participant BUS as Spring Cloud Bus
+    participant STREAM as Spring Cloud Stream
+    participant BROKER as Broker<br/>(springCloudBus)
+    participant NODE_B as Nodo receptor<br/>(inventory-service)
+    participant CONV as BusJacksonMessageConverter
+    participant SM as ServiceMatcher
+    participant LIST as CacheInvalidationListener
+
+    CS->>BUS: publishEvent(CacheInvalidationEvent)
+    Note over BUS: es subclase de RemoteApplicationEvent
+    BUS->>STREAM: serializa a JSON<br/>{"type":"CacheInvalidationEvent","destinationService":"**"}
+    STREAM->>BROKER: publica mensaje JSON
+    BROKER-->>NODE_B: entrega mensaje
+    NODE_B->>CONV: deserializa JSON
+    Note over CONV: busca clase registrada<br/>con @AcceptRemoteApplicationEvent
+    CONV-->>SM: CacheInvalidationEvent
+    SM->>SM: destinationService="**" → acepta
+    SM->>NODE_B: publishEvent localmente
+    NODE_B->>LIST: @EventListener activado
+    LIST->>LIST: cacheManager.clear("products")
 ```
-1. CacheService.invalidateCacheGlobally("products")
-       ↓
-2. eventPublisher.publishEvent(cacheInvalidationEvent)
-       ↓
-3. Bus intercepta el evento (es subclase de RemoteApplicationEvent)
-       ↓
-4. Jackson serializa el evento a JSON:
-   {
-     "type": "CacheInvalidationEvent",
-     "originService": "order-service:default:8080",
-     "destinationService": "**",
-     "cacheName": "products",
-     "reason": "Manual invalidation from order-service"
-   }
-       ↓
-5. Spring Cloud Stream publica el JSON en springCloudBus (broker)
-       ↓
-6. Todos los nodos reciben el mensaje del broker
-       ↓
-7. BusJacksonMessageConverter deserializa el JSON
-   → Busca la clase Java registrada con @AcceptRemoteApplicationEvent
-       ↓
-8. ServiceMatcher evalúa destinationService="**" → acepta el evento
-       ↓
-9. ApplicationEventPublisher publica el evento localmente
-       ↓
-10. @EventListener en CacheInvalidationListener se activa
-```
+*Ciclo completo de propagación de un evento personalizado: publicación local → serialización JSON → broker → deserialización → evaluación de destino → listener.*
 
 ## Tabla de elementos clave
 

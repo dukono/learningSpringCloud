@@ -19,6 +19,8 @@
 | 11 | Spring Cloud Task | sc-task | dominio-sc-task.json |
 | 12 | Spring Cloud Function | sc-function | dominio-sc-function.json |
 | 13 | Patrones de microservicios | sc-patrones | dominio-sc-patrones.json |
+| 14 | Observabilidad distribuida operacional | sc-observabilidad | dominio-sc-observabilidad.json |
+| 15 | Sistema de referencia integrado | sc-sistema | dominio-sc-sistema.json |
 
 ---
 
@@ -220,6 +222,47 @@
   - [13.11 Antipatrones: Distributed Monolith, Chatty Services, Shared Database, Mega-Service y Two-Phase Commit](sc-patrones-antipatrones.md)
   - [13.12 Testing de microservicios: Contract Testing, Component Tests, Chaos Engineering y estrategia E2E](sc-patrones-testing.md)
 
+- 14 Observabilidad distribuida operacional
+  - [14.1 Fundamentos de observabilidad distribuida — TraceId, SpanId y Baggage](sc-observabilidad-fundamentos.md)
+  - [14.2 Spring Boot Actuator — endpoints de observabilidad y seguridad](sc-observabilidad-actuator.md)
+  - 14.3 Micrometer Core y Meter Registry
+    - [14.3.1 Micrometer Core — MeterRegistry y tipos de medidores](sc-observabilidad-medidores.md)
+    - [14.3.2 Micrometer Core — Tags, filtros, registries y métricas automáticas](sc-observabilidad-pipeline.md)
+  - 14.4 Micrometer Tracing
+    - [14.4.1 Micrometer Tracing — configuración, API Tracer y spans](sc-observabilidad-tracing.md)
+    - [14.4.2 Micrometer Tracing — AOP, Baggage y sampling](sc-observabilidad-tracing-avanzado.md)
+  - [14.5 Exportación de trazas — Zipkin y Jaeger (OTLP)](sc-observabilidad-exportadores.md)
+  - [14.6 Exportación de métricas a Prometheus](sc-observabilidad-prometheus.md)
+  - [14.7 Correlación de trazas entre servicios Spring Cloud](sc-observabilidad-correlacion.md)
+  - [14.8 Métricas operacionales clave por módulo Spring Cloud](sc-observabilidad-metricas-modulos.md)
+  - 14.9 Interpretación bajo carga y diagnóstico distribuido
+    - [14.9.1 Diagnóstico por trazas — cuellos de botella, cascadas de fallos y fan-out](sc-observabilidad-diagnostico-trazas.md)
+    - [14.9.2 Diagnóstico por métricas — percentiles, errores, Circuit Breaker y backpressure](sc-observabilidad-diagnostico-metricas.md)
+  - 14.10 Configuración avanzada y API de Observation
+    - [14.10.1 Custom instrumentación y API de Observation (ObservationRegistry, @Observed)](sc-observabilidad-observation.md)
+    - [14.10.2 Tuning avanzado — cardinality, sampling y propagación asíncrona](sc-observabilidad-tuning.md)
+  - [14.11 Testing de Observabilidad distribuida](sc-observabilidad-testing.md)
+
+- 15 Sistema de referencia integrado
+  - [15.1 Arquitectura del sistema de referencia Spring Cloud](sc-sistema-arquitectura.md)
+  - [15.2 Orden de arranque y dependencias entre servicios](sc-sistema-arranque.md)
+  - 15.3 Docker Compose del sistema completo
+    - [15.3.1 Docker Compose — estructura base del stack completo](sc-sistema-docker-compose-base.md)
+    - [15.3.2 Docker Compose — healthchecks, profiles y soporte Spring Boot 3.x](sc-sistema-docker-compose-avanzado.md)
+  - 15.4 Integración de módulos
+    - [15.4.1 Integración de módulos core: Config, Eureka, Gateway, Feign y Resilience4j](sc-sistema-integracion-core.md)
+    - [15.4.2 Integración de módulos de mensajería y plataforma: Stream, Bus, Task y Kubernetes](sc-sistema-integracion-mensajeria.md)
+  - 15.5 Flujos end-to-end trazados
+    - [15.5.1 Flujos síncronos end-to-end: routing, autenticación y resiliencia](sc-sistema-flujos-sincronos.md)
+    - [15.5.2 Flujos asíncronos y transaccionales end-to-end: mensajería, refresh y Saga](sc-sistema-flujos-asincronos.md)
+  - 15.6 Observabilidad en sistema real
+    - [15.6.1 Observabilidad — trazas distribuidas en sistema completo](sc-sistema-trazas-distribuidas.md)
+    - [15.6.2 Observabilidad — métricas operacionales y alertas](sc-sistema-metricas-alertas.md)
+  - 15.7 Diagnóstico cruzado de fallos
+    - [15.7.1 Diagnóstico cruzado — fallos de infraestructura](sc-sistema-diagnostico-infraestructura.md)
+    - [15.7.2 Diagnóstico cruzado — fallos de comunicación, seguridad y trazabilidad](sc-sistema-diagnostico-comunicacion.md)
+  - [15.8 Testing / Verificación del Sistema de referencia integrado](sc-sistema-testing.md)
+
 ---
 
 ## Tabla resumen
@@ -239,4 +282,6 @@
 | 11 | Spring Cloud Task | 10 | ~70 |
 | 12 | Spring Cloud Function | 10 | ~70 |
 | 13 | Patrones de microservicios | 12 | ~90 |
-| — | **TOTAL** | **147** | — |
+| 14 | Observabilidad distribuida operacional | 15 | ~80 |
+| 15 | Sistema de referencia integrado | 13 | ~85 |
+| — | **TOTAL** | **175** | — |

@@ -18,27 +18,39 @@
 
 El siguiente diagrama muestra el flujo de despacho dinámico según el valor de un header.
 
+```mermaid
+flowchart TD
+    REQ(["POST /functionRouter\nHeader: X-Function-Name: uppercase\nBody: 'hello'"])
+    RF{{"RoutingFunction\n'functionRouter'"}}
+    EVAL["Evalúa routing-expression\nheaders['X-Function-Name']\n→ 'uppercase'"]
+    CHK{{"¿función existe\nen catálogo?"}}
+    LOOKUP["FunctionCatalog\n.lookup('uppercase')"]
+    FN["Function&lt;String,String&gt; uppercase\napply('hello')"]
+    OK(["HTTP 200\n'HELLO'"])
+    ERR(["RuntimeException\nfunción no encontrada"])
+
+    REQ --> RF --> EVAL --> CHK
+    CHK -->|"sí"| LOOKUP --> FN --> OK
+    CHK -->|"no"| ERR
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class REQ neutral
+    class RF warning
+    class EVAL primary
+    class CHK warning
+    class LOOKUP storage
+    class FN primary
+    class OK secondary
+    class ERR danger
 ```
-POST /functionRouter
-  Header: X-Function-Name: uppercase
-  Body: "hello"
-         │
-         ▼
-  RoutingFunction ("functionRouter")
-         │
-         ├── routing-expression: headers['X-Function-Name']
-         │   → evalúa a "uppercase"
-         │
-         ▼
-  FunctionCatalog.lookup("uppercase")
-         │
-         ▼
-  Function<String,String> uppercase
-  apply("hello") → "HELLO"
-         │
-         ▼
-  HTTP 200: "HELLO"
-```
+*Flujo de despacho dinámico de RoutingFunction: la expresión SpEL evalúa el header y resuelve la función destino en el catálogo.*
 
 ## Ejemplo central
 
@@ -144,6 +156,41 @@ La siguiente tabla resume los mecanismos de routing disponibles.
 | SpEL `routing-expression` | `spring.cloud.function.routing-expression` | Media | Routing simple por headers/payload |
 | Header `spring.cloud.function.definition` | Header en el mensaje | Baja | Routing explícito por mensaje |
 | URL directa | `POST /functionName` | N/A | Sin routing dinámico |
+
+```mermaid
+flowchart TD
+    MSG(["Mensaje entrante"])
+    CB{{"¿Bean MessageRoutingCallback\npresente?"}}
+    SPELL{{"¿routing-expression\nconfigurada?"}}
+    HDR{{"¿Header spring.cloud.\nfunction.definition?"}}
+    DEFAULT["URL directa\n/functionName"]
+
+    CB_EVAL["MessageRoutingCallback\n(prioridad alta)"]
+    SP_EVAL["Expresión SpEL\n(prioridad media)"]
+    HD_EVAL["Header del mensaje\n(prioridad baja)"]
+
+    MSG --> CB
+    CB -->|"sí"| CB_EVAL
+    CB -->|"no"| SPELL
+    SPELL -->|"sí"| SP_EVAL
+    SPELL -->|"no"| HDR
+    HDR -->|"sí"| HD_EVAL
+    HDR -->|"no"| DEFAULT
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class MSG neutral
+    class CB,SPELL,HDR warning
+    class CB_EVAL primary
+    class SP_EVAL primary
+    class HD_EVAL primary
+    class DEFAULT secondary
+```
+*Orden de prioridad de los mecanismos de routing: MessageRoutingCallback evalúa primero, URL directa no usa routing dinámico.*
 
 ## Buenas y malas prácticas
 

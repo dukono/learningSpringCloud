@@ -16,21 +16,46 @@ Spring Cloud Function proporciona adaptadores específicos para los tres princip
 
 El siguiente diagrama muestra cómo cada plataforma invoca el handler de SCF, que delega al bean funcional del contexto Spring.
 
+```mermaid
+flowchart LR
+    subgraph aws["AWS Lambda"]
+        AWSRT[/"Lambda Runtime"/]
+        AWSH["FunctionInvoker\nadapter-aws"]
+        AWSRT --> AWSH
+    end
+
+    subgraph azure["Azure Functions"]
+        AZRT[/"Azure Runtime"/]
+        AZH["AzureSpringBootRequestHandler\nadapter-azure"]
+        AZRT --> AZH
+    end
+
+    subgraph gcp["GCP Cloud Functions"]
+        GCPRT[/"GCP Runtime"/]
+        GCPH["GcpFunctionInvoker\nadapter-gcp"]
+        GCPRT --> GCPH
+    end
+
+    FC[("FunctionCatalog")]
+    FN["@Bean Function&lt;I,O&gt;\ncódigo de negocio"]
+
+    AWSH --> FC
+    AZH  --> FC
+    GCPH --> FC
+    FC   --> FN
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class AWSH,AZH,GCPH primary
+    class FC storage
+    class FN secondary
+    class AWSRT,AZRT,GCPRT neutral
 ```
-AWS Lambda Runtime          Azure Functions Runtime     GCP Functions Runtime
-       │                           │                           │
-       ▼                           ▼                           ▼
-FunctionInvoker             AzureSpringBootRequestHandler  GcpFunctionInvoker
-(spring-cloud-function-      (spring-cloud-function-        (spring-cloud-function-
- adapter-aws)                 adapter-azure)                  adapter-gcp)
-       │                           │                           │
-       └───────────────────────────┴───────────────────────────┘
-                                   │
-                            FunctionCatalog
-                                   │
-                          @Bean Function<I,O>
-                          (código de negocio)
-```
+*Cada adaptador cloud implementa la interfaz handler nativa del proveedor y delega al mismo FunctionCatalog compartido.*
 
 ## Ejemplo central
 

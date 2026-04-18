@@ -18,26 +18,41 @@ Desde Spring Cloud Stream 3.x, los beans `Function`, `Consumer` y `Supplier` dec
 
 El siguiente diagrama muestra cómo los beans funcionales se conectan a los topics del broker mediante el sistema de binding.
 
-```
-Kafka Topic "orders-input"
-       │
-       ▼
-  process-in-0  (binding automático SCF)
-       │
-       ▼
-  @Bean Function<String,String> process
-  (lógica de negocio)
-       │
-       ▼
-  process-out-0 (binding automático SCF)
-       │
-       ▼
-Kafka Topic "orders-output"
+```mermaid
+flowchart LR
+    subgraph kafka_in["Kafka (entrada)"]
+        TIN[("orders-input\ntopic")]
+    end
 
-Mapeo explícito via spring.cloud.stream.function.bindings:
-  process-in-0  → "orders-input"
-  process-out-0 → "orders-output"
+    subgraph scf["Spring Cloud Function / Stream"]
+        direction TB
+        BIN["process-in-0\n(binding automático)"]
+        FN["@Bean Function&lt;String,String&gt;\nprocess()"]
+        BOUT["process-out-0\n(binding automático)"]
+        BIN --> FN --> BOUT
+    end
+
+    subgraph kafka_out["Kafka (salida)"]
+        TOUT[("orders-output\ntopic")]
+    end
+
+    TIN --> BIN
+    BOUT --> TOUT
+
+    NOTE>spring.cloud.stream.function.bindings:\nprocess-in-0  → orders-input\nprocess-out-0 → orders-output]
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class TIN,TOUT storage
+    class BIN,BOUT neutral
+    class FN primary
+    class NOTE secondary
 ```
+*Convención de nombres `{functionName}-in-{index}` / `{functionName}-out-{index}` y mapeo explícito al nombre del topic Kafka.*
 
 ## Ejemplo central
 

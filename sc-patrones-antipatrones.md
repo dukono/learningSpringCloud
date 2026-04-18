@@ -70,6 +70,24 @@ El 2PC viola el teorema CAP: prioriza Consistencia sobre Disponibilidad. En micr
 | Publicación atómica de cambio + evento | Outbox Pattern (Patrón 13.3) |
 | Consultas multi-servicio | API Composition (Patrón 13.6) o CQRS read model |
 
+```mermaid
+quadrantChart
+    title Antipatrones: granularidad vs acoplamiento de despliegue
+    x-axis "Demasiado fragmentado" --> "Demasiado grande"
+    y-axis "Bajo acoplamiento" --> "Alto acoplamiento"
+    quadrant-1 Mega-Service
+    quadrant-2 Distributed Monolith
+    quadrant-3 Correcto (bien delimitado)
+    quadrant-4 Chatty Services
+    "Chatty Services": [0.1, 0.2]
+    "Nano-service": [0.05, 0.1]
+    "Bien delimitado": [0.5, 0.25]
+    "Mega-Service": [0.9, 0.6]
+    "Distributed Monolith": [0.6, 0.9]
+    "Shared Database": [0.5, 0.85]
+```
+*Espectro de granularidad: Chatty Services en el extremo fragmentado; Mega-Service en el extremo grande; Distributed Monolith con alto acoplamiento independientemente del tamaño.*
+
 ## Tabla de diagnóstico y corrección de antipatrones
 
 La siguiente tabla resume los síntomas y correcciones de los cinco antipatrones para facilitar el diagnóstico rápido:

@@ -128,13 +128,37 @@ resilience4j:
 
 Cuando se combinan `@Retry` y `@CircuitBreaker` en el mismo método, el orden de los aspectos determina el comportamiento. Por defecto, Retry es el aspecto más interno y CircuitBreaker es más externo. Esto significa que Retry agota todos sus intentos primero, y solo cuando todos fallan el CircuitBreaker cuenta ese fallo como uno en su sliding window.
 
+```mermaid
+flowchart LR
+    CALL(("Llamada\nentrante"))
+    CB["CircuitBreaker\n(exterior)"]
+    RET["Retry\n(interior)"]
+    M["Método\nprotegido"]
+    F1[/"intento 1: falla"/]
+    F2[/"intento 2: falla"/]
+    F3[/"intento 3: falla"/]
+    CBFAIL["CB registra\n1 fallo"]
+
+    CALL --> CB --> RET --> M
+    M --> F1 --> RET
+    RET --> F2 --> RET
+    RET --> F3
+    F3 -->|"todos agotados"| CBFAIL
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class CALL root
+    class CB primary
+    class RET warning
+    class M neutral
+    class F1,F2,F3 danger
+    class CBFAIL primary
 ```
-Llamada → CircuitBreaker → Retry → Método protegido
-                          [intento 1: falla]
-                          [intento 2: falla]
-                          [intento 3: falla]
-             ← cuenta 1 fallo en CB ←
-```
+*Con el orden por defecto, Retry agota todos sus intentos antes de propagar un único fallo al CircuitBreaker.*
 
 Si el orden fuera invertido (Retry externo, CB interno), cada intento individual contaría como fallo en el CB, lo que abriría el circuito más rápido. Ver [4.7 AOP](sc-circuitbreaker-aop.md) para el orden completo de aspectos.
 

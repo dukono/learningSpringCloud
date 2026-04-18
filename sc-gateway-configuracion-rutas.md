@@ -16,17 +16,39 @@ Una Route en Spring Cloud Gateway es la unidad atómica de enrutamiento. Contien
 
 > [CONCEPTO] Una Route se compone de: **id** (identificador único), **uri** (destino: `http://`, `https://` o `lb://service-id`), **predicates** (lista de condiciones AND implícito) y **filters** (transformaciones aplicadas a la petición/respuesta).
 
+```mermaid
+mindmap
+  root((Route))
+    (id)
+      identificador único
+      visible en Actuator
+    (uri)
+      http://host:port
+      https://host:port
+      lb://service-id
+    (predicates)
+      AND implícito entre todos
+      Path
+      Method
+      Header
+      Host
+      Query / Cookie
+      Before / After / Between
+      Weight / RemoteAddr
+    (filters)
+      GatewayFilter de ruta
+      StripPrefix
+      RewritePath
+      AddRequestHeader
+      CircuitBreaker
+      Retry
+    [metadata]
+      response-timeout ms
+      connect-timeout ms
+    [order]
+      prioridad de evaluación
 ```
-Route
-├── id: "order-service"           ← identificador único
-├── uri: "lb://order-service"     ← destino (load-balanced o directo)
-├── predicates:                   ← condiciones de activación (AND)
-│   ├── Path=/api/orders/**
-│   └── Method=GET,POST
-└── filters:                      ← transformaciones
-    ├── StripPrefix=1
-    └── AddRequestHeader=X-Source, gateway
-```
+*Composición de una Route: los cuatro elementos que determinan cuándo se activa y cómo transforma la petición.*
 
 ## Ejemplo central
 

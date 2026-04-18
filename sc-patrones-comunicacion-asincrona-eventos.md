@@ -30,26 +30,61 @@ La siguiente tabla compara las dos estrategias para flujos distribuidos:
 | Mantenibilidad en flujos complejos | Baja | Alta |
 | Punto de fallo | Distribuido | Orquestador (pero redundante) |
 
+```mermaid
+sequenceDiagram
+    participant OS as OrderService
+    participant BUS as Message Bus
+    participant IS as InventoryService
+    participant PS as PaymentService
+
+    rect rgb(30, 60, 120)
+        Note over OS,PS: Choreography — sin coordinador central
+        OS->>BUS: OrderPlaced
+        BUS->>IS: OrderPlaced
+        IS->>BUS: InventoryReserved
+        BUS->>PS: InventoryReserved
+        PS->>BUS: PaymentProcessed
+        Note over BUS: Si PaymentFailed → IS libera stock
+    end
+```
+*Choreography: el flujo emerge de las reacciones encadenadas entre servicios a través del bus, sin un orquestador central.*
+
 ## Outbox Pattern: publicación atómica de eventos
 
 > [CONCEPTO] **Outbox Pattern**: garantiza que un cambio de estado en la base de datos y el evento correspondiente se publican de forma atómica. La solución: en lugar de publicar directamente al broker, el servicio escribe el evento en una tabla `outbox` dentro de la misma transacción que el cambio de estado. Un proceso separado (relay) lee la tabla outbox y publica los mensajes al broker de mensajería.
 
 El problema que resuelve: sin el Outbox Pattern, una falla entre la escritura en BD y la publicación al broker genera inconsistencia — el estado cambió pero el evento nunca llegó (o al contrario). Two-Phase Commit entre BD y broker es el antipatrón que el Outbox Pattern reemplaza.
 
+```mermaid
+flowchart LR
+    subgraph tx["Misma transacción ACID"]
+        direction TB
+        SVC["Order Service"]
+        DB[("Orders DB\n— orders\n— outbox")]
+        SVC -- "1. save(order)\n2. save(outboxEvent)" --> DB
+    end
+
+    RELAY["Outbox Relay\n@Scheduled polling / CDC"]
+    BROKER[("Message Broker\nKafka / RabbitMQ")]
+    CONS["Consumidores"]
+
+    DB -- "lee eventos\npublished=false" --> RELAY
+    RELAY -- "publica + marca published=true" --> BROKER
+    BROKER --> CONS
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class SVC primary
+    class DB storage
+    class RELAY neutral
+    class BROKER storage
+    class CONS secondary
 ```
-┌──────────────┐   misma transacción   ┌──────────────────┐
-│   Orders DB  │ ◄─────────────────── │  Order Service   │
-│   orders     │                       └──────────────────┘
-│   outbox     │
-└──────┬───────┘
-       │ (relay process — polling/CDC)
-       ▼
-┌──────────────┐
-│  Message     │
-│  Broker      │  → consumidores
-│  (Kafka/RMQ) │
-└──────────────┘
-```
+*Outbox Pattern: el cambio de estado y el evento se escriben atómicamente; el relay los publica al broker en un proceso separado.*
 
 ## Ejemplo central: Outbox Pattern con Spring Cloud Stream
 

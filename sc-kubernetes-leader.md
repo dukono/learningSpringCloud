@@ -12,23 +12,33 @@ En arquitecturas donde múltiples réplicas de un pod deben ejecutar una tarea q
 
 El siguiente diagrama muestra cómo tres réplicas de un pod compiten por el liderazgo usando un ConfigMap como lock.
 
-```
-Pod-1 (Candidate)   Pod-2 (Candidate)   Pod-3 (Candidate)
-      │                    │                    │
-      └────────────────────┴────────────────────┘
-                           │
-              Intentan adquirir el lock vía:
-              PUT /api/v1/namespaces/default/configmaps/leader-lock
-              con anotación "leader.election.kubernetes.io/leader"
-                           │
-              K8s garantiza consistencia (etcd MVCC)
-              Solo uno gana → LÍDER
-                           │
-              ┌────────────┴───────────┐
-              │                        │
-         Pod-1 LÍDER              Pod-2, Pod-3
-         onGranted() llamado       esperan TTL
-         ejecuta tarea singleton   del lease
+```mermaid
+sequenceDiagram
+    participant P1 as Pod-1 (Candidate)
+    participant P2 as Pod-2 (Candidate)
+    participant P3 as Pod-3 (Candidate)
+    participant CM as ConfigMap leader-lock\n(K8s API Server)
+
+    par Compiten por el lock
+        P1->>CM: PUT configmaps/leader-lock<br/>ResourceVersion=X (lock optimista)
+        P2->>CM: PUT configmaps/leader-lock<br/>ResourceVersion=X
+        P3->>CM: PUT configmaps/leader-lock<br/>ResourceVersion=X
+    end
+
+    CM-->>P1: 200 OK — lock adquirido (etcd MVCC garantiza uno solo)
+    CM-->>P2: 409 Conflict — ResourceVersion obsoleto
+    CM-->>P3: 409 Conflict — ResourceVersion obsoleto
+
+    Note over P1: onGranted() → ejecuta tarea singleton
+    Note over P2,P3: esperan expiración del lease TTL
+
+    loop Renewal periódico
+        P1->>CM: PUT (renueva lease)
+        CM-->>P1: 200 OK
+    end
+
+    Note over P1: Pod falla o se detiene
+    Note over P2,P3: TTL expira → nueva competición
 ```
 
 > [CONCEPTO] Spring Cloud Kubernetes usa el mecanismo de `ResourceVersion` de la API de Kubernetes para implementar el lock optimista. Cuando dos pods intentan actualizar el mismo ConfigMap simultáneamente, la API de Kubernetes rechaza la segunda actualización con un `409 Conflict`, garantizando que solo uno obtiene el lock.
@@ -200,6 +210,39 @@ La siguiente tabla resume los componentes clave del mecanismo de leader election
 | `OnGrantedEvent` | ApplicationEvent | Publicado cuando el pod obtiene el liderazgo |
 | `OnRevokedEvent` | ApplicationEvent | Publicado cuando el pod pierde el liderazgo |
 | ConfigMap de lock | Recurso K8s | Almacena el estado del lease (quién es el líder y hasta cuándo) |
+
+```mermaid
+flowchart LR
+    LI["LeaderInitiator\n(orquestador)"]
+    GRANT["onGranted(Context)\n→ activa tarea singleton"]
+    TASK["Tarea singleton\n@Scheduled / consumidor"]
+    YIELD["ctx.yield()\n→ cede liderazgo voluntariamente"]
+    REVOKE["onRevoked()\n→ detiene tarea singleton"]
+    EV1["OnGrantedEvent\n(ApplicationEvent)"]
+    EV2["OnRevokedEvent\n(ApplicationEvent)"]
+
+    LI -->|"liderazgo concedido"| GRANT
+    LI -->|"publica"| EV1
+    GRANT --> TASK
+    TASK --> YIELD
+    YIELD -->|"nuevo candidato gana"| REVOKE
+    LI -->|"liderazgo revocado"| REVOKE
+    LI -->|"publica"| EV2
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+
+    class LI root
+    class GRANT,EV1 primary
+    class TASK secondary
+    class YIELD warning
+    class REVOKE,EV2 danger
+```
+*Ciclo de vida del liderazgo: LeaderInitiator llama a onGranted al obtener el lock y a onRevoked al perderlo; ctx.yield() permite ceder voluntariamente.*
 
 ## Relación con los starters
 

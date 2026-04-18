@@ -171,6 +171,44 @@ El flujo de una petición autenticada a través del Gateway con TokenRelay funci
 
 El usuario accede a una ruta protegida del Gateway sin sesión activa. Spring Security redirige al Authorization Server para login. Tras autenticarse, el Authorization Server emite un authorization code y redirige al Gateway. El Gateway intercambia el code por un access token (y opcionalmente refresh token) y almacena el `OAuth2AuthorizedClient` en la sesión. En peticiones posteriores, el filtro `TokenRelay` extrae el access token del `OAuth2AuthorizedClient` en la sesión y añade `Authorization: Bearer <token>` a la petición enviada al upstream.
 
+```mermaid
+sequenceDiagram
+    actor User as Usuario / Navegador
+    participant GW as Gateway\n(OAuth2 Client)
+    participant AS as Authorization Server
+    participant MS as Microservicio\n(Resource Server)
+
+    rect rgb(30, 60, 100)
+        Note over User,AS: Primera petición — sin sesión activa
+        User->>GW: GET /api/orders (sin sesión)
+        GW-->>User: 302 Redirect → /oauth2/authorize
+        User->>AS: GET /oauth2/authorize
+        AS-->>User: Login form
+        User->>AS: POST credentials
+        AS-->>User: 302 Redirect → /login/oauth2/code/my-gateway?code=ABC
+    end
+
+    rect rgb(20, 80, 40)
+        Note over GW,AS: Intercambio del authorization code
+        User->>GW: GET /login/oauth2/code/my-gateway?code=ABC
+        GW->>AS: POST /oauth2/token (code=ABC, client_id, client_secret)
+        AS-->>GW: access_token + refresh_token
+        GW->>GW: Almacena OAuth2AuthorizedClient en sesión
+        GW-->>User: 302 → /api/orders (con sesión activa)
+    end
+
+    rect rgb(80, 40, 20)
+        Note over User,MS: Peticiones posteriores con TokenRelay
+        User->>GW: GET /api/orders (con cookie de sesión)
+        GW->>GW: TokenRelay extrae access_token de sesión
+        GW->>MS: GET /orders Authorization: Bearer <token>
+        MS->>MS: Valida JWT (ReactiveJwtDecoder)
+        MS-->>GW: 200 OK + datos
+        GW-->>User: 200 OK + datos
+    end
+```
+*Flujo Authorization Code con TokenRelay: el Gateway actúa como OAuth2 Client y propaga el token al microservicio Resource Server en cada petición.*
+
 > [EXAMEN] El filtro `TokenRelay` requiere dos condiciones: (1) `spring-boot-starter-oauth2-client` en el classpath, y (2) configuración `oauth2Client` en `ServerHttpSecurity`. Sin la configuración `oauth2Client`, el filtro arranca pero no puede acceder al `OAuth2AuthorizedClient` y el header no se propaga.
 
 ## Buenas y malas prácticas

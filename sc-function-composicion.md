@@ -16,21 +16,26 @@ La composición de funciones en Spring Cloud Function permite encadenar múltipl
 
 El siguiente diagrama muestra los dos mecanismos de composición y el pipeline resultante.
 
+```mermaid
+flowchart LR
+    IN[/"Input\n'  hello  '"/]
+    T["trim()\n→ 'hello'"]
+    U["uppercase()\n→ 'HELLO'"]
+    P["addPrefix()\n→ 'PREFIX-HELLO'"]
+    OUT[/"Output\n'PREFIX-HELLO'"/]
+
+    IN --> T --> U --> P --> OUT
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class IN,OUT neutral
+    class T,U primary
+    class P secondary
 ```
-Declarativa (application.yml):
-spring.cloud.function.definition: trim|uppercase|addPrefix
-
-  Input ──► trim ──► uppercase ──► addPrefix ──► Output
-  "  hello  "  "hello"        "HELLO"       "PREFIX-HELLO"
-
-  URL resultante: POST /trim|uppercase|addPrefix
-
-Programática (FunctionCatalog):
-  Function<String,String> f1 = catalog.lookup("trim");
-  Function<String,String> f2 = catalog.lookup("uppercase");
-  Function<String,String> pipeline = f1.andThen(f2);
-  pipeline.apply("  hello  ") ──► "HELLO"
-```
+*Pipeline declarativo `trim|uppercase|addPrefix`: cada función transforma el valor y lo pasa al siguiente nodo.*
 
 ## Ejemplo central
 
@@ -155,6 +160,32 @@ spring.cloud.function.definition: eventSource|uppercase|logMessage
 # NO válido: Consumer en posición intermedia — no tiene output
 # spring.cloud.function.definition: logMessage|uppercase  (ERROR)
 ```
+
+```mermaid
+flowchart LR
+    SUP{{"Supplier&lt;O&gt;\n(sin entrada)"}}
+    F1["Function&lt;A,B&gt;"]
+    F2["Function&lt;B,C&gt;"]
+    CON(["Consumer&lt;C&gt;\n(sin salida)"])
+
+    SUP -->|"solo al inicio"| F1
+    F1  --> F2
+    F2  -->|"solo al final"| CON
+
+    INVALID>⚠ Consumer NO puede ir en posición\nintermedia — no tiene output]
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+
+    class SUP warning
+    class F1,F2 primary
+    class CON secondary
+    class INVALID danger
+```
+*Posiciones válidas de Supplier y Consumer en una cadena `|`: Supplier solo al inicio, Consumer solo al final.*
 
 ## Buenas y malas prácticas
 

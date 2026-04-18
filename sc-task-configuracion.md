@@ -125,21 +125,35 @@ Spring Cloud Task sigue un orden de resolución para encontrar el datasource don
 
 El siguiente diagrama muestra la lógica de resolución:
 
+```mermaid
+flowchart TD
+    Q1{{"¿Configurado\nspring.cloud.task\n.datasource.url?"}}
+    Q2{{"¿Hay exactamente\n1 bean DataSource\nen el contexto?"}}
+    Q3{{"¿Hay un bean\nDataSource @Primary?"}}
+    DS1["Task crea DataSource propio\ncon las propiedades configuradas\n(no es el mismo bean del contexto)"]
+    DS2["Task usa ese\nDataSource único"]
+    DS3["Task usa el\n@Primary DataSource"]
+    ERR(["ERROR\nNoUniqueBeanDefinitionException"])
+
+    Q1 -->|"SÍ"| DS1
+    Q1 -->|"NO"| Q2
+    Q2 -->|"SÍ"| DS2
+    Q2 -->|"NO (múltiples)"| Q3
+    Q3 -->|"SÍ"| DS3
+    Q3 -->|"NO"| ERR
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+
+    class Q1,Q2,Q3 root
+    class DS1 primary
+    class DS2,DS3 secondary
+    class ERR danger
 ```
-¿Está configurado spring.cloud.task.datasource.url?
-        │
-        ├─── SÍ → Task crea su propio DataSource con esas propiedades
-        │
-        └─── NO → ¿Hay exactamente un bean DataSource en el contexto?
-                    │
-                    ├─── SÍ → Task usa ese DataSource
-                    │
-                    └─── NO → ¿Hay un bean DataSource marcado con @Primary?
-                                │
-                                ├─── SÍ → Task usa el @Primary DataSource
-                                │
-                                └─── NO → ERROR: NoUniqueBeanDefinitionException
-```
+
+*Orden de resolución del datasource: la propiedad explícita spring.cloud.task.datasource.url tiene prioridad absoluta sobre la detección automática.*
 
 ## Propiedad close-context-enabled
 

@@ -14,6 +14,38 @@ Spring Cloud Contract ofrece dos lenguajes para definir contratos: el **DSL Groo
 
 El DSL Groovy está centrado en la clase `Contract` del módulo `spring-cloud-contract-spec`. Todo contrato comienza con `Contract.make {}` y contiene uno de dos bloques: `request`/`response` para contratos HTTP, o `input`/`outputMessage` para contratos de mensajería.
 
+```mermaid
+mindmap
+  root((Contract.make))
+    (HTTP)
+      request
+        method
+        url / urlPathPattern
+        headers
+        body
+        bodyMatchers
+        queryParameters
+      response
+        status
+        headers
+        body
+        bodyMatchers
+    (Mensajería)
+      input
+        triggeredBy
+        messageFrom
+        messageHeaders
+        messageBody
+      outputMessage
+        sentTo
+        messageHeaders
+        messageBody
+        bodyMatchers
+    description
+```
+
+*Estructura completa del DSL Groovy: un contrato es exclusivamente HTTP o de mensajería, nunca ambos.*
+
 ```groovy
 // src/test/resources/contracts/payment/shouldCreatePayment.groovy
 import org.springframework.cloud.contract.spec.Contract
@@ -189,6 +221,29 @@ Contract.make {
 ```
 
 > [CONCEPTO] En cada matcher, el valor `consumer(...)` es lo que el **stub** devuelve al consumidor (valor fijo), y `producer(...)` es lo que el **test generado** verifica en el productor (pattern o regex). Cuando se usa `anyUuid()` o `anyNonEmptyString()`, el mismo valor se aplica a ambos lados.
+
+```mermaid
+flowchart LR
+    M{{"$(consumer(...),\nproducer(...))"}}
+    CS["valor fijo\npara el stub"]
+    PT["regex / pattern\npara el test del productor"]
+    STUB["Stub WireMock\ndevuelve valor fijo al consumidor"]
+    TEST["Test generado\nverifica patrón en el productor real"]
+
+    M -->|"consumer(...)"| CS --> STUB
+    M -->|"producer(...)"| PT --> TEST
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+
+    class M root
+    class CS,STUB secondary
+    class PT,TEST primary
+```
+
+*Dualidad consumer/producer en un matcher: el mismo campo tiene un valor determinista para el stub y una validación dinámica para el test del productor.*
 
 ## Tabla de helpers del DSL Groovy
 

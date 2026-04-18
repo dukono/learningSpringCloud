@@ -166,6 +166,39 @@ La tabla de mapeo estado CB → estado Health:
 | DISABLED | UP | 200 |
 | FORCED_OPEN | DOWN | 503 |
 
+```mermaid
+flowchart LR
+    CLOSED["CB: CLOSED"]
+    HALF_OPEN["CB: HALF_OPEN"]
+    OPEN["CB: OPEN"]
+    DISABLED["CB: DISABLED"]
+    FORCED["CB: FORCED_OPEN"]
+
+    HUP(["Health: UP\nHTTP 200"])
+    HUNK(["Health: UNKNOWN\nHTTP 200"])
+    HDOWN(["Health: DOWN\nHTTP 503"])
+
+    CLOSED --> HUP
+    DISABLED --> HUP
+    HALF_OPEN --> HUNK
+    OPEN --> HDOWN
+    FORCED --> HDOWN
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class CLOSED,DISABLED root
+    class HALF_OPEN warning
+    class OPEN,FORCED danger
+    class HUP secondary
+    class HUNK neutral
+    class HDOWN danger
+```
+*Solo OPEN y FORCED_OPEN causan HTTP 503 en /actuator/health — impacto directo en Kubernetes readiness probes.*
+
 > [EXAMEN] Si cualquier CircuitBreaker con `register-health-indicator: true` está en estado OPEN, el endpoint `/actuator/health` devolverá HTTP 503 (no 200). Esto puede afectar a los health checks de Kubernetes si no se configura correctamente qué CBs contribuyen al health.
 
 ## Configuración para Kubernetes liveness/readiness

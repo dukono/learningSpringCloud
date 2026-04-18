@@ -24,44 +24,43 @@ El motor reactivo implica que cualquier lógica custom dentro de un filtro debe 
 
 El siguiente diagrama muestra el flujo completo desde que llega una petición HTTP hasta que se envía la respuesta al cliente:
 
+```mermaid
+flowchart TD
+    CLIENT(("Cliente HTTP"))
+    HTTP["1. HttpServerRequest\n(Netty EventLoop)"]
+    RPHM["2. RoutePredicateHandlerMapping\nEvalúa predicates en orden\nPrimera coincidencia gana"]
+    NOMATCH["404 No Handler Found"]
+    FWH["3. FilteringWebHandler\nCombina GlobalFilters + GatewayFilters\nOrdena por Ordered.getOrder()"]
+    PREFILTERS["4a. PRE-filters\n(lógica antes del upstream)"]
+    NETTY["5. NettyRoutingFilter\nEnvía petición HTTP al upstream"]
+    UPSTREAM[("Upstream\nService")]
+    POSTFILTERS["4b. POST-filters\n(lógica tras recibir respuesta)"]
+    RESP(("Respuesta\nal cliente"))
+
+    CLIENT --> HTTP --> RPHM
+    RPHM -->|"ninguna ruta coincide"| NOMATCH
+    RPHM -->|"ruta seleccionada"| FWH
+    FWH --> PREFILTERS --> NETTY --> UPSTREAM
+    UPSTREAM --> POSTFILTERS --> RESP
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class CLIENT root
+    class HTTP,RPHM primary
+    class FWH warning
+    class PREFILTERS,POSTFILTERS neutral
+    class NETTY primary
+    class UPSTREAM storage
+    class RESP secondary
+    class NOMATCH danger
 ```
-Cliente HTTP
-    │
-    ▼
-┌─────────────────────────────────────────────────────────┐
-│               Spring Cloud Gateway (Netty)               │
-│                                                         │
-│  1. HttpServerRequest                                   │
-│       │                                                 │
-│       ▼                                                 │
-│  2. RoutePredicateHandlerMapping                        │
-│     ┌──────────────────────────────────┐               │
-│     │  Para cada Route definida:       │               │
-│     │  ¿Predicate(request) == true?    │               │
-│     │  → Primera coincidencia gana     │               │
-│     └──────────────────────────────────┘               │
-│       │ Route seleccionada                              │
-│       ▼                                                 │
-│  3. FilteringWebHandler                                 │
-│     ┌──────────────────────────────────┐               │
-│     │  Combina:                        │               │
-│     │  - GlobalFilters (todas rutas)   │               │
-│     │  - GatewayFilters (esta ruta)    │               │
-│     │  Ordena por Ordered.getOrder()   │               │
-│     └──────────────────────────────────┘               │
-│       │                                                 │
-│       ▼                                                 │
-│  4. GatewayFilterChain.filter(exchange)                 │
-│     PRE-filters → proxy request → POST-filters          │
-│       │                                                 │
-│       ▼                                                 │
-│  5. NettyRoutingFilter / ForwardRoutingFilter           │
-│     (envía petición al upstream)                        │
-│       │                                                 │
-│       ▼                                                 │
-│  6. Respuesta upstream → POST-filters → Cliente         │
-└─────────────────────────────────────────────────────────┘
-```
+*Ciclo de vida de una petición en Spring Cloud Gateway: desde el EventLoop de Netty hasta la respuesta al cliente, pasando por matching de ruta y cadena de filtros PRE/POST.*
 
 Cada filtro en la cadena puede ejecutar lógica **antes** de llamar a `chain.filter(exchange)` (fase PRE) y **después** de que el `Mono` retornado se complete (fase POST, usando `.then()` o `.doFinally()`).
 

@@ -49,6 +49,37 @@ spring.cloud.stream.rabbit.bindings.[b].consumer.auto-bind-dlq: true
 spring.cloud.stream.rabbit.bindings.[b].consumer.acknowledge-mode: MANUAL
 ```
 
+```mermaid
+flowchart LR
+    subgraph "spring.cloud.stream.bindings"
+        C1["max-attempts"]
+        C2["back-off-initial-interval"]
+        C3["partitioned"]
+        C4["instance-index"]
+    end
+    subgraph "spring.cloud.stream.kafka.bindings"
+        K1["enable-dlq"]
+        K2["start-offset"]
+        K3["reset-offsets"]
+        K4["sync (producer)"]
+    end
+    subgraph "spring.cloud.stream.rabbit.bindings"
+        R1["auto-bind-dlq"]
+        R2["acknowledge-mode"]
+        R3["prefetch"]
+        R4["routing-key-expression"]
+    end
+
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+
+    class C1,C2,C3,C4 primary
+    class K1,K2,K3,K4 warning
+    class R1,R2,R3,R4 secondary
+```
+*Separación de namespaces: el namespace core (`bindings`) aplica a cualquier binder; los namespaces `kafka.bindings` y `rabbit.bindings` son exclusivos de cada binder.*
+
 ## Trampa 3 — DLQ naming: Kafka vs RabbitMQ
 
 El nombre del Dead Letter destino difiere entre binders. Es una pregunta directa del examen.

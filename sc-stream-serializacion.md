@@ -12,19 +12,43 @@ La serialización en Spring Cloud Stream controla cómo los objetos Java se conv
 
 El ciclo de conversión de mensajes es bidireccional. En el producer, el POJO se convierte a bytes; en el consumer, los bytes se convierten de vuelta al tipo esperado por el bean funcional:
 
-```
-Producer:
-  POJO (Order)
-    → MessageConverter (application/json → Jackson)
-    → Message<byte[]>
-    → Binder → Broker (bytes en el topic)
+```mermaid
+flowchart LR
+    subgraph "Producer"
+        direction LR
+        POJO_P["POJO\n(Order)"]
+        CONV_P["MessageConverter\napplication/json → Jackson"]
+        BYTES_P["Message&lt;byte[]&gt;"]
+        BINDER_P["Binder"]
+    end
+    subgraph "Consumer"
+        direction LR
+        BINDER_C["Binder"]
+        BYTES_C["Message&lt;byte[]&gt;"]
+        CONV_C["MessageConverter\napplication/json → Jackson"]
+        POJO_C["POJO\n(Order)"]
+        HANDLER["Function/Consumer\nhandler"]
+    end
+    BROKER[(Broker\ntopic/queue)]
 
-Consumer:
-  Broker → Binder
-    → Message<byte[]>
-    → MessageConverter (application/json → Jackson)
-    → POJO (Order) → handler Function/Consumer
+    POJO_P --> CONV_P --> BYTES_P --> BINDER_P --> BROKER
+    BROKER --> BINDER_C --> BYTES_C --> CONV_C --> POJO_C --> HANDLER
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class POJO_P,POJO_C neutral
+    class CONV_P,CONV_C warning
+    class BYTES_P,BYTES_C neutral
+    class BINDER_P,BINDER_C primary
+    class BROKER storage
+    class HANDLER secondary
 ```
+*Ciclo bidireccional de serialización: el POJO se convierte a bytes en el producer y los bytes se reconstituyen como POJO en el consumer mediante `MessageConverter`.*
 
 ## Ejemplo central — configuración de serialización
 

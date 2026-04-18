@@ -14,23 +14,66 @@ Mutual TLS (mTLS) eleva la seguridad de la comunicación entre servicios al requ
 
 En TLS estándar (unilateral), solo el cliente verifica el certificado del servidor. En mTLS (mutuo), el servidor también exige que el cliente presente un certificado válido firmado por una CA de confianza. El proceso de handshake mTLS incluye: (1) el servidor presenta su certificado; (2) el cliente verifica el certificado del servidor; (3) el servidor solicita el certificado del cliente; (4) el cliente presenta su certificado; (5) el servidor lo verifica contra su TrustStore.
 
-```
-Cliente                    Servidor (Spring Gateway)
-  │                               │
-  │──── ClientHello ────────────→ │
-  │←─── ServerHello + Cert ─────── │  (certificado del servidor)
-  │──── Verify ServerCert ──────→ │
-  │──── ClientCert ─────────────→ │  (certificado del cliente)
-  │←─── Verify ClientCert ──────── │
-  │──── Finished ───────────────→ │
-  │←─── Finished ───────────────── │
-  │          TLS Handshake OK      │
-  │──── HTTP Request ───────────→ │  canal cifrado + autenticado
+```mermaid
+sequenceDiagram
+    participant C as Cliente
+    participant S as Servidor (Spring Gateway)
+
+    C->>S: ClientHello
+    S-->>C: ServerHello + ServerCert
+    C->>C: verifica ServerCert contra TrustStore
+
+    rect rgb(0, 80, 160)
+      Note over C,S: Fase mTLS — autenticación mutua
+      S-->>C: CertificateRequest
+      C->>S: ClientCert (firmado por CA corporativa)
+      S->>S: verifica ClientCert contra TrustStore
+    end
+
+    C->>S: Finished
+    S-->>C: Finished
+    Note over C,S: Canal TLS cifrado + autenticado bilateralmente
+    C->>S: HTTP Request (canal seguro)
+    S-->>C: HTTP Response
 ```
 
 ## Certificate-bound tokens (RFC 8705)
 
 RFC 8705 (OAuth 2.0 Mutual-TLS Client Authentication and Certificate-Bound Access Tokens) define cómo vincular un Access Token al certificado cliente TLS. El token contiene el thumbprint del certificado en el claim `cnf.x5t#S256`. El Resource Server verifica que el certificado presentado en el TLS coincide con el thumbprint del claim del token. Esto impide el robo de tokens: incluso si alguien intercepta el token, no puede usarlo sin el certificado privado correspondiente.
+
+```mermaid
+flowchart LR
+    CERT[("Certificado X.509\ndel cliente")]
+    THUMB["SHA-256(cert)\n→ thumbprint"]
+    AS["Authorization Server\nañade claim cnf\nal JWT"]
+    JWT[("JWT\n{ cnf: { x5t#S256:\n  thumbprint } }")]
+    RS["Resource Server\nverifica que\ncert TLS actual\ncoincide con cnf.x5t#S256"]
+    OK(("Acceso\nconcedido"))
+    STEAL["Token robado\nsin certificado\n→ thumbprint no coincide"]
+    ERR(("401"))
+
+    CERT --> THUMB --> AS --> JWT
+    JWT --> RS
+    CERT -.->|"canal TLS"| RS
+    RS -->|"coincide"| OK
+    STEAL -->|"no coincide"| ERR
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+
+    class CERT storage
+    class THUMB,AS primary
+    class JWT storage
+    class RS neutral
+    class OK secondary
+    class STEAL,ERR danger
+```
+*Certificate-Bound Tokens (RFC 8705): el claim cnf.x5t#S256 vincula el JWT al certificado TLS del cliente; un token robado es inútil sin el certificado correspondiente.*
 
 > [CONCEPTO] Certificate-Bound Tokens vinculan criptográficamente el Access Token al certificado TLS del cliente. El claim `cnf` (Confirmation) del JWT contiene `x5t#S256` (thumbprint SHA-256 del certificado). Es la base del "Proof-of-Possession" de tokens.
 

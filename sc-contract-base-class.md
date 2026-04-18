@@ -14,37 +14,32 @@ Las clases base del productor son el punto de extensión donde el desarrollador 
 
 El plugin de Spring Cloud Contract genera tests Java que contienen el código de verificación del contrato (aserciones sobre el response), pero no incluyen configuración del entorno de test. La clase base es la responsable de preparar ese entorno: iniciar el contexto Spring, configurar MockMvc/WebTestClient, inyectar dependencias y establecer datos de prueba.
 
+```mermaid
+flowchart TD
+    CT[("Contrato .groovy\n(fuente de verdad)")]
+    PLG["Plugin Maven/Gradle\ngenera código"]
+    TG["ContractVerifierTest\nextends BaseOrderTest\n⚠ GENERATED — no editar"]
+    CB["BaseOrderTest abstract\n@BeforeEach setup()\nRestAssuredMockMvc.standaloneSetup()"]
+    EXEC["Test se ejecuta\nllama al endpoint\nverifica response"]
+
+    CT --> PLG --> TG
+    CB -->|"extiende"| TG
+    TG --> EXEC
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class CT storage
+    class PLG primary
+    class TG warning
+    class CB root
+    class EXEC secondary
 ```
-Contrato (.groovy) 
-         │
-         ▼
-Plugin Maven/Gradle
-         │
-         ▼
-Test generado (GENERATED — no editar):
-─────────────────────────────────────────
-public class ContractVerifierTest extends BaseOrderTest {
-    @Test
-    public void validate_shouldReturnOrder() throws Exception {
-        // código generado por SCC — llama al endpoint y verifica el response
-        Response response = given()
-            .get("/orders/1");
-        assertThat(response.statusCode()).isEqualTo(200);
-        assertThat(response.jsonPath().getString("status")).isEqualTo("CONFIRMED");
-    }
-}
-─────────────────────────────────────────
-         │  extiende
-         ▼
-Clase base (CÓDIGO DEL DESARROLLADOR):
-─────────────────────────────────────────
-public abstract class BaseOrderTest {
-    @BeforeEach
-    void setup() {
-        RestAssuredMockMvc.standaloneSetup(new OrderController(...));
-    }
-}
-```
+
+*Relación contrato → test generado → clase base: el desarrollador solo toca la clase base; el test generado se regenera en cada build.*
 
 > [CONCEPTO] Los tests generados son código **no editable** que se regenera en cada build. Toda la lógica de configuración del test debe estar en la clase base. El desarrollador **nunca debe modificar** los tests generados directamente.
 
@@ -213,6 +208,23 @@ public abstract class BasePaymentTest {
 | `@SpringBootTest` + `@MockBean` | `@SpringBootTest` | Contexto real, mocking preciso | Controladores con dependencias complejas |
 | WebTestClient standalone | ninguna | Rápido, reactivo | Routers/Handlers WebFlux simples |
 | `@SpringBootTest` WebFlux | `@SpringBootTest` | Contexto reactivo completo | WebFlux con contexto completo |
+
+```mermaid
+quadrantChart
+    title Estrategias de clase base — velocidad vs realismo
+    x-axis "Más rápido" --> "Más lento"
+    y-axis "Menos realista" --> "Más realista"
+    quadrant-1 Lento y realista
+    quadrant-2 Rápido y realista
+    quadrant-3 Rápido y simple
+    quadrant-4 Lento y simple
+    Standalone MockMvc: [0.1, 0.25]
+    SpringBootTest MockBean: [0.7, 0.75]
+    WebTestClient standalone: [0.15, 0.5]
+    SpringBootTest WebFlux: [0.8, 0.9]
+```
+
+*Selección de estrategia de clase base según la relación velocidad/realismo; standalone es siempre la primera opción cuando las dependencias son simples.*
 
 ## Buenas y malas prácticas
 

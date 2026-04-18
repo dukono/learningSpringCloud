@@ -20,19 +20,43 @@ El endpoint `bus-env` está implementado sobre dos componentes del Bus:
 
 El flujo completo del `bus-env` es:
 
+```mermaid
+flowchart TD
+    HTTP["POST /actuator/bus-env\n{\"name\": \"app.timeout\", \"value\": \"5000\"}"]
+    EP["BusEnvironmentManagerEndpoint\nsetProperty(name, value, destination)"]
+    PUB["Publica\nEnvironmentChangeRemoteApplicationEvent"]
+    BROKER[("Broker\nspringCloudBus")]
+    ALL["Todos los nodos\nreciben el evento"]
+    MGR["BusEnvironmentManager\nsetEnvironment(name, value)"]
+    PS[["PropertySource 'manager'\nactualizad en Environment local"]]
+    RS{{"¿Bean tiene @RefreshScope?"}}
+    REFRESHED["Bean recrea en próximo acceso\n(valor actualizado)"]
+    NOTREFRESHED>Bean NO se recrea\n(aún usa valor anterior)]
+
+    HTTP --> EP --> PUB --> BROKER --> ALL --> MGR --> PS --> RS
+    RS -->|sí + bus-refresh| REFRESHED
+    RS -->|no / sin bus-refresh| NOTREFRESHED
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class HTTP primary
+    class EP primary
+    class PUB primary
+    class BROKER storage
+    class ALL neutral
+    class MGR primary
+    class PS storage
+    class RS warning
+    class REFRESHED secondary
+    class NOTREFRESHED danger
 ```
-POST /actuator/bus-env {"name": "app.timeout", "value": "5000"}
-       ↓
-BusEnvironmentManagerEndpoint.setProperty(name, value, destination)
-       ↓
-Publica EnvironmentChangeRemoteApplicationEvent en el broker
-       ↓
-Todos los nodos reciben el evento
-       ↓
-BusEnvironmentManager.setEnvironment(name, value) en cada nodo
-       ↓
-PropertySource "manager" actualizado en el Environment local
-```
+*El `bus-env` actualiza el `PropertySource "manager"` en todos los nodos, pero los beans `@Value` sin `@RefreshScope` no se recrean hasta que se dispara también un `bus-refresh`.*
 
 ## Ejemplo central — Uso completo del endpoint bus-env
 

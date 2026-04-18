@@ -12,12 +12,40 @@ El RabbitMQ binder implementa la abstracción Binder de Spring Cloud Stream sobr
 
 El RabbitMQ binder crea y gestiona exchanges y queues automáticamente. La relación entre el binding de Stream y los recursos AMQP es la siguiente:
 
+```mermaid
+flowchart TD
+    D["destination (binding)"]
+    G{{"¿group configurado?"}}
+    EX["Exchange RabbitMQ\n[destination]"]
+    QN["Queue durable\n[destination].[group]"]
+    QA["Queue anónima\nefímera"]
+    DLQ["DLQ\n[destination].[group].dlq"]
+    DLX["Dead Letter Exchange\n(DLX)"]
+    DLF{{"¿autoBindDlq=true?"}}
+
+    D --> EX
+    D --> G
+    G -->|sí| QN
+    G -->|no| QA
+    QN --> DLF
+    DLF -->|sí| DLX --> DLQ
+    DLF -->|no — sin DLQ| QN
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class D root
+    class EX primary
+    class QN secondary
+    class QA danger
+    class DLF warning
+    class DLX,DLQ storage
 ```
-spring.cloud.stream.bindings.[nombre].destination  →  Exchange en RabbitMQ
-spring.cloud.stream.bindings.[nombre].group        →  Queue: [destination].[group]
-(sin group)                                         →  Queue anónima y efímera
-DLQ (con autoBindDlq=true)                         →  Queue: [destination].[group].dlq
-```
+*Recursos AMQP creados automáticamente por el RabbitMQ binder según la configuración de `group` y `autoBindDlq`.*
 
 ## Ejemplo central — configuración completa del RabbitMQ binder
 
@@ -129,6 +157,34 @@ Las propiedades más relevantes del RabbitMQ binder, separadas por consumer y pr
 | Nombre de la DLQ | `[destination].DLT` | `[destination].[group].dlq` |
 | Cabeceras de error | No por defecto | Con `republish-to-dlq: true` |
 | Namespace propiedad | `kafka.bindings.[b].consumer` | `rabbit.bindings.[b].consumer` |
+
+```mermaid
+flowchart LR
+    subgraph "Kafka binder"
+        KP["enable-dlq: true\n(kafka.bindings.[b].consumer)"]
+        KD[("[destination].DLT")]
+        KH>sin cabeceras\nextra]
+    end
+    subgraph "RabbitMQ binder"
+        RP["auto-bind-dlq: true\n(rabbit.bindings.[b].consumer)"]
+        RD[("[destination].[group].dlq")]
+        RH["republish-to-dlq: true\nx-exception-message\nx-exception-stacktrace"]
+    end
+
+    KP --> KD --> KH
+    RP --> RD --> RH
+
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class KP primary
+    class RP secondary
+    class KD,RD storage
+    class KH,RH neutral
+```
+*Diferencias en la configuración y naming de la DLQ entre Kafka (`.DLT`) y RabbitMQ (`.dlq`), y la disponibilidad de cabeceras de diagnóstico.*
 
 ## Buenas y malas prácticas
 

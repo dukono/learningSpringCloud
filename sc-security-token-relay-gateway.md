@@ -14,21 +14,23 @@ Cuando el usuario se autentica contra el API Gateway y sus peticiones se enrutan
 
 `TokenRelayGatewayFilterFactory` es un `GatewayFilter` que se ejecuta en el pipeline del Gateway para cada ruta donde se configure. Su funcionamiento es: accede al `ServerOAuth2AuthorizedClientRepository` (repositorio reactivo de tokens autorizados), obtiene el `AccessToken` del cliente autorizado actual, y lo añade como header `Authorization: Bearer <token>` a la request antes de reenviarla. Requiere el contexto reactivo del Gateway (WebFlux).
 
-```
-Usuario                Gateway (OAuth2 Client)           Microservicio
-  │                           │                               │
-  │──── GET /api/orders ────→ │                               │
-  │  Authorization: Bearer    │                               │
-  │  <user_access_token>      │                               │
-  │                           │ TokenRelay filter:            │
-  │                           │ 1. Lee token del contexto     │
-  │                           │ 2. Añade header Authorization │
-  │                           │──── GET /orders ────────────→ │
-  │                           │  Authorization: Bearer        │
-  │                           │  <user_access_token>          │
-  │                           │                               │
-  │                           │←── 200 OK ─────────────────── │
-  │←──── 200 OK ─────────────  │                               │
+```mermaid
+sequenceDiagram
+    actor U as Usuario
+    participant GW as Gateway (OAuth2 Client)
+    participant MS as Microservicio
+
+    U->>GW: GET /api/orders<br/>Authorization: Bearer user_access_token
+
+    rect rgb(0, 80, 160)
+      Note over GW: TokenRelayGatewayFilterFactory
+      GW->>GW: 1. Lee token de ServerOAuth2AuthorizedClientRepository
+      GW->>GW: 2. Añade header Authorization: Bearer user_access_token
+    end
+
+    GW->>MS: GET /orders<br/>Authorization: Bearer user_access_token
+    MS-->>GW: 200 OK
+    GW-->>U: 200 OK
 ```
 
 ## Prerequisitos: dependencias y configuración del Gateway como OAuth2 Client
@@ -129,6 +131,34 @@ public class GatewaySecurityConfig {
 ## authorizeExchange y pathMatchers — hasRole vs hasAuthority vs hasAnyScope
 
 En el contexto de OAuth2 con JWT, las autoridades tienen prefijo según el converter configurado. Entender la diferencia entre estos métodos evita errores de autorización difíciles de depurar. `hasRole("X")` agrega automáticamente el prefijo `ROLE_` al comparar, por lo que equivale a `hasAuthority("ROLE_X")`. Para scopes OAuth2 se usa `hasAuthority("SCOPE_X")` o el método específico `hasAnyAuthority()`.
+
+```mermaid
+flowchart TD
+    Q{{"¿Qué tipo de\nautoridad necesitas?"}}
+    ROLE["hasRole('ADMIN')\n→ busca ROLE_ADMIN\n(añade prefijo automático)"]
+    AUTH["hasAuthority('ROLE_ADMIN')\n→ busca exactamente ROLE_ADMIN"]
+    SCOPE["hasAuthority('SCOPE_orders.read')\n→ busca exactamente SCOPE_orders.read"]
+    ERR1[/"⚠ hasRole('SCOPE_orders.read')\n→ busca ROLE_SCOPE_orders.read\n¡nunca coincide!"/]
+
+    Q -->|"rol de usuario"| ROLE
+    Q -->|"nombre exacto con prefijo"| AUTH
+    Q -->|"scope OAuth2"| SCOPE
+    Q -->|"error frecuente"| ERR1
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+
+    class Q warning
+    class ROLE primary
+    class AUTH secondary
+    class SCOPE secondary
+    class ERR1 danger
+```
+*hasRole añade el prefijo ROLE_ automáticamente; para scopes OAuth2 siempre usar hasAuthority con el prefijo SCOPE_ explícito.*
 
 ```java
 .authorizeExchange(exchanges -> exchanges

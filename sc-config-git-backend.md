@@ -16,28 +16,43 @@ El backend Git es la elección por defecto y la más evaluada en el examen VMwar
 
 La forma en que el servidor busca ficheros en el repositorio es el concepto más crítico del backend Git. El servidor construye una lista ordenada de ficheros a buscar en función de la aplicación y el perfil, y la posición de búsqueda dentro del repositorio depende de `search-paths`.
 
+```mermaid
+mindmap
+  root((config-repo))
+    (raíz)
+      application.yml
+      application-prod.yml
+    (order-service/)
+      order-service.yml
+      order-service-prod.yml
+    (inventory-service/)
+      inventory-service.yml
+      inventory-service-prod.yml
 ```
-REPOSITORIO GIT (estructura recomendada con search-paths: '{application}')
-│
-├── application.yml              ← Propiedades globales (todos los servicios)
-├── application-prod.yml         ← Propiedades globales para perfil prod
-│
-├── order-service/
-│   ├── order-service.yml        ← Propiedades base de order-service
-│   └── order-service-prod.yml   ← Propiedades de order-service en prod
-│
-└── inventory-service/
-    ├── inventory-service.yml
-    └── inventory-service-prod.yml
-
-ORDEN DE RESOLUCIÓN para GET /order-service/prod/main:
-  1. order-service/order-service-prod.yml   (máxima prioridad)
-  2. order-service/order-service.yml
-  3. application-prod.yml
-  4. application.yml                         (mínima prioridad, base global)
-```
+*Estructura recomendada del repositorio con `search-paths: '{application}'` — cada servicio en su propio subdirectorio.*
 
 Con `search-paths: '{application}'`, el servidor busca primero en la carpeta del servicio y luego en la raíz. El placeholder `{application}` se sustituye dinámicamente por el nombre de la aplicación cliente.
+
+```mermaid
+flowchart LR
+    P1["order-service/\norder-service-prod.yml"]
+    P2["order-service/\norder-service.yml"]
+    P3["application-prod.yml"]
+    P4["application.yml"]
+
+    P1 -->|"mayor prioridad"| P2 --> P3 -->|"menor prioridad"| P4
+
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class P1 primary
+    class P2 secondary
+    class P3 warning
+    class P4 neutral
+```
+*Orden de resolución para `GET /order-service/prod/main`: de específico (servicio+perfil) a global (base compartida).*
 
 > [EXAMEN] La diferencia entre `label` (rama/tag Git) y `profile` (entorno: dev/prod) es pregunta directa. `label` controla la versión del código de configuración; `profile` controla el entorno de despliegue.
 

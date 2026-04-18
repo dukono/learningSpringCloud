@@ -14,31 +14,46 @@ Spring Cloud Task ofrece dos mecanismos para reaccionar a los eventos del ciclo 
 
 Los tres métodos de `TaskExecutionListener` se invocan en momentos precisos del ciclo de vida. El siguiente diagrama muestra cuándo se llama cada callback.
 
+```mermaid
+stateDiagram-v2
+    [*] --> Iniciando : Task arranca
+
+    state "Iniciando" as Iniciando {
+        [*] --> Startup
+        Startup : onTaskStartup(TaskExecution)\nINSERT START_TIME en TASK_EXECUTION
+        Startup --> StreamOpcional1
+        StreamOpcional1 : [OPCIONAL] TaskStartedEvent → MessageChannel
+    }
+
+    Iniciando --> Ejecutando
+
+    state "Ejecutando" as Ejecutando {
+        [*] --> Logic
+        Logic : ApplicationRunner.run()\nejecutando lógica de negocio
+    }
+
+    Ejecutando --> Exitoso : sin excepción
+    Ejecutando --> Fallido : excepción propagada
+
+    state "Exitoso" as Exitoso {
+        [*] --> End
+        End : onTaskEnd(TaskExecution)\nEXIT_CODE=0, END_TIME actualizado
+        End --> StreamOpcional2
+        StreamOpcional2 : [OPCIONAL] TaskEndedEvent → MessageChannel
+    }
+
+    state "Fallido" as Fallido {
+        [*] --> Failed
+        Failed : onTaskFailed(TaskExecution, Throwable)\nEXIT_CODE≠0, ERROR_MESSAGE
+        Failed --> StreamOpcional3
+        StreamOpcional3 : [OPCIONAL] TaskFailedEvent → MessageChannel
+    }
+
+    Exitoso --> [*]
+    Fallido --> [*]
 ```
-Task arranca
-    │
-    ▼
-TaskLifecycleListener.onTaskStartup(TaskExecution)
-   → @EnableTask persiste START_TIME en TASK_EXECUTION
-   → [OPCIONAL] TaskExecutionEvent(TaskStartedEvent) → MessageChannel
-    │
-    ▼
-ApplicationRunner.run() ejecuta lógica de negocio
-    │
-    ├─── sin excepción
-    │       │
-    │       ▼
-    │   onTaskEnd(TaskExecution)
-    │      → EXIT_CODE=0, END_TIME actualizado
-    │      → [OPCIONAL] TaskExecutionEvent(TaskEndedEvent) → MessageChannel
-    │
-    └─── con excepción
-            │
-            ▼
-        onTaskFailed(TaskExecution, Throwable)
-           → EXIT_CODE≠0, ERROR_MESSAGE con stacktrace
-           → [OPCIONAL] TaskExecutionEvent(TaskFailedEvent) → MessageChannel
-```
+
+*Tres callbacks del ciclo de vida: onTaskStartup al inicio, onTaskEnd al éxito y onTaskFailed al fallo; los eventos al MessageChannel son opcionales con spring-cloud-task-stream.*
 
 ## Ejemplo central
 
@@ -168,6 +183,22 @@ La elección entre `TaskExecutionListener` y `TaskExecutionEvent` depende del al
 `TaskExecutionListener` es síncrono: los callbacks se ejecutan en el mismo hilo y contexto de Spring que la Task. Si el listener falla, puede afectar al EXIT_CODE de la Task. Es apropiado para auditoría local, métricas internas o logging enriquecido.
 
 `TaskExecutionEvent` es asíncrono y desacoplado: el mensaje se envía al broker de mensajería y los consumidores son independientes de la Task. Si el broker no está disponible, la publicación puede fallar pero la Task continúa (según la configuración del binder). Es apropiado para notificaciones a sistemas externos, dashboards de monitorización o pipelines event-driven.
+
+```mermaid
+quadrantChart
+    title Listener local vs Evento de mensajería
+    x-axis "Síncrono" --> "Asíncrono"
+    y-axis "Alcance local" --> "Alcance distribuido"
+    quadrant-1 Distribuido y asíncrono
+    quadrant-2 Distribuido y síncrono
+    quadrant-3 Local y síncrono
+    quadrant-4 Local y asíncrono
+    TaskExecutionListener: [0.1, 0.15]
+    TaskExecutionEvent Kafka: [0.85, 0.9]
+    TaskExecutionEvent RabbitMQ: [0.8, 0.85]
+```
+
+*TaskExecutionListener es la opción local y síncrona; TaskExecutionEvent es la opción distribuida y asíncrona para integraciones con sistemas externos.*
 
 > [ADVERTENCIA] Si `onTaskFailed` o `onTaskEnd` en el `TaskExecutionListener` lanzan una excepción, esta excepción puede sobreescribir el mensaje de error original y modificar el EXIT_CODE almacenado en `TASK_EXECUTION`. Implementar los listeners con manejo de excepciones defensivo.
 

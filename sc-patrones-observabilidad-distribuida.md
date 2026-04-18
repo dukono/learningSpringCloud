@@ -10,6 +10,33 @@ En un sistema distribuido, un fallo raramente tiene una causa única y localizad
 
 ## Los tres pilares de la observabilidad
 
+```mermaid
+mindmap
+  root((Observabilidad\nDistribuida))
+    (Distributed Tracing)
+      traceId propagado
+      spanId por operación
+      Micrometer Tracing
+      OpenTelemetry / Zipkin / Jaeger
+    (Log Aggregation)
+      traceId en cada línea
+      ELK Stack
+        Elasticsearch
+        Logstash
+        Kibana
+      Loki + Grafana
+    [Metrics]
+      [Micrometer]
+        Counter
+        Gauge
+        Timer
+        DistributionSummary
+      [Prometheus]
+        /actuator/prometheus
+        Grafana dashboards
+```
+*Los tres pilares de la observabilidad: trazas para correlación de flujos, logs para diagnóstico, métricas para alertas y SLOs.*
+
 > [CONCEPTO] **Distributed Tracing (Micrometer Tracing)**: el tracing distribuido propaga un identificador de traza (`traceId`) a través de todas las llamadas de un flujo — HTTP, mensajería, bases de datos. Cada operación dentro de ese flujo genera un `spanId` hijo. Juntos, el árbol de spans reconstruye el flujo completo de una petición a través de múltiples servicios, con tiempos exactos de cada operación.
 
 Si un servicio intermedio no propaga las cabeceras de tracing (`traceparent` en W3C TraceContext, o `X-B3-TraceId` en B3), la traza se rompe y es imposible correlacionar las llamadas downstream con la petición original.
@@ -26,6 +53,40 @@ Si un servicio intermedio no propaga las cabeceras de tracing (`traceparent` en 
 |---|---|---|---|
 | Liveness | `/actuator/health/liveness` | Restart del pod | Deadlock, estado corrupto irrecuperable |
 | Readiness | `/actuator/health/readiness` | Saca del balanceador | BD no disponible, calentamiento inicial |
+
+```mermaid
+flowchart TD
+    FAIL["Fallo detectado por Kubernetes"]
+    PROBE{{"¿Qué probe falla?"}}
+
+    LIVE["Liveness probe\n/actuator/health/liveness"]
+    READY["Readiness probe\n/actuator/health/readiness"]
+
+    LIVEFAIL["Deadlock / estado\nirrecuperable"]
+    READYFAIL["BD no disponible /\ncalentamiento inicial"]
+
+    LIVE_ACT(["K8s reinicia el pod"])
+    READY_ACT(["K8s saca el pod del\nbalanceador de carga\n(no reinicia)"])
+
+    FAIL --> PROBE
+    PROBE -->|"liveness DOWN"| LIVE --> LIVEFAIL --> LIVE_ACT
+    PROBE -->|"readiness DOWN"| READY --> READYFAIL --> READY_ACT
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class FAIL neutral
+    class PROBE warning
+    class LIVE,READY primary
+    class LIVEFAIL,READYFAIL neutral
+    class LIVE_ACT danger
+    class READY_ACT secondary
+```
+*Diferencia crítica: liveness failure reinicia el pod; readiness failure solo lo retira del balanceador hasta que se recupere.*
 
 ## Ejemplo central: instrumentación completa con Micrometer Tracing y Actuator
 

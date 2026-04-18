@@ -27,34 +27,39 @@ La propiedad `lower-case-service-id=true` convierte el ID del servicio a minúsc
 
 El siguiente diagrama muestra cómo el Gateway genera rutas desde el registro de Eureka:
 
+```mermaid
+flowchart TD
+    EUREKA[("Eureka Server\nORDER-SERVICE\nPRODUCT-SERVICE\nUSER-SERVICE")]
+    DCDRL["DiscoveryClientRouteDefinitionLocator\ndiscovery.locator.enabled=true"]
+
+    subgraph ROUTES["Rutas auto-generadas"]
+        direction TD
+        R1["id: ..._ORDER-SERVICE\nPath=/ORDER-SERVICE/**\nRewritePath → lb://ORDER-SERVICE"]
+        R2["id: ..._PRODUCT-SERVICE\nPath=/PRODUCT-SERVICE/**\nRewritePath → lb://PRODUCT-SERVICE"]
+        R3["id: ..._USER-SERVICE\nPath=/USER-SERVICE/**\nRewritePath → lb://USER-SERVICE"]
+    end
+
+    LOWER["lower-case-service-id=true\nPath=/order-service/**\nuri=lb://order-service"]
+
+    EUREKA -->|"polling"| DCDRL
+    DCDRL --> R1
+    DCDRL --> R2
+    DCDRL --> R3
+    DCDRL -.->|"opción"| LOWER
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class EUREKA storage
+    class DCDRL primary
+    class R1,R2,R3 secondary
+    class LOWER warning
 ```
-Eureka Server
-├── ORDER-SERVICE  (instancias: host1:8081, host2:8081)
-├── PRODUCT-SERVICE (instancias: host3:8082)
-└── USER-SERVICE   (instancias: host4:8083)
-
-                    ↓ discovery.locator.enabled=true
-
-Gateway genera automáticamente:
-
-Ruta 1: id=ReactiveCompositeDiscoveryClient_ORDER-SERVICE
-  predicate: Path=/ORDER-SERVICE/**
-  filter: RewritePath=/ORDER-SERVICE/(?<r>.*), /${r}
-  uri: lb://ORDER-SERVICE
-
-Ruta 2: id=ReactiveCompositeDiscoveryClient_PRODUCT-SERVICE
-  predicate: Path=/PRODUCT-SERVICE/**
-  filter: RewritePath=/PRODUCT-SERVICE/(?<r>.*), /${r}
-  uri: lb://PRODUCT-SERVICE
-
-Ruta 3: id=ReactiveCompositeDiscoveryClient_USER-SERVICE
-  predicate: Path=/USER-SERVICE/**
-  filter: RewritePath=/USER-SERVICE/(?<r>.*), /${r}
-  uri: lb://USER-SERVICE
-
-Con lower-case-service-id=true:
-  Path=/order-service/**, uri=lb://order-service, etc.
-```
+*Por cada servicio en Eureka se genera automáticamente una ruta con Path predicate y RewritePath filter — las rutas explícitas tienen prioridad sobre las auto-generadas.*
 
 ## Ejemplo central
 

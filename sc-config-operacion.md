@@ -16,30 +16,41 @@ Un Config Server en producción puede fallar, estar temporalmente inaccesible o 
 
 El Config Server puede ejecutarse en múltiples instancias detrás de un balanceador de carga. En este escenario, los clientes necesitan apuntar al balanceador (URL fija) o descubrir las instancias dinámicamente via Eureka.
 
-```
-ARQUITECTURA DE ALTA DISPONIBILIDAD
-═══════════════════════════════════════════════════════════════
-  ┌──────────────────────────────────────────────────────────┐
-  │                 OPCIÓN 1: URL fija al LB                 │
-  │                                                          │
-  │  Client ──▶ Load Balancer ──▶ Config Server 1 (8888)    │
-  │                           └──▶ Config Server 2 (8888)   │
-  │                                                          │
-  │  spring.config.import=configserver:http://lb:8888        │
-  └──────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph opt1 ["Opción 1 — URL fija al balanceador"]
+        direction LR
+        C1["Config Client"]
+        LB{{"Load Balancer\nhttp://lb:8888"}}
+        CS1["Config Server 1"]
+        CS2["Config Server 2"]
+        C1 --> LB --> CS1
+        LB --> CS2
+    end
 
-  ┌──────────────────────────────────────────────────────────┐
-  │              OPCIÓN 2: Discovery via Eureka              │
-  │                                                          │
-  │  Config Server 1 ──▶ Eureka (registrado como            │
-  │  Config Server 2 ──▶   "config-server")                 │
-  │                                                          │
-  │  Client ──▶ Eureka ──▶ Config Server (instancia elegida)│
-  │                                                          │
-  │  spring.cloud.config.discovery.enabled=true             │
-  │  spring.cloud.config.discovery.service-id=config-server │
-  └──────────────────────────────────────────────────────────┘
+    subgraph opt2 ["Opción 2 — Discovery via Eureka"]
+        direction LR
+        C2["Config Client"]
+        EUR[("Eureka Server")]
+        CSA["Config Server A"]
+        CSB["Config Server B"]
+        CSA -.->|"register"| EUR
+        CSB -.->|"register"| EUR
+        C2 -->|"lookup: config-server"| EUR
+        EUR -->|"devuelve instancia"| C2
+        C2 -->|"http://ip:8888/..."| CSA
+    end
+
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class C1,C2 primary
+    class LB,EUR warning
+    class CS1,CS2,CSA,CSB secondary
 ```
+*Dos estrategias de HA: URL fija al balanceador (sin dependencia de Eureka) vs. discovery dinámico (requiere Eureka antes que Config Server).*
 
 ## Ejemplo central — fail-fast con retry y discovery via Eureka
 

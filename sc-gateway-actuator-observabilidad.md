@@ -214,6 +214,35 @@ public class CustomMetricsGlobalFilter implements GlobalFilter, Ordered {
 | `/actuator/gateway/globalfilters` | GET | Lista GlobalFilters con su orden de ejecución |
 | `/actuator/gateway/routefilters` | GET | Lista GatewayFilter Factories disponibles |
 
+```mermaid
+flowchart LR
+    subgraph INSPECT["Inspección (GET)"]
+        direction TD
+        GR["/gateway/routes\nTodas las rutas activas"]
+        GRI["/gateway/routes/{id}\nRuta específica"]
+        GGF["/gateway/globalfilters\nGlobalFilters + orden"]
+        GRF["/gateway/routefilters\nFilter Factories disponibles"]
+    end
+
+    subgraph MANAGE["Gestión (POST/DELETE)"]
+        direction TD
+        REF["/gateway/refresh\nRecarga rutas — sin reinicio"]
+        ADDR["/gateway/routes/{id} POST\nAñade ruta dinámica"]
+        DELR["/gateway/routes/{id} DELETE\nElimina ruta dinámica"]
+    end
+
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef danger    fill:#cf222e,color:#fff,stroke:#a40e26
+
+    class GR,GRI,GGF,GRF primary
+    class REF secondary
+    class ADDR warning
+    class DELR danger
+```
+*Endpoints Actuator del Gateway: inspección (azul) para observabilidad y gestión (verde/naranja/rojo) para administración de rutas en caliente.*
+
 ## Métricas automáticas de Gateway
 
 Cuando `spring.cloud.gateway.metrics.enabled=true`, el `GatewayMetricsFilter` emite automáticamente la métrica `spring.cloud.gateway.requests` con los siguientes tags:

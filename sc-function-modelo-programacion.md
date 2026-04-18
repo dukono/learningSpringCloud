@@ -14,22 +14,44 @@ Spring Cloud Function convierte los tres tipos funcionales del JDK — `Function
 
 El siguiente diagrama muestra cómo los beans funcionales se registran y exponen a través de los distintos adaptadores.
 
+```mermaid
+flowchart LR
+    APP{{"@SpringBootApplication"}}
+
+    subgraph beans["Beans funcionales"]
+        direction TB
+        F["@Bean Function&lt;I,O&gt;\nupper­case"]
+        C["@Bean Consumer&lt;I&gt;\nprocessOrder"]
+        S["@Bean Supplier&lt;O&gt;\nevent­Source"]
+    end
+
+    FC[("FunctionCatalog\nregistro automático")]
+
+    subgraph adapters["Adaptadores de exposición"]
+        direction TB
+        HTTP["HTTP adapter\nPOST /fn"]
+        STREAM["Stream bindings\nKafka / RabbitMQ"]
+        CLOUD["Cloud adapter\nLambda / Azure / GCP"]
+    end
+
+    APP --> beans
+    beans --> FC
+    FC --> HTTP
+    FC --> STREAM
+    FC --> CLOUD
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class APP root
+    class F,C,S primary
+    class FC storage
+    class HTTP,STREAM,CLOUD secondary
 ```
-@SpringBootApplication
-       │
-       ├── @Bean Function<String,String>  uppercase
-       ├── @Bean Consumer<Order>          processOrder
-       └── @Bean Supplier<Event>          eventSource
-               │
-               ▼
-       FunctionCatalog  (registro automático)
-               │
-     ┌─────────┼─────────┐
-     ▼         ▼         ▼
-  HTTP       Stream    Cloud
- adapter    bindings   adapter
-(POST /fn) (Kafka/RMQ) (Lambda)
-```
+*Beans funcionales registrados en FunctionCatalog y expuestos sin código de infraestructura adicional.*
 
 ## Ejemplo central
 
@@ -85,6 +107,24 @@ spring:
         uppercase:
           copy-headers: true       # FunctionProperties por función
 ```
+
+```mermaid
+mindmap
+  root((spring.cloud\n.function))
+    (definition)
+      uppercase
+      uppercase|trim
+      uppercase,trim
+    (configuration)
+      [&lt;functionName&gt;]
+        copy-headers
+    (routing-expression
+      headers['X-Function-Name'])
+    [web]
+      [export]
+        debug
+```
+*Jerarquía de propiedades de configuración de Spring Cloud Function.*
 
 > [ADVERTENCIA] Si hay más de un bean funcional en el contexto y no se declara `spring.cloud.function.definition`, el adaptador HTTP lanza una excepción de ambigüedad. Siempre declarar la propiedad en proyectos con múltiples funciones.
 

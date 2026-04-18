@@ -12,19 +12,37 @@ El particionado en Spring Cloud Stream garantiza que todos los mensajes con la m
 
 El flujo de particionado involucra propiedades distintas en el producer (qué clave usar, cuántas particiones) y en el consumer (qué instancia soy, cuántas hay en total):
 
-```
-Producer:
-  partitionKeyExpression (SpEL) → calcula la clave
-  partitionCount → número de particiones destino
-  partitionSelectorExpression → SpEL que selecciona la partición (opcional)
+```mermaid
+flowchart LR
+    MSG[/"Mensaje\n(payload.customerId)"/]
+    KEY{{"partitionKeyExpression\n→ clave"}}
+    HASH["Math.abs(key.hashCode())\n% partitionCount"]
+    P0[(Partición 0)]
+    P1[(Partición 1)]
+    P2[(Partición 2)]
+    I0["Instancia 0\ninstance-index=0"]
+    I1["Instancia 1\ninstance-index=1"]
+    I2["Instancia 2\ninstance-index=2"]
 
-  Fórmula default: Math.abs(key.hashCode()) % partitionCount → partición destino
+    MSG --> KEY --> HASH
+    HASH -->|"índice 0"| P0 --> I0
+    HASH -->|"índice 1"| P1 --> I1
+    HASH -->|"índice 2"| P2 --> I2
 
-Consumer (cada instancia):
-  partitioned: true         → activa el modo particionado
-  instance-index: 0         → índice de esta instancia (0-based)
-  instance-count: 3         → total de instancias activas
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class MSG neutral
+    class KEY warning
+    class HASH primary
+    class P0,P1,P2 storage
+    class I0,I1,I2 secondary
 ```
+*La clave calculada por SpEL se hashea módulo `partitionCount`; cada partición queda asignada a la instancia consumer con el `instance-index` correspondiente.*
 
 ## Ejemplo central — configuración de particionado completa
 

@@ -18,6 +18,36 @@ Cada tipo funcional de `java.util.function` tiene un rol específico en Spring C
 | `Supplier<T>` | Source (solo produce) | `[nombre]-out-0` | Produce mensajes periódicamente |
 | `Function<I,O>` | Processor (consume y produce) | `[nombre]-in-0` + `[nombre]-out-0` | Transforma mensajes |
 
+```mermaid
+flowchart LR
+    C["Consumer&lt;T&gt;\nSink"]
+    S["Supplier&lt;T&gt;\nSource"]
+    F["Function&lt;I,O&gt;\nProcessor"]
+    CI["[nombre]-in-0"]
+    SO["[nombre]-out-0"]
+    FI["[nombre]-in-0"]
+    FO["[nombre]-out-0"]
+    BROKER[(Broker)]
+
+    BROKER -->|mensajes| CI --> C
+    S --> SO --> BROKER
+    BROKER -->|mensajes| FI --> F --> FO --> BROKER
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+    classDef storage   fill:#6e40c9,color:#fff,stroke:#5a32a3
+
+    class C primary
+    class S secondary
+    class F root
+    class CI,FI neutral
+    class SO,FO neutral
+    class BROKER storage
+```
+*Relación entre cada tipo funcional Java, los bindings generados automáticamente y la dirección del flujo de mensajes.*
+
 ## Ejemplo central — Function, Consumer y Supplier
 
 El siguiente ejemplo muestra los tres tipos funcionales en una misma aplicación. Cuando hay un solo bean funcional, Spring Cloud Stream lo detecta automáticamente. Cuando hay varios, se debe usar `spring.cloud.function.definition` para resolver la ambigüedad.
@@ -77,6 +107,28 @@ spring:
 ## Composición de funciones
 
 Spring Cloud Stream permite componer funciones usando el operador `|` (pipe) en `spring.cloud.function.definition`. La composición encadena la salida de una función como entrada de la siguiente, creando un pipeline de procesamiento. Solo se exponen los bindings extremos del pipeline (entrada del primero y salida del último).
+
+```mermaid
+flowchart LR
+    IN[/"validateOrder-in-0\n(raw-orders)"/]
+    V["validateOrder"]
+    E["enrichOrder"]
+    A["auditOrder"]
+    OUT[/"auditOrder-out-0\n(processed-orders)"/]
+
+    IN --> V --> E --> A --> OUT
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class IN,OUT neutral
+    class V primary
+    class E primary
+    class A secondary
+```
+*Pipeline `validateOrder|enrichOrder|auditOrder`: solo los bindings extremos se exponen al broker; los intermedios son internos.*
 
 ```yaml
 spring:

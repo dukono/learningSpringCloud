@@ -14,23 +14,38 @@ Spring Cloud Circuit Breaker es una capa de abstracción sobre las implementacio
 
 La abstracción define dos interfaces principales y sus implementaciones para Resilience4j:
 
+```mermaid
+flowchart TD
+    subgraph SYNC["Sync (Spring MVC)"]
+        direction TD
+        CBF["CircuitBreakerFactory\n«interface»"]
+        R4JF["Resilience4JCircuitBreakerFactory\n«implementation»"]
+        SCC["CircuitBreaker SC\n«interface»\nrun(Supplier) / run(Supplier, fallback)"]
+
+        CBF -->|"crea"| SCC
+        CBF -.->|"implementado por"| R4JF
+    end
+
+    subgraph REACT["Reactive (WebFlux)"]
+        direction TD
+        RCBF["ReactiveCircuitBreakerFactory\n«interface»"]
+        RR4JF["ReactiveResilience4JCircuitBreakerFactory\n«implementation»"]
+        RCB["ReactiveCircuitBreaker SC\n«interface»\nrun(Mono) / run(Flux)"]
+
+        RCBF -->|"crea"| RCB
+        RCBF -.->|"implementado por"| RR4JF
+    end
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class CBF,RCBF primary
+    class R4JF,RR4JF secondary
+    class SCC,RCB neutral
 ```
-CircuitBreakerFactory (interface)
-    └─► Resilience4JCircuitBreakerFactory (implementación para Resilience4j sync)
-
-ReactiveCircuitBreakerFactory (interface)
-    └─► ReactiveResilience4JCircuitBreakerFactory (implementación para flujos reactivos)
-
-CircuitBreaker (interface SC — no es la de Resilience4j)
-    └─► run(Supplier<T>) : T
-    └─► run(Supplier<T>, Function<Throwable, T>) : T  ← con fallback
-
-ReactiveCircuitBreaker (interface SC)
-    └─► run(Mono<T>) : Mono<T>
-    └─► run(Mono<T>, Function<Throwable, Mono<T>>) : Mono<T>
-    └─► run(Flux<T>) : Flux<T>
-    └─► run(Flux<T>, Function<Throwable, Flux<T>>) : Flux<T>
-```
+*La abstracción SC separa la interfaz portable (azul) de la implementación Resilience4j (verde): el código de negocio solo depende de las interfaces.*
 
 > [ADVERTENCIA] `org.springframework.cloud.client.circuitbreaker.CircuitBreaker` (la interfaz SC) y `io.github.resilience4j.circuitbreaker.CircuitBreaker` (la clase nativa de Resilience4j) son tipos distintos con el mismo nombre simple. Importar el tipo equivocado es un error frecuente.
 

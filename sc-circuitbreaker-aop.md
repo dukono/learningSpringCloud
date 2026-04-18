@@ -14,29 +14,39 @@ Las anotaciones de Resilience4j (`@CircuitBreaker`, `@Retry`, `@Bulkhead`, etc.)
 
 La cadena de aspectos funciona como decoradores anidados: el aspecto más exterior envuelve a todos los demás. En caso de fallo, el control se propaga desde el interior hacia el exterior.
 
+```mermaid
+flowchart TD
+    CALL(("Llamada\nentrante"))
+
+    subgraph BK["Bulkhead  (Order: LOWEST-3)"]
+        direction TD
+        subgraph TL["TimeLimiter  (Order: LOWEST-2)"]
+            direction TD
+            subgraph RL["RateLimiter  (Order: LOWEST-1)"]
+                direction TD
+                subgraph CB["CircuitBreaker  (Order: LOWEST)"]
+                    direction TD
+                    subgraph RT["Retry  (Order: LOWEST+1)"]
+                        direction TD
+                        MTD["[ MÉTODO ]"]
+                    end
+                end
+            end
+        end
+    end
+
+    CALL --> BK
+
+    classDef root      fill:#1f2328,color:#fff,stroke:#444,font-weight:bold
+    classDef primary   fill:#0969da,color:#fff,stroke:#0550ae
+    classDef secondary fill:#2da44e,color:#fff,stroke:#1a7f37
+    classDef warning   fill:#9a6700,color:#fff,stroke:#7d4e00
+    classDef neutral   fill:#e6edf3,color:#1f2328,stroke:#d0d7de
+
+    class CALL root
+    class MTD neutral
 ```
-Llamada entrante
-       │
-       ▼
-┌──────────────┐
-│  Bulkhead    │  (exterior — primer control: ¿hay cupo de concurrencia?)
-│  ┌──────────────────────────┐
-│  │  TimeLimiter             │  (segundo — ¿cuánto tiempo puede durar?)
-│  │  ┌──────────────────────────┐
-│  │  │  RateLimiter           │  (tercero — ¿se permite la frecuencia?)
-│  │  │  ┌──────────────────────────┐
-│  │  │  │  CircuitBreaker       │  (cuarto — ¿está el circuito cerrado?)
-│  │  │  │  ┌──────────────────────────┐
-│  │  │  │  │  Retry              │  (interior — reintenta si falla)
-│  │  │  │  │  ┌─────────────┐
-│  │  │  │  │  │  MÉTODO     │  (código real)
-│  │  │  │  │  └─────────────┘
-│  │  │  │  └──────────────────────────┘
-│  │  │  └──────────────────────────┘
-│  │  └──────────────────────────┘
-│  └──────────────────────────┘
-└──────────────┘
-```
+*Cadena de aspectos de exterior a interior: Bulkhead > TimeLimiter > RateLimiter > CircuitBreaker > Retry. Un fallo se propaga de adentro hacia afuera.*
 
 Este orden significa que:
 - Retry intenta el método `maxAttempts` veces antes de propagar el fallo al CircuitBreaker.
